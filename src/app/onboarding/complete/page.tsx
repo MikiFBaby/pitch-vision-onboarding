@@ -37,9 +37,9 @@ export default function OnboardingComplete() {
                         transition={{ delay: 0.3 }}
                         className="text-4xl md:text-6xl font-black text-white leading-tight tracking-tight"
                     >
-                        Jump into
+                        Success!
                         <br />
-                        Employment OS.
+                        You&apos;re Registered.
                     </motion.h1>
 
                     <motion.p
@@ -48,8 +48,7 @@ export default function OnboardingComplete() {
                         transition={{ delay: 0.4 }}
                         className="text-white/90 text-lg md:text-xl font-medium leading-relaxed max-w-lg mx-auto"
                     >
-                        Employment doesn&apos;t have to be hard. Streamline every step of the
-                        employment lifecycle so you and your team can run ahead.
+                        Your profile has been created. You will be notified via email when the platform officially launches.
                     </motion.p>
                 </div>
 
@@ -63,7 +62,7 @@ export default function OnboardingComplete() {
                     onClick={() => router.push('/dashboard')}
                     className="bg-[#84cc16] hover:bg-[#65a30d] text-black font-bold text-lg px-8 py-4 rounded-full shadow-lg hover:shadow-xl transition-all"
                 >
-                    Hop to it
+                    Enter Dashboard
                 </motion.button>
             </div>
 
@@ -72,9 +71,9 @@ export default function OnboardingComplete() {
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 transition={{ delay: 0.8 }}
-                className="absolute bottom-6 text-white/60 text-xs font-medium"
+                className="absolute bottom-6 text-white/60 text-xs font-bold uppercase tracking-widest"
             >
-                © 2026 Pitch Vision. All rights reserved.
+                2026: Year of Vision
             </motion.div>
         </div>
     );
