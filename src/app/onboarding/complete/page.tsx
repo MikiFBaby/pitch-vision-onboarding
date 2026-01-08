@@ -21,7 +21,7 @@ export default function OnboardingComplete() {
                     className="relative w-64 h-64 md:w-80 md:h-80"
                 >
                     <Image
-                        src="/assets/success-hero.png"
+                        src="/assets/voice-vision-hero.png"
                         alt="Success"
                         fill
                         className="object-contain drop-shadow-2xl"
@@ -51,19 +51,6 @@ export default function OnboardingComplete() {
                         Your profile has been created. You will be notified via email when the platform officially launches.
                     </motion.p>
                 </div>
-
-                {/* Action Button */}
-                <motion.button
-                    initial={{ y: 20, opacity: 0 }}
-                    animate={{ y: 0, opacity: 1 }}
-                    whileHover={{ scale: 1.05 }}
-                    whileTap={{ scale: 0.95 }}
-                    transition={{ delay: 0.5 }}
-                    onClick={() => router.push('/dashboard')}
-                    className="bg-[#84cc16] hover:bg-[#65a30d] text-black font-bold text-lg px-8 py-4 rounded-full shadow-lg hover:shadow-xl transition-all"
-                >
-                    Enter Dashboard
-                </motion.button>
             </div>
 
             {/* Footer / Copyright */}
@@ -73,7 +60,7 @@ export default function OnboardingComplete() {
                 transition={{ delay: 0.8 }}
                 className="absolute bottom-6 text-white/60 text-xs font-bold uppercase tracking-widest"
             >
-                2026: Year of Vision
+                The year we turn voice to vision. Get ready.
             </motion.div>
         </div>
     );
