@@ -49,6 +49,9 @@ export async function POST(req: Request) {
             console.log(`No Directory Match for ${email}. Creating standard user.`);
         }
 
+        // Determine Avatar URL (Priority: Directory > Google/Firebase > Default)
+        const finalAvatarUrl = directoryMatch?.user_image || (req.headers.get('x-user-photo') || null);
+
         // 3. Create user in Supabase (public.users)
         const { data: newUser, error } = await supabaseAdmin
             .from('users')
@@ -58,6 +61,7 @@ export async function POST(req: Request) {
                 first_name: finalFirstName,
                 last_name: finalLastName,
                 role: finalRole,
+                avatar_url: finalAvatarUrl,
                 status: 'active',
                 profile_completed: !!(finalFirstName && finalLastName),
                 employee_id: directoryId // Store the link if it exists

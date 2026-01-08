@@ -32,7 +32,11 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
             const response = await fetch('/api/auth/login', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ firebaseUid: auth.currentUser.uid })
+                body: JSON.stringify({
+                    firebaseUid: auth.currentUser.uid,
+                    email: auth.currentUser.email,
+                    photoUrl: auth.currentUser.photoURL
+                })
             });
 
             const data = await response.json();

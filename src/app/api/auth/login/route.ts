@@ -3,7 +3,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 
 export async function POST(req: Request) {
     try {
-        const { firebaseUid, email } = await req.json();
+        const { firebaseUid, email, photoUrl } = await req.json();
 
         if (!firebaseUid) {
             return NextResponse.json({ error: 'Firebase UID is required' }, { status: 400 });
@@ -23,12 +23,48 @@ export async function POST(req: Request) {
 
         // 2. Create if missing
         if (!user) {
+            // Check for "Directory Match" (Smart Enrollment)
+            const { data: directoryMatch } = await supabaseAdmin
+                .from('employee_directory')
+                .select('*')
+                .eq('email_address', email)
+                .maybeSingle();
+
+            let finalRole = 'agent';
+            let finalFirstName = '';
+            let finalLastName = '';
+            let directoryId = null;
+
+            if (directoryMatch) {
+                console.log(`[Login] Found Directory Match for ${email}`);
+                finalRole = directoryMatch.role ? directoryMatch.role.toLowerCase() : 'agent';
+                finalFirstName = directoryMatch.first_name || '';
+                finalLastName = directoryMatch.last_name || '';
+                directoryId = directoryMatch.id;
+
+                // Sync UID specific to directory
+                await supabaseAdmin
+                    .from('employee_directory')
+                    .update({ firebase_uid: firebaseUid })
+                    .eq('id', directoryMatch.id);
+            }
+
+            // Determine Avatar URL (Priority: Directory > Google/Firebase > Default)
+            const finalAvatarUrl = directoryMatch?.user_image || photoUrl || null;
+
+            // 3. Create user in Supabase
             const { data: newUser, error: createError } = await supabaseAdmin
                 .from('users')
                 .insert({
                     firebase_uid: firebaseUid,
                     email: email || '',
+                    first_name: finalFirstName,
+                    last_name: finalLastName,
+                    role: finalRole,
+                    avatar_url: finalAvatarUrl,
                     status: 'active',
+                    profile_completed: !!(finalFirstName && finalLastName),
+                    employee_id: directoryId
                 })
                 .select('*')
                 .single();
@@ -39,6 +75,7 @@ export async function POST(req: Request) {
             }
             user = newUser;
         }
+
 
         // 2. Update last login
         await supabaseAdmin
