@@ -133,6 +133,21 @@ export default function OnboardingPage() {
             // Refresh global profile state
             await refreshProfile();
 
+            // SYNC TO FIREBASE AUTH (Client Side)
+            try {
+                // Dynamic import to avoid SSR issues if any, though regular import is fine in 'use client'
+                const { updateProfile } = await import('firebase/auth');
+                if (user) {
+                    await updateProfile(user, {
+                        displayName: `${formData.firstName} ${formData.lastName}`,
+                        photoURL: formData.avatarUrl
+                    });
+                    console.log('Synced to Firebase Auth Profile');
+                }
+            } catch (fbError) {
+                console.error('Firebase Sync Error:', fbError);
+            }
+
             // Success redirect - use the actual role from the saved data
             const targetRole = data.user?.role || formData.role || 'agent';
             router.push(`/${targetRole}`);

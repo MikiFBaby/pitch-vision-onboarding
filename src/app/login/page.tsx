@@ -51,6 +51,8 @@ function LoginForm() {
     const roleId = searchParams.get("role") || "";
     const mode = searchParams.get("mode");
 
+    const emailParam = searchParams.get("email") || "";
+
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [isSignup, setIsSignup] = useState(mode === "signup");
@@ -168,7 +170,9 @@ function LoginForm() {
             isLoading={isLoading || loading}
             buttonText={isSignup ? "Create Account" : "Authorize Access"}
             showRememberMe={!isSignup}
-            showCreateAccount={true}
+            showCreateAccount={!isSignup}
+            defaultEmailValue={emailParam}
+            emailReadOnly={isSignup && !!emailParam}
         />
     );
 }
