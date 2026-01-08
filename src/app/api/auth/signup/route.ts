@@ -69,10 +69,11 @@ export async function POST(req: Request) {
         // Determine Avatar URL (Priority: Directory > Google/Firebase > Default)
         const finalAvatarUrl = directoryMatch?.user_image || (req.headers.get('x-user-photo') || null);
 
-        // 3. Create user in Supabase (public.users)
+        // 3. Create or Update user in Supabase (public.users)
+        // Use upsert to handle cases where the user might already exist (e.g. race condition or previous cleanup failure)
         const { data: newUser, error } = await supabaseAdmin
             .from('users')
-            .insert({
+            .upsert({
                 firebase_uid: firebaseUid,
                 email,
                 first_name: finalFirstName,
@@ -82,7 +83,7 @@ export async function POST(req: Request) {
                 status: 'active',
                 profile_completed: !!(finalFirstName && finalLastName),
                 employee_id: directoryId // Store the link if it exists
-            })
+            }, { onConflict: 'firebase_uid' })
             .select()
             .single();
 
