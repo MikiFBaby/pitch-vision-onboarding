@@ -37,7 +37,25 @@ export async function POST(req: Request) {
 
             if (directoryMatch) {
                 console.log(`[Login] Found Directory Match for ${email}`);
-                finalRole = directoryMatch.role ? directoryMatch.role.toLowerCase() : 'agent';
+                console.log(`[Login] Found Directory Match for ${email}`);
+
+                const directoryRole = directoryMatch.role ? directoryMatch.role.toLowerCase() : '';
+
+                // Map Directory Role to App Role
+                if (['owner', 'president', 'cto', 'head of operations'].includes(directoryRole)) {
+                    finalRole = 'executive';
+                } else if (['head of hr', 'hr assistant', 'attendance assistant'].includes(directoryRole)) {
+                    finalRole = 'hr';
+                } else if (['head of qa', 'qa'].includes(directoryRole)) {
+                    finalRole = 'qa';
+                } else if (['manager - coach', 'team leader'].includes(directoryRole)) {
+                    finalRole = 'manager';
+                } else if (['payroll specialist'].includes(directoryRole)) {
+                    finalRole = 'payroll';
+                } else {
+                    finalRole = 'agent';
+                }
+
                 finalFirstName = directoryMatch.first_name || '';
                 finalLastName = directoryMatch.last_name || '';
                 directoryId = directoryMatch.id;
