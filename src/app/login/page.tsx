@@ -49,10 +49,11 @@ function LoginForm() {
     const router = useRouter();
     const searchParams = useSearchParams();
     const roleId = searchParams.get("role") || "";
+    const mode = searchParams.get("mode");
 
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
-    const [isSignup, setIsSignup] = useState(false);
+    const [isSignup, setIsSignup] = useState(mode === "signup");
 
     const content = ROLE_CONTENT[roleId] || DEFAULT_CONTENT;
 
