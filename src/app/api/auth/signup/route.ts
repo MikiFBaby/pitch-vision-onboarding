@@ -24,7 +24,7 @@ export async function POST(req: Request) {
         const { data: directoryMatch, error: dirError } = await supabaseAdmin
             .from('employee_directory')
             .select('*')
-            .eq('email_address', email)
+            .eq('email', email)
             .maybeSingle(); // Use maybeSingle to avoid 406 on no match
 
         let finalRole = role || 'agent';
