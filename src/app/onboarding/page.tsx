@@ -56,6 +56,7 @@ export default function OnboardingPage() {
     const [formData, setFormData] = useState({
         firstName: '',
         lastName: '',
+        nickname: '',
         bio: '',
         interests: [] as string[],
         avatarUrl: AVATAR_OPTIONS[0].url,
@@ -64,22 +65,27 @@ export default function OnboardingPage() {
 
     const fileInputRef = React.useRef<HTMLInputElement>(null);
 
+    // Initial Data Sync - Logic improved to handle race conditions
     useEffect(() => {
-        if (!loading && !user) {
-            router.push('/login');
+        // If we have a user but no profile yet, force a refresh
+        if (user && !profile && !loading) {
+            refreshProfile();
         }
 
         if (profile) {
-            setFormData({
-                firstName: profile.first_name || '',
-                lastName: profile.last_name || '',
-                bio: profile.bio || '',
-                interests: profile.interests || [],
-                avatarUrl: profile.avatar_url || AVATAR_OPTIONS[0].url,
-                role: profile.role || AVATAR_OPTIONS[0].role
-            });
+            // Only update if we haven't typed anything yet or if it's the initial load
+            setFormData(prev => ({
+                ...prev,
+                firstName: prev.firstName || profile.first_name || '',
+                lastName: prev.lastName || profile.last_name || '',
+                nickname: prev.nickname || profile.nickname || '',
+                bio: prev.bio || profile.bio || '',
+                interests: (prev.interests.length > 0 ? prev.interests : profile.interests) || [],
+                avatarUrl: prev.avatarUrl === AVATAR_OPTIONS[0].url ? (profile.avatar_url || AVATAR_OPTIONS[0].url) : prev.avatarUrl,
+                role: prev.role === AVATAR_OPTIONS[0].role ? (profile.role || AVATAR_OPTIONS[0].role) : prev.role
+            }));
         }
-    }, [user, profile, loading, router]);
+    }, [user, profile, loading, refreshProfile]);
 
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
@@ -135,7 +141,7 @@ export default function OnboardingPage() {
 
             // SYNC TO FIREBASE AUTH (Client Side)
             try {
-                // Dynamic import to avoid SSR issues if any, though regular import is fine in 'use client'
+                // Dynamic import to avoid SSR issues
                 const { updateProfile } = await import('firebase/auth');
                 if (user) {
                     await updateProfile(user, {
@@ -148,9 +154,9 @@ export default function OnboardingPage() {
                 console.error('Firebase Sync Error:', fbError);
             }
 
-            // Success redirect - use the actual role from the saved data
-            const targetRole = data.user?.role || formData.role || 'agent';
-            router.push(`/${targetRole}`);
+            // Redirect to Congratulations Page
+            router.push('/onboarding/complete');
+
         } catch (err: any) {
             setError(err.message);
             setIsSubmitting(false);
@@ -233,32 +239,49 @@ export default function OnboardingPage() {
                                 <div className="space-y-6">
                                     <div className="grid grid-cols-2 gap-4">
                                         <div className="space-y-2">
-                                            <Label className="text-[10px] font-bold text-white/40 uppercase tracking-widest">First Name</Label>
-                                            <Input
-                                                value={formData.firstName}
-                                                onChange={(e) => setFormData({ ...formData, firstName: e.target.value })}
-                                                placeholder="John"
-                                                className="bg-white/5 border-white/10 focus:border-white/20 h-12 rounded-xl"
-                                            />
+                                            <Label className="text-[10px] font-bold text-white/70 uppercase tracking-widest">First Name</Label>
+                                            <motion.div whileFocus={{ scale: 1.02 }} className="origin-left">
+                                                <Input
+                                                    value={formData.firstName}
+                                                    onChange={(e) => setFormData({ ...formData, firstName: e.target.value })}
+                                                    placeholder="John"
+                                                    className="bg-white/5 border-white/10 focus:border-emerald-500/50 focus:bg-white/10 h-12 rounded-xl transition-all"
+                                                />
+                                            </motion.div>
                                         </div>
                                         <div className="space-y-2">
-                                            <Label className="text-[10px] font-bold text-white/40 uppercase tracking-widest">Last Name</Label>
-                                            <Input
-                                                value={formData.lastName}
-                                                onChange={(e) => setFormData({ ...formData, lastName: e.target.value })}
-                                                placeholder="Doe"
-                                                className="bg-white/5 border-white/10 focus:border-white/20 h-12 rounded-xl"
-                                            />
+                                            <Label className="text-[10px] font-bold text-white/70 uppercase tracking-widest">Last Name</Label>
+                                            <motion.div whileFocus={{ scale: 1.02 }} className="origin-left">
+                                                <Input
+                                                    value={formData.lastName}
+                                                    onChange={(e) => setFormData({ ...formData, lastName: e.target.value })}
+                                                    placeholder="Doe"
+                                                    className="bg-white/5 border-white/10 focus:border-emerald-500/50 focus:bg-white/10 h-12 rounded-xl transition-all"
+                                                />
+                                            </motion.div>
                                         </div>
                                     </div>
+
                                     <div className="space-y-2">
-                                        <Label className="text-[10px] font-bold text-white/40 uppercase tracking-widest">Work Email</Label>
-                                        <div className="relative">
-                                            <AtSign className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-white/20" />
+                                        <Label className="text-[10px] font-bold text-white/70 uppercase tracking-widest">Nickname (Optional)</Label>
+                                        <motion.div whileFocus={{ scale: 1.02 }} className="origin-left">
+                                            <Input
+                                                value={formData.nickname}
+                                                onChange={(e) => setFormData({ ...formData, nickname: e.target.value })}
+                                                placeholder="e.g. JB, Maverick"
+                                                className="bg-white/5 border-white/10 focus:border-emerald-500/50 focus:bg-white/10 h-12 rounded-xl transition-all"
+                                            />
+                                        </motion.div>
+                                    </div>
+
+                                    <div className="space-y-2">
+                                        <Label className="text-[10px] font-bold text-white/70 uppercase tracking-widest">Work Email</Label>
+                                        <div className="relative opacity-60">
+                                            <AtSign className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-white/40" />
                                             <Input
                                                 value={user.email || ''}
                                                 disabled
-                                                className="bg-white/5 border-white/10 h-12 rounded-xl pl-12 text-white/40"
+                                                className="bg-white/5 border-white/10 h-12 rounded-xl pl-12 text-white/60"
                                             />
                                         </div>
                                     </div>
@@ -350,15 +373,15 @@ export default function OnboardingPage() {
                                     className="space-y-6"
                                 >
                                     <div className="space-y-2">
-                                        <Label className="text-[10px] font-bold text-white/60 uppercase tracking-widest">Professional Bio</Label>
+                                        <Label className="text-[10px] font-bold text-white/70 uppercase tracking-widest">Professional Bio</Label>
                                         <motion.textarea
                                             whileFocus={{ scale: 1.01 }}
                                             value={formData.bio}
                                             onChange={(e) => setFormData({ ...formData, bio: e.target.value })}
                                             placeholder="Tell us about yourself and your role..."
-                                            className="w-full bg-white/5 border border-white/10 focus:border-white/30 focus:bg-white/10 h-40 rounded-xl p-4 text-sm text-white placeholder:text-white/40 outline-none resize-none transition-all"
+                                            className="w-full bg-white/5 border-white/10 focus:border-emerald-500/50 focus:bg-white/10 h-40 rounded-xl p-4 text-sm text-white placeholder:text-white/40 outline-none resize-none transition-all"
                                         />
-                                        <p className="text-[10px] text-white/40">Briefly describe your expertise and focus areas.</p>
+                                        <p className="text-[10px] text-white/60">Briefly describe your expertise and focus areas.</p>
                                     </div>
                                 </motion.div>
                             )}
@@ -366,13 +389,13 @@ export default function OnboardingPage() {
                             {currentStage === 3 && (
                                 <div className="space-y-6">
                                     <div className="space-y-2">
-                                        <Label className="text-[10px] font-bold text-white/40 uppercase tracking-widest">Interests & Tags</Label>
+                                        <Label className="text-[10px] font-bold text-white/70 uppercase tracking-widest">Interests & Tags</Label>
                                         <TagSelector
                                             selectedTags={formData.interests}
                                             onChange={(tags) => setFormData({ ...formData, interests: tags })}
                                             suggestions={SUGGESTED_INTERESTS}
                                         />
-                                        <p className="text-[10px] text-white/20 mt-2">These tags help us connect you with relevant community groups and projects.</p>
+                                        <p className="text-[10px] text-white/50 mt-2">These tags help us connect you with relevant community groups and projects.</p>
                                     </div>
                                 </div>
                             )}

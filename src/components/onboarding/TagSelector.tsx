@@ -66,6 +66,7 @@ export function TagSelector({ selectedTags, onChange, suggestions = [] }: TagSel
                         onKeyDown={handleKeyDown}
                         placeholder={selectedTags.length === 0 ? "Add interests (e.g. AI, Strategy, Golf)..." : ""}
                         className="flex-1 bg-transparent border-none outline-none text-sm text-white placeholder-white/20 min-w-[120px]"
+                        onBlur={() => handleAddTag(inputValue)}
                     />
                 </div>
             </div>
