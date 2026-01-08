@@ -88,7 +88,11 @@ export async function POST(req: Request) {
 
         if (error) {
             console.error('Supabase Create User Error:', error);
-            return NextResponse.json({ error: 'Failed to create user profile' }, { status: 500 });
+            return NextResponse.json({
+                error: `Failed to create user profile: ${error.message}`,
+                details: error.details,
+                hint: error.hint
+            }, { status: 500 });
         }
 
         return NextResponse.json({
