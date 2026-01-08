@@ -235,57 +235,56 @@ export default function OnboardingPage() {
                                 <h2 className="text-xl font-medium tracking-wide">{stage.title}</h2>
                             </div>
 
-                            {currentStage === 0 && (
-                                <div className="space-y-6">
-                                    <div className="grid grid-cols-2 gap-4">
-                                        <div className="space-y-2">
-                                            <Label className="text-[10px] font-bold text-white/70 uppercase tracking-widest">First Name</Label>
-                                            <motion.div whileFocus={{ scale: 1.02 }} className="origin-left">
-                                                <Input
-                                                    value={formData.firstName}
-                                                    onChange={(e) => setFormData({ ...formData, firstName: e.target.value })}
-                                                    placeholder="John"
-                                                    className="bg-white/5 border-white/10 focus:border-emerald-500/50 focus:bg-white/10 h-12 rounded-xl transition-all"
-                                                />
-                                            </motion.div>
-                                        </div>
-                                        <div className="space-y-2">
-                                            <Label className="text-[10px] font-bold text-white/70 uppercase tracking-widest">Last Name</Label>
-                                            <motion.div whileFocus={{ scale: 1.02 }} className="origin-left">
-                                                <Input
-                                                    value={formData.lastName}
-                                                    onChange={(e) => setFormData({ ...formData, lastName: e.target.value })}
-                                                    placeholder="Doe"
-                                                    className="bg-white/5 border-white/10 focus:border-emerald-500/50 focus:bg-white/10 h-12 rounded-xl transition-all"
-                                                />
-                                            </motion.div>
-                                        </div>
-                                    </div>
-
-                                    <div className="space-y-2">
-                                        <Label className="text-[10px] font-bold text-white/70 uppercase tracking-widest">Nickname (Optional)</Label>
-                                        <motion.div whileFocus={{ scale: 1.02 }} className="origin-left">
+                            {currentStage === 0 && <div className="space-y-8">
+                                <div className="grid grid-cols-2 gap-6">
+                                    <div className="space-y-3">
+                                        <Label className="text-xs font-bold text-white/90 uppercase tracking-widest pl-1">First Name</Label>
+                                        <motion.div whileFocus={{ scale: 1.02 }} whileHover={{ scale: 1.01 }} className="origin-left">
                                             <Input
-                                                value={formData.nickname}
-                                                onChange={(e) => setFormData({ ...formData, nickname: e.target.value })}
-                                                placeholder="e.g. JB, Maverick"
-                                                className="bg-white/5 border-white/10 focus:border-emerald-500/50 focus:bg-white/10 h-12 rounded-xl transition-all"
+                                                value={formData.firstName}
+                                                onChange={(e) => setFormData({ ...formData, firstName: e.target.value })}
+                                                placeholder="John"
+                                                className="bg-white/10 border-white/20 focus:border-emerald-500/80 focus:bg-white/15 h-14 rounded-xl text-lg text-white placeholder:text-white/30 transition-all shadow-lg"
                                             />
                                         </motion.div>
                                     </div>
-
-                                    <div className="space-y-2">
-                                        <Label className="text-[10px] font-bold text-white/70 uppercase tracking-widest">Work Email</Label>
-                                        <div className="relative opacity-60">
-                                            <AtSign className="absolute left-4 top-1/2 -translate-y-1/2 w-4 h-4 text-white/40" />
+                                    <div className="space-y-3">
+                                        <Label className="text-xs font-bold text-white/90 uppercase tracking-widest pl-1">Last Name</Label>
+                                        <motion.div whileFocus={{ scale: 1.02 }} whileHover={{ scale: 1.01 }} className="origin-left">
                                             <Input
-                                                value={user.email || ''}
-                                                disabled
-                                                className="bg-white/5 border-white/10 h-12 rounded-xl pl-12 text-white/60"
+                                                value={formData.lastName}
+                                                onChange={(e) => setFormData({ ...formData, lastName: e.target.value })}
+                                                placeholder="Doe"
+                                                className="bg-white/10 border-white/20 focus:border-emerald-500/80 focus:bg-white/15 h-14 rounded-xl text-lg text-white placeholder:text-white/30 transition-all shadow-lg"
                                             />
-                                        </div>
+                                        </motion.div>
                                     </div>
                                 </div>
+
+                                <div className="space-y-3">
+                                    <Label className="text-xs font-bold text-white/90 uppercase tracking-widest pl-1">Nickname (Optional)</Label>
+                                    <motion.div whileFocus={{ scale: 1.02 }} whileHover={{ scale: 1.01 }} className="origin-left">
+                                        <Input
+                                            value={formData.nickname}
+                                            onChange={(e) => setFormData({ ...formData, nickname: e.target.value })}
+                                            placeholder="e.g. JB, Maverick"
+                                            className="bg-white/10 border-white/20 focus:border-emerald-500/80 focus:bg-white/15 h-14 rounded-xl text-lg text-white placeholder:text-white/30 transition-all shadow-lg"
+                                        />
+                                    </motion.div>
+                                </div>
+
+                                <div className="space-y-3">
+                                    <Label className="text-xs font-bold text-white/90 uppercase tracking-widest pl-1">Work Email</Label>
+                                    <div className="relative opacity-80 hover:opacity-100 transition-opacity">
+                                        <AtSign className="absolute left-5 top-1/2 -translate-y-1/2 w-5 h-5 text-white/50" />
+                                        <Input
+                                            value={user.email || ''}
+                                            disabled
+                                            className="bg-white/10 border-white/20 h-14 rounded-xl pl-14 text-white/70 text-lg font-medium cursor-not-allowed"
+                                        />
+                                    </div>
+                                </div>
+                            </div>
                             )}
 
                             {currentStage === 1 && (
