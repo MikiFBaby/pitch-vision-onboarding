@@ -1,4 +1,3 @@
-```typescript
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 
@@ -21,6 +20,17 @@ export async function POST(req: Request) {
             avatarUrlSize: avatarUrl?.length
         });
 
+        const updateData: any = {
+            firebase_uid: firebaseUid,
+            profile_completed: true
+        };
+
+        if (email !== undefined) updateData.email = email;
+        if (firstName !== undefined) updateData.first_name = firstName;
+        if (lastName !== undefined) updateData.last_name = lastName;
+        if (nickname !== undefined) updateData.nickname = nickname;
+        if (bio !== undefined) updateData.bio = bio;
+        if (interests !== undefined) updateData.interests = interests;
         if (avatarUrl !== undefined) updateData.avatar_url = avatarUrl;
         if (role !== undefined) updateData.role = role;
 
@@ -33,7 +43,7 @@ export async function POST(req: Request) {
         if (error) {
             console.error('Supabase Profile Update Error:', error);
             return NextResponse.json({
-                error: `Failed to update profile: ${ error.message } `,
+                error: `Failed to update profile: ${error.message} `,
                 details: error.hint || error.details
             }, { status: 500 });
         }
