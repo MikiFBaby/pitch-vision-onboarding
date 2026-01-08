@@ -17,7 +17,7 @@ export default function OnboardingComplete() {
                 <motion.div
                     initial={{ scale: 0.8, opacity: 0 }}
                     animate={{ scale: 1, opacity: 1 }}
-                    transition={{ duration: 0.6, ease: "outBack" }}
+                    transition={{ duration: 0.6, ease: "backOut" }}
                     className="relative w-64 h-64 md:w-80 md:h-80"
                 >
                     <Image
@@ -53,23 +53,29 @@ export default function OnboardingComplete() {
                     </motion.p>
                 </div>
 
-                initial={{ opacity: 0, y: 20 }}
-                animate={{ opacity: 1, y: 0 }}
+                {/* Action Button */}
+                <motion.button
+                    initial={{ y: 20, opacity: 0 }}
+                    animate={{ y: 0, opacity: 1 }}
+                    whileHover={{ scale: 1.05 }}
+                    whileTap={{ scale: 0.95 }}
+                    transition={{ delay: 0.5 }}
+                    onClick={() => router.push('/dashboard')}
+                    className="bg-[#84cc16] hover:bg-[#65a30d] text-black font-bold text-lg px-8 py-4 rounded-full shadow-lg hover:shadow-xl transition-all"
+                >
+                    Hop to it
+                </motion.button>
+            </div>
+
+            {/* Footer / Copyright */}
+            <motion.div
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
                 transition={{ delay: 0.8 }}
-                className="pt-8"
-                >
-                <Button
-                    onClick={() => router.push(`/${role}`)}
-                    className="bg-white text-black hover:bg-white/90 px-8 py-6 rounded-full text-lg font-bold transition-all hover:scale-105 active:scale-95 shadow-xl group"
-                >
-                    Enter Dashboard
-                    <ArrowRight className="w-5 h-5 ml-2 group-hover:translate-x-1 transition-transform" />
-                </Button>
-                <p className="mt-6 text-[10px] uppercase tracking-widest text-white/30">
-                    Stay tuned for more updates
-                </p>
+                className="absolute bottom-6 text-white/60 text-xs font-medium"
+            >
+                © 2026 Pitch Vision. All rights reserved.
             </motion.div>
-        </motion.div>
-        </div >
+        </div>
     );
 }
