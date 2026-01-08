@@ -1,0 +1,10 @@
+{
+    "mcpServers": {
+        "supabase": {
+            "url": "https://mcp.supabase.com/mcp"
+        },
+        "n8n": {
+            "url": "https://sailient.app.n8n.cloud/mcp-server/http"
+        }
+    }
+}
