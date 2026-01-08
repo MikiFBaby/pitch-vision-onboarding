@@ -235,7 +235,7 @@ export default function OnboardingPage() {
                                 <h2 className="text-xl font-medium tracking-wide">{stage.title}</h2>
                             </div>
 
-                            {currentStage === 0 && <div className="space-y-8">
+                            {currentStage === 0 && (<div className="space-y-8">
                                 <div className="grid grid-cols-2 gap-6">
                                     <div className="space-y-3">
                                         <Label className="text-xs font-bold text-white/90 uppercase tracking-widest pl-1">First Name</Label>
