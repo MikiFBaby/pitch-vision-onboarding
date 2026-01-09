@@ -76,7 +76,7 @@ export default function OnboardingComplete() {
                 initial={{ opacity: 0 }}
                 animate={{ opacity: 1 }}
                 transition={{ delay: 0.8 }}
-                className="absolute bottom-6 text-white/40 text-xs font-bold uppercase tracking-widest"
+                className="absolute bottom-8 text-white/90 text-xs md:text-sm font-bold uppercase tracking-[0.2em] drop-shadow-md"
             >
                 The year we turn voice to vision. Get ready.
             </motion.div>
