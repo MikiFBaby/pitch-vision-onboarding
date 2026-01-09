@@ -76,11 +76,11 @@ export default function OnboardingPage() {
             // Only update if we haven't typed anything yet or if it's the initial load
             setFormData(prev => ({
                 ...prev,
-                firstName: prev.firstName || profile.first_name || '',
-                lastName: prev.lastName || profile.last_name || '',
-                nickname: prev.nickname || profile.nickname || '',
-                bio: prev.bio || profile.bio || '',
-                interests: (prev.interests.length > 0 ? prev.interests : profile.interests) || [],
+                firstName: profile.first_name || prev.firstName || '',
+                lastName: profile.last_name || prev.lastName || '',
+                nickname: profile.nickname || prev.nickname || '',
+                bio: profile.bio || prev.bio || '',
+                interests: (profile.interests && profile.interests.length > 0) ? profile.interests : prev.interests,
                 avatarUrl: prev.avatarUrl === AVATAR_OPTIONS[0].url ? (profile.avatar_url || AVATAR_OPTIONS[0].url) : prev.avatarUrl,
                 role: prev.role === AVATAR_OPTIONS[0].role ? (profile.role || AVATAR_OPTIONS[0].role) : prev.role
             }));
@@ -191,12 +191,38 @@ export default function OnboardingPage() {
                         <Sparkles className="w-4 h-4 text-blue-400" />
                         <span className="text-[10px] font-bold uppercase tracking-widest text-white/60">Profile Configuration</span>
                     </motion.div>
-                    <h1 className="text-4xl md:text-5xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-b from-white to-white/60">
+                    <motion.h1
+                        initial={{ opacity: 0, y: 20 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: 0.1 }}
+                        className="text-4xl md:text-5xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-b from-white to-white/60"
+                    >
                         Welcome to Pitch Vision
-                    </h1>
-                    <p className="text-white/40 text-sm max-w-md mx-auto">
+                    </motion.h1>
+                    <motion.p
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        transition={{ delay: 0.2 }}
+                        className="text-white/70 text-sm max-w-md mx-auto"
+                    >
                         Let's set up your profile and join the community of visionaries.
-                    </p>
+                    </motion.p>
+
+                    {/* Display Assigned Role/Portal */}
+                    {profile?.role && (
+                        <motion.div
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ delay: 0.3 }}
+                            className="mt-6 inline-flex flex-col items-center gap-1"
+                        >
+                            <span className="text-[10px] uppercase tracking-widest text-white/40 font-bold">Assigned Role</span>
+                            <div className="px-4 py-2 bg-white/5 border border-white/10 rounded-xl flex items-center gap-2">
+                                <Target className="w-4 h-4 text-emerald-400" />
+                                <span className="text-sm font-medium text-white capitalize">{profile.role} Portal</span>
+                            </div>
+                        </motion.div>
+                    )}
                 </div>
 
                 {/* Progress Bar */}

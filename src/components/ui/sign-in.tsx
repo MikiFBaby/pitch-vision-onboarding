@@ -76,6 +76,7 @@ export const SignInPage: React.FC<SignInPageProps> = ({
                                 <label className="text-sm font-medium text-white/40 mb-2 block">Email Address</label>
                                 <GlassInputWrapper>
                                     <input
+                                        key={defaultEmailValue}
                                         name="email"
                                         id="email"
                                         type="email"

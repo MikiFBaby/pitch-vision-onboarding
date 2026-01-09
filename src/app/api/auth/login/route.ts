@@ -27,7 +27,7 @@ export async function POST(req: Request) {
             const { data: directoryMatch } = await supabaseAdmin
                 .from('employee_directory')
                 .select('*')
-                .eq('email_address', email)
+                .eq('email', email)
                 .maybeSingle();
 
             let finalRole = 'agent';
