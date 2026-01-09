@@ -3,7 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '@/context/AuthContext';
 import { useRouter } from 'next/navigation';
-import Image from 'next/image';
+
 import { TagSelector } from '@/components/onboarding/TagSelector';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
