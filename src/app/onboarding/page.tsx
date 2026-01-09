@@ -195,9 +195,10 @@ export default function OnboardingPage() {
                         initial={{ opacity: 0, y: 20 }}
                         animate={{ opacity: 1, y: 0 }}
                         transition={{ delay: 0.1 }}
-                        className="text-4xl md:text-5xl font-bold tracking-tight bg-clip-text text-transparent bg-gradient-to-b from-white to-white/60"
+                        className="text-4xl md:text-5xl font-bold tracking-tight"
                     >
-                        Welcome to Pitch Vision
+                        <span className="bg-clip-text text-transparent bg-gradient-to-r from-white via-white to-white/60">Welcome to </span>
+                        <span className="bg-clip-text text-transparent bg-gradient-to-r from-emerald-400 via-teal-100 to-emerald-400 animate-shimmer">Pitch Vision</span>
                     </motion.h1>
                     <motion.p
                         initial={{ opacity: 0 }}

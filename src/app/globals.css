@@ -117,6 +117,21 @@ body {
   animation: text-scan 3s linear infinite;
 }
 
+@keyframes shimmer {
+  0% {
+    background-position: 200% center;
+  }
+
+  100% {
+    background-position: -200% center;
+  }
+}
+
+.animate-shimmer {
+  background-size: 200% auto;
+  animation: shimmer 8s linear infinite;
+}
+
 @keyframes fadeSlideIn {
   to {
     opacity: 1;

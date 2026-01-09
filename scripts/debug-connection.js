@@ -38,6 +38,18 @@ async function debug() {
             console.log(`[${i}] ID: ${u.id} | UID: ${u.firebase_uid} | Compl: ${u.profile_completed} | Bio: ${u.bio ? u.bio.substring(0, 10) : 'null'} | Nick: ${u.nickname} | Created: ${u.created_at}`);
         });
     }
+
+    const { data: directory, error: dirError } = await supabase
+        .from('employee_directory')
+        .select('*')
+        .eq('email', 'miki@pitchperfectsolutions.net');
+
+    if (dirError) {
+        console.error('Dir Error:', dirError);
+    } else {
+        console.log('Directory entries:', directory.length);
+        directory.forEach(d => console.log(`Dir ID: ${d.id} | Email: ${d.email}`));
+    }
 }
 
 debug();

@@ -27,7 +27,7 @@ export async function POST(req: Request) {
             const { data: directoryMatch } = await supabaseAdmin
                 .from('employee_directory')
                 .select('*')
-                .eq('email', email)
+                .ilike('email', email) // Case-insensitive match
                 .maybeSingle();
 
             let finalRole = 'agent';
@@ -42,7 +42,10 @@ export async function POST(req: Request) {
                 const directoryRole = directoryMatch.role ? directoryMatch.role.toLowerCase() : '';
 
                 // Map Directory Role to App Role
-                if (['owner', 'president', 'cto', 'head of operations'].includes(directoryRole)) {
+                const normalizedRole = directoryRole.trim().toLowerCase();
+                console.log(`[Login] Mapping Directory Role: "${directoryRole}" -> Normalized: "${normalizedRole}"`);
+
+                if (['owner', 'president', 'cto', 'head of operations', 'founder', 'ceo'].includes(normalizedRole)) {
                     finalRole = 'executive';
                 } else if (['head of hr', 'hr assistant', 'attendance assistant'].includes(directoryRole)) {
                     finalRole = 'hr';
