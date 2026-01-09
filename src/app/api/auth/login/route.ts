@@ -23,6 +23,33 @@ export async function POST(req: Request) {
 
         // 2. Create if missing
         if (!user) {
+            // 1.5 Check if user exists by email (to preventing duplicates on re-registration)
+            const { data: existingUser } = await supabaseAdmin
+                .from('users')
+                .select('*')
+                .eq('email', email)
+                .maybeSingle();
+
+            if (existingUser) {
+                console.log(`[Login] Found existing user by email ${email}. Linking new UID.`);
+                // Update the existing user with the new Firebase UID
+                const { data: updatedUser, error: linkError } = await supabaseAdmin
+                    .from('users')
+                    .update({
+                        firebase_uid: firebaseUid,
+                        last_login: new Date().toISOString()
+                    })
+                    .eq('id', existingUser.id)
+                    .select()
+                    .single();
+
+                if (!linkError) {
+                    user = updatedUser;
+                }
+            }
+        }
+
+        if (!user) {
             // Check for "Directory Match" (Smart Enrollment)
             const { data: directoryMatch } = await supabaseAdmin
                 .from('employee_directory')

@@ -3,6 +3,7 @@ import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useAuth } from '@/context/AuthContext';
 import { useRouter } from 'next/navigation';
+import Image from 'next/image';
 import { TagSelector } from '@/components/onboarding/TagSelector';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -175,9 +176,19 @@ export default function OnboardingPage() {
     return (
         <div className="min-h-screen bg-black text-white selection:bg-white/20 overflow-hidden relative">
             {/* Background elements */}
-            <div className="absolute top-0 left-0 w-full h-full pointer-events-none">
-                <div className="absolute top-[-10%] left-[-10%] w-[40%] h-[40%] bg-blue-500/10 blur-[120px] rounded-full animate-pulse" />
-                <div className="absolute bottom-[-10%] right-[-10%] w-[40%] h-[40%] bg-purple-500/10 blur-[120px] rounded-full animate-pulse" />
+            {/* Background elements */}
+            <div className="absolute inset-0 z-0">
+                <Image
+                    src="/hero-background.png"
+                    alt="Background"
+                    fill
+                    className="object-cover opacity-40 mix-blend-overlay"
+                    priority
+                />
+                <div className="absolute inset-0 bg-gradient-to-b from-black/95 via-black/80 to-black/95" />
+                {/* Additional ambient glows for depth */}
+                <div className="absolute top-0 left-0 w-[500px] h-[500px] bg-emerald-500/10 blur-[120px] rounded-full mix-blend-screen" />
+                <div className="absolute bottom-0 right-0 w-[500px] h-[500px] bg-blue-500/10 blur-[120px] rounded-full mix-blend-screen" />
             </div>
 
             <div className="max-w-4xl mx-auto px-6 pt-20 pb-12 relative z-10 min-h-screen flex flex-col">
