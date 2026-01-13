@@ -216,12 +216,11 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
           console.log("Webhook Response:", result);
 
           // Force completion if webhook returns success, even if realtime hasn't fired yet
-          if (!done) {
-            done = true;
-            setProgress(100); // Snappy finish
-            cleanup();
-            resolve({ success: true, queued: false });
-          }
+          // UPDATE: User requested to wait for Supabase Realtime Event to confirm analysis completion.
+          // We do NOT short-circuit here anymore. We just confirm upload is done.
+          console.log("Upload successful. Waiting for Realtime confirmation...");
+          // We can optionally speed up the progress bar to 90% or keep it waiting
+          // But we DO NOT set done=true.
         } else {
           console.error("Webhook returned error status:", response.status, response.statusText);
           fail(`Analysis failed with status: ${response.status} ${response.statusText}`);
