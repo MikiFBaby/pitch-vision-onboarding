@@ -17,6 +17,11 @@ export default function ProtectedLayout({
     const isQaLocked = process.env.NEXT_PUBLIC_QA_ONLY === 'true';
 
     useEffect(() => {
+        // 1. Temporary Bypass: Allow public access to QA portal for internal testing
+        if (pathname.startsWith('/qa')) {
+            return;
+        }
+
         // If in QA Lockdown mode and on the QA path, allow access without user
         if (isQaLocked && pathname.startsWith('/qa')) {
             return;
@@ -54,7 +59,9 @@ export default function ProtectedLayout({
     }, [user, profile, loading, router, pathname]);
 
     if (loading) return <div className="flex h-screen items-center justify-center">Loading...</div>;
-    if (!user && !isQaLocked) return null;
+
+    // Allow rendering if user exists OR if it's the QA portal (bypassed)
+    if (!user && !isQaLocked && !pathname.startsWith('/qa')) return null;
 
     return (
         <QAProvider>
