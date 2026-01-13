@@ -1,6 +1,6 @@
 "use client";
 
-// Version: 1.1.0 - Final QA Release (Logo, Slow Progress, Webhook Fix)
+// Version: 1.1.1 - Strict Realtime Completion (Ignores Early Webhook)
 import React, { useState, useEffect, useRef } from 'react';
 import { Upload, X, CheckCircle2, Zap, AlertTriangle, FileAudio, Aperture, User, RotateCcw, Files, Loader2, StopCircle } from 'lucide-react';
 import { CallData } from '@/types/qa-types';
@@ -213,19 +213,12 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
         });
 
         if (response.ok) {
-          console.log("Batch uploaded and processed successfully by N8N");
+          console.log("Batch uploaded and processed successfully by N8N. Waiting for Realtime update...");
           const result = await response.json().catch(() => ({})); // Try to parse JSON if returned
           console.log("Webhook Response:", result);
 
-          // Force completion if webhook returns success, satisfying "updates... once we receive confirmation from the webhook response"
-          console.log("Upload successful. Webhook confirmed completion.");
-
-          // Speed up to 100%
-          setProgress(100);
-          setProcessedCount(totalFiles);
-          done = true;
-          cleanup();
-          resolve({ success: true, queued: false });
+          // DO NOT force completion here. 
+          // If N8n responds early, we must wait for the actual DB insert (handled by checkCompletion).
         } else {
           console.error("Webhook returned error status:", response.status, response.statusText);
           fail(`Analysis failed with status: ${response.status} ${response.statusText}`);
