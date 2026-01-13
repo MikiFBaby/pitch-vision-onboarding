@@ -1,6 +1,6 @@
 "use client";
 
-// Version: 1.1.2 - Polling Fallback (Fixes Realtime Drops)
+// Version: 1.1.3 - Concurrent UI (All Processors Active)
 import React, { useState, useEffect, useRef } from 'react';
 import { Upload, X, CheckCircle2, Zap, AlertTriangle, FileAudio, Aperture, User, RotateCcw, Files, Loader2, StopCircle } from 'lucide-react';
 import { CallData } from '@/types/qa-types';
@@ -425,17 +425,17 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
               <div className="max-w-xs mx-auto space-y-2 mb-8 bg-black/20 p-4 rounded-xl border border-white/5 max-h-40 overflow-y-auto">
                 {files.map((file, idx) => {
                   const isDone = idx < processedCount;
-                  const isProcessing = idx === processedCount;
-                  const isPending = idx > processedCount;
+                  // In concurrent mode, everything not done is processing
+                  const isProcessing = !isDone;
 
                   return (
                     <div key={idx} className="flex flex-col gap-1">
                       <div className="flex items-center gap-3 text-sm">
                         <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 
-                                    ${isDone ? 'bg-emerald-500 text-white' : isProcessing ? 'bg-purple-500 text-white' : 'bg-white/10 text-slate-500'}`}>
-                          {isDone ? <CheckCircle2 size={12} /> : isProcessing ? <Loader2 size={12} className="animate-spin" /> : <div className="w-2 h-2 bg-slate-500 rounded-full" />}
+                                    ${isDone ? 'bg-emerald-500 text-white' : 'bg-purple-500 text-white'}`}>
+                          {isDone ? <CheckCircle2 size={12} /> : <Loader2 size={12} className="animate-spin" />}
                         </div>
-                        <span className={`truncate flex-1 text-left ${isDone ? 'text-emerald-300 opacity-70' : isProcessing ? 'text-white font-bold' : 'text-slate-500'}`}>
+                        <span className={`truncate flex-1 text-left ${isDone ? 'text-emerald-300 opacity-70' : 'text-white font-bold'}`}>
                           {file.name}
                         </span>
                         {isProcessing && <span className="text-[10px] text-purple-300 font-mono">Analyzing...</span>}
