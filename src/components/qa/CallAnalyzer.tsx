@@ -1,6 +1,6 @@
 "use client";
 
-// Version: 1.1.1 - Strict Realtime Completion (Ignores Early Webhook)
+// Version: 1.1.2 - Polling Fallback (Fixes Realtime Drops)
 import React, { useState, useEffect, useRef } from 'react';
 import { Upload, X, CheckCircle2, Zap, AlertTriangle, FileAudio, Aperture, User, RotateCcw, Files, Loader2, StopCircle } from 'lucide-react';
 import { CallData } from '@/types/qa-types';
@@ -121,6 +121,8 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
     return new Promise(async (resolve, reject) => {
       let done = false;
       let completed = 0;
+      let pollingTimer: ReturnType<typeof setInterval>;
+      const startTime = new Date().toISOString();
       let subscription: ReturnType<typeof supabase.channel>;
       let timeoutTimer: ReturnType<typeof setTimeout>;
 
@@ -128,6 +130,7 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
       const cleanup = () => {
         if (subscription) supabase.removeChannel(subscription);
         clearTimeout(timeoutTimer);
+        if (pollingTimer) clearInterval(pollingTimer);
       };
 
       // Support Cancel
@@ -139,15 +142,22 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
         }
       });
 
-      // Success Handler for Realtime
+      // Success Handler for Realtime & Polling
       const checkCompletion = (newRecord?: any) => {
         if (done) return;
 
-        if (newRecord) {
+        // Count completion - For simplicity in batch, if we find enough new records, we are done
+        // Polling will return the Total count of new records
+        if (!newRecord) {
+          // Called from Polling (count check)
+          completed = totalFiles; // Assume if we found enough rows, we are done
+        } else {
+          // Called from Realtime
           console.log("🎉 Realtime Insert Detected:", newRecord.id);
           completed++;
-          setProcessedCount(completed);
         }
+
+        setProcessedCount(completed);
 
         if (completed >= totalFiles) {
           done = true;
@@ -185,7 +195,34 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
           }
         });
 
-      // 2. Set Timeout
+      // 2. Start Polling Fallback (Every 3s)
+      pollingTimer = setInterval(async () => {
+        if (done) return;
+        try {
+          // Count rows created AFTER we started this upload
+          const { count, error } = await supabase
+            .from('Pitch Perfect')
+            .select('*', { count: 'exact', head: true })
+            .gt('created_at', startTime);
+
+          if (error) {
+            console.error("Polling error:", error);
+            return;
+          }
+
+          console.log(`Polling Check: Found ${count} new rows since ${startTime}`);
+
+          if (count !== null && count >= totalFiles) {
+            console.log("✅ Polling confirmed completion!");
+            // Pass nothing to indicate "Bulk Success" from polling
+            checkCompletion();
+          }
+        } catch (e) {
+          console.error("Polling Exception:", e);
+        }
+      }, 5000); // Check every 5 seconds
+
+      // 3. Set Timeout
       timeoutTimer = setTimeout(() => {
         if (completed > 0) {
           // If we finished some but not all, consider it partial success?
@@ -198,7 +235,7 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
         }
       }, MAX_WAIT);
 
-      // 3. Upload Files
+      // 4. Upload Files
       const formData = new FormData();
       filesToUpload.forEach(f => formData.append('file', f));
 
@@ -218,7 +255,7 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
           console.log("Webhook Response:", result);
 
           // DO NOT force completion here. 
-          // If N8n responds early, we must wait for the actual DB insert (handled by checkCompletion).
+          // If N8n responds early, we must wait for the actual DB insert (handled by checkCompletion or Polling).
         } else {
           console.error("Webhook returned error status:", response.status, response.statusText);
           fail(`Analysis failed with status: ${response.status} ${response.statusText}`);
