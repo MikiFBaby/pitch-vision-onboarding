@@ -76,7 +76,52 @@ function transformRow(row: DatabaseCallRow): CallData {
         callTime: row.call_time || "",
         status: row.call_status || "",
         // Prefer integer column, fallback to parsing text column
-        complianceScore: parseScore(row.compliance_score ?? row.call_score),
+        complianceScore: (() => {
+            const dbScore = parseScore(row.compliance_score ?? row.call_score);
+            if (dbScore > 0) return dbScore;
+
+            // Fallback: Calculate from checklist if DB score is 0/missing
+            const parsedChecklist = parseJsonField(row.checklist, []) as any[];
+            if (!parsedChecklist || parsedChecklist.length === 0) return 0;
+
+            const SCORING_WEIGHTS: { [key: string]: number } = {
+                'recorded line disclosure': 20,
+                'company identification': 15,
+                'geographic verification': 15,
+                'eligibility verification': 20,
+                'verbal consent': 15,
+                'handoff execution': 10,
+                'benefit mention': 5,
+            };
+
+            const getItemWeight = (name: string): number => {
+                const lowerName = (name || '').toLowerCase();
+                for (const [key, weight] of Object.entries(SCORING_WEIGHTS)) {
+                    if (lowerName.includes(key) || key.includes(lowerName.split(' ')[0])) {
+                        return weight;
+                    }
+                }
+                return 10; // Default weight
+            };
+
+            let earned = 0;
+            let possible = 0;
+
+            parsedChecklist.forEach(item => {
+                const name = item.name || item.requirement || 'Item';
+                const status = (item.status || '').toLowerCase();
+                if (status === 'n/a') return;
+
+                const weight = getItemWeight(name);
+                possible += weight;
+
+                if (['met', 'pass', 'yes', 'true'].includes(status)) {
+                    earned += weight;
+                }
+            });
+
+            return possible > 0 ? Math.round((earned / possible) * 100) : 0;
+        })(),
         riskLevel: row.risk_level || "Low",
 
         checklist: parseJsonField(row.checklist, []),
