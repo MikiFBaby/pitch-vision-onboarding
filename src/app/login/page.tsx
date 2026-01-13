@@ -72,9 +72,10 @@ function LoginForm() {
             throw new Error(data.error || 'Login failed');
         }
 
-        if (roleId && data.user.role !== roleId) {
-            throw new Error(`This account is registered as ${data.user.role}, not ${roleId}`);
-        }
+        // Bypass role check for demo purposes
+        // if (roleId && data.user.role !== roleId) {
+        //    throw new Error(`This account is registered as ${data.user.role}, not ${roleId}`);
+        // }
 
         if (data.user.status !== 'active') {
             throw new Error('Your account is not active. Contact your administrator.');
@@ -138,7 +139,12 @@ function LoginForm() {
                     } else {
                         const data = await validateUserWithBackend(user.uid, user.email || '');
                         setError(null);
-                        router.push(data.redirectTo);
+                        // Redirect to the requested role if present, otherwise use the default redirect
+                        if (roleId) {
+                            router.push(`/${roleId}`);
+                        } else {
+                            router.push(data.redirectTo);
+                        }
                     }
                 } catch (err: any) {
                     setError(err.message);

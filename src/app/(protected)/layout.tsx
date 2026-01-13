@@ -13,7 +13,15 @@ export default function ProtectedLayout({
     const router = useRouter();
     const pathname = usePathname();
 
+    // Check for QA Lockdown mode
+    const isQaLocked = process.env.NEXT_PUBLIC_QA_ONLY === 'true';
+
     useEffect(() => {
+        // If in QA Lockdown mode and on the QA path, allow access without user
+        if (isQaLocked && pathname.startsWith('/qa')) {
+            return;
+        }
+
         if (!loading && !user) {
             router.push("/login");
             return;
@@ -46,7 +54,7 @@ export default function ProtectedLayout({
     }, [user, profile, loading, router, pathname]);
 
     if (loading) return <div className="flex h-screen items-center justify-center">Loading...</div>;
-    if (!user) return null;
+    if (!user && !isQaLocked) return null;
 
     return (
         <QAProvider>

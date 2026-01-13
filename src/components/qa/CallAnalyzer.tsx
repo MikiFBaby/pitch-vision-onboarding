@@ -1,7 +1,7 @@
 "use client";
 
 import React, { useState, useEffect, useRef } from 'react';
-import { Upload, X, CheckCircle2, Zap, AlertTriangle, FileAudio, Aperture, User, RotateCcw, Files, ChevronDown, ChevronUp } from 'lucide-react';
+import { Upload, X, CheckCircle2, Zap, AlertTriangle, FileAudio, Aperture, User, RotateCcw, Files, Loader2, StopCircle } from 'lucide-react';
 import { CallData } from '@/types/qa-types';
 import { supabase } from '@/lib/supabase-client';
 
@@ -43,22 +43,23 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
   const [status, setStatus] = useState<'idle' | 'processing' | 'success' | 'queued' | 'error' | 'batch-complete'>('idle');
   const [error, setError] = useState<string | null>(null);
   const [isCorsError, setIsCorsError] = useState(false);
+
+  // Progress tracking
+  const [processedCount, setProcessedCount] = useState(0);
   const [progress, setProgress] = useState(0);
+  const [estimatedSeconds, setEstimatedSeconds] = useState(0);
   const [statementIndex, setStatementIndex] = useState(0);
 
-  // Batch processing state
-  const [currentFileIndex, setCurrentFileIndex] = useState(0);
-  const [batchResults, setBatchResults] = useState<BatchResult[]>([]);
-  const [showFailedDetails, setShowFailedDetails] = useState(false);
-
-  const progressInterval = useRef<ReturnType<typeof setInterval> | null>(null);
   const statementInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+  const progressInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+  const abortController = useRef<AbortController | null>(null);
 
+  // Statement Rotation
   useEffect(() => {
     if (status === 'processing') {
       statementInterval.current = setInterval(() => {
         setStatementIndex((prev) => (prev + 1) % LOADING_STATEMENTS.length);
-      }, 8000);
+      }, 4000);
     } else {
       if (statementInterval.current) clearInterval(statementInterval.current);
     }
@@ -67,130 +68,185 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
     };
   }, [status]);
 
-  if (!isOpen) return null;
+  // Dynamic Progress Bar Logic
+  useEffect(() => {
+    if (status === 'processing' && files.length > 0) {
+      // Calculate total size in MB
+      const totalSizeMB = files.reduce((acc, f) => acc + f.size, 0) / (1024 * 1024);
 
-  const startSimulation = () => {
-    setProgress(0);
-    if (progressInterval.current) clearInterval(progressInterval.current);
+      // Estimation Formula: 
+      // Base overhead (connection/handshake): 2s
+      // Upload speed assumption: ~2s per MB (conservative for mobile/avg wifi)
+      // Analysis processing: ~3s per MB
+      const durationMs = 2000 + (totalSizeMB * 5000);
+      setEstimatedSeconds(Math.ceil(durationMs / 1000));
 
-    progressInterval.current = setInterval(() => {
-      setProgress((prev) => {
-        if (prev < 30) return prev + 0.5;
-        if (prev < 60) return prev + 0.1;
-        if (prev < 80) return prev + 0.05;
-        if (prev < 99) return prev + 0.005;
-        return prev;
-      });
-    }, 100);
-  };
+      const updateFrequency = 100; // update every 100ms
+      const incrementPerStep = 90 / (durationMs / updateFrequency); // Target 90% over duration
 
-  const completeSimulation = () => {
-    if (progressInterval.current) clearInterval(progressInterval.current);
-    progressInterval.current = setInterval(() => {
-      setProgress((prev) => {
-        if (prev >= 100) {
-          if (progressInterval.current) clearInterval(progressInterval.current);
-          return 100;
-        }
-        return prev + 5;
-      });
-    }, 20);
-  };
+      if (progressInterval.current) clearInterval(progressInterval.current);
 
-  const analyzeWithWebhook = async (file: File): Promise<{ success: boolean; queued: boolean }> => {
-    console.log("=== UPLOADING BINARY TO N8N ===");
-    console.log("File:", file.name, file.size, "bytes", file.type);
-
-    // Get the current latest record ID BEFORE we upload
-    const { data: beforeData } = await supabase
-      .from('Pitch Perfect')
-      .select('id')
-      .order('created_at', { ascending: false })
-      .limit(1);
-    const initialLatestId = beforeData?.[0]?.id || 0;
-    console.log("Initial latest record ID:", initialLatestId);
-
-    // Send file as FormData
-    const formData = new FormData();
-    formData.append('file', file, file.name);
-
-    try {
-      await fetch(WEBHOOK_URL, {
-        method: 'POST',
-        body: formData,
-        mode: 'no-cors',
-      });
-      console.log("File uploaded to n8n successfully");
-    } catch (e) {
-      console.error("Upload failed:", e);
-      throw new Error("Failed to upload to analysis engine");
+      progressInterval.current = setInterval(() => {
+        setProgress(prev => {
+          const next = prev + incrementPerStep;
+          // Cap at 95% until actual completion
+          return next >= 95 ? 95 : next;
+        });
+      }, updateFrequency);
+    } else {
+      if (progressInterval.current) clearInterval(progressInterval.current);
     }
 
-    // Wait for Supabase to get the new record
-    const MAX_WAIT = 8 * 60 * 1000; // 8 minutes
-    const POLL_INTERVAL = 1000;
+    return () => {
+      if (progressInterval.current) clearInterval(progressInterval.current);
+    };
+  }, [status, files]);
 
-    return new Promise((resolve, reject) => {
+  if (!isOpen) return null;
+
+  const analyzeWithWebhook = async (filesToUpload: File[]): Promise<{ success: boolean; queued: boolean }> => {
+    console.log("=== UPLOADING BATCH TO N8N ===");
+    console.log(`Files (${filesToUpload.length}):`, filesToUpload.map(f => `${f.name} (${f.size}b)`).join(', '));
+
+    // Reset counters
+    setProcessedCount(0);
+    setProgress(0);
+    abortController.current = new AbortController();
+
+    const totalFiles = filesToUpload.length;
+    const MAX_WAIT = 10 * 60 * 1000; // 10 minutes total for batch
+
+    return new Promise(async (resolve, reject) => {
       let done = false;
-      let pollTimer: ReturnType<typeof setInterval>;
-      let timeoutTimer: ReturnType<typeof setTimeout>;
+      let completed = 0;
       let subscription: ReturnType<typeof supabase.channel>;
+      let timeoutTimer: ReturnType<typeof setTimeout>;
 
-      const complete = (method: string, record: any) => {
-        if (done) return;
-        done = true;
-        console.log(`🎉 Detected via ${method}!`, record);
-        clearInterval(pollTimer);
-        clearTimeout(timeoutTimer);
+      // Cleanup helper
+      const cleanup = () => {
         if (subscription) supabase.removeChannel(subscription);
-        resolve({ success: true, queued: false });
+        clearTimeout(timeoutTimer);
       };
 
-      const fail = (error: string) => {
+      // Support Cancel
+      abortController.current?.signal.addEventListener('abort', () => {
+        if (!done) {
+          done = true;
+          cleanup();
+          reject(new Error("Analysis cancelled by user"));
+        }
+      });
+
+      // Success Handler for Realtime
+      const checkCompletion = (newRecord?: any) => {
         if (done) return;
-        done = true;
-        clearInterval(pollTimer);
-        clearTimeout(timeoutTimer);
-        if (subscription) supabase.removeChannel(subscription);
-        reject(new Error(error));
+
+        if (newRecord) {
+          console.log("🎉 Realtime Insert Detected:", newRecord.id);
+          completed++;
+          setProcessedCount(completed);
+        }
+
+        if (completed >= totalFiles) {
+          done = true;
+          cleanup();
+          resolve({ success: true, queued: false });
+        }
       };
 
-      timeoutTimer = setTimeout(() => fail("Analysis timed out"), MAX_WAIT);
+      const fail = (errorStr: string) => {
+        if (done) return;
+        done = true;
+        cleanup();
+        reject(new Error(errorStr));
+      };
 
+      // 1. Start Subscription - Broadened for Debugging
       subscription = supabase
-        .channel('qa-analysis-' + Date.now())
+        .channel('qa-batch-' + Date.now())
         .on('postgres_changes',
-          { event: 'INSERT', schema: 'public', table: 'Pitch Perfect' },
-          (payload) => complete('Realtime', payload.new)
+          { event: 'INSERT', schema: 'public' }, // Listen to everything in public
+          (payload) => {
+            console.log("🔔 Realtime Event Received:", payload);
+            console.log("Payload Table:", payload.table);
+
+            // Check if it's our table (handling potential casing/quoting issues)
+            if (payload.table === 'Pitch Perfect' || payload.table === 'pitch perfect') {
+              checkCompletion(payload.new);
+            }
+          }
         )
         .subscribe((status) => {
-          console.log("Realtime subscription:", status);
+          console.log("Realtime subscription status:", status);
+          if (status === 'SUBSCRIBED') {
+            console.log("✅ Successfully subscribed to public schema changes");
+          }
         });
 
-      pollTimer = setInterval(async () => {
-        if (done) return;
-        try {
-          const { data } = await supabase
-            .from('Pitch Perfect')
-            .select('id')
-            .order('created_at', { ascending: false })
-            .limit(1);
-
-          if (data?.[0]?.id && data[0].id !== initialLatestId) {
-            complete('Polling', data[0]);
-          }
-        } catch (e) {
-          console.warn("Poll error:", e);
+      // 2. Set Timeout
+      timeoutTimer = setTimeout(() => {
+        if (completed > 0) {
+          // If we finished some but not all, consider it partial success?
+          // For now, let's just finish what we have.
+          done = true;
+          cleanup();
+          resolve({ success: true, queued: true }); // Queued/Partial
+        } else {
+          fail("Analysis timed out. No results received within 10 minutes.");
         }
-      }, POLL_INTERVAL);
+      }, MAX_WAIT);
+
+      // 3. Upload Files
+      const formData = new FormData();
+      filesToUpload.forEach(f => formData.append('file', f));
+
+      try {
+        console.log("Sending files to N8N webhook...");
+        const response = await fetch(WEBHOOK_URL, {
+          method: 'POST',
+          body: formData,
+          signal: abortController.current?.signal // Bind abort signal
+          // Removed 'no-cors' to allow reading response status
+          // Note: This requires the N8N webhook to have CORS enabled/configured to accept requests from this origin
+        });
+
+        if (response.ok) {
+          console.log("Batch uploaded and processed successfully by N8N");
+          const result = await response.json().catch(() => ({})); // Try to parse JSON if returned
+          console.log("Webhook Response:", result);
+
+          // Force completion if webhook returns success, even if realtime hasn't fired yet
+          if (!done) {
+            done = true;
+            setProgress(100); // Snappy finish
+            cleanup();
+            resolve({ success: true, queued: false });
+          }
+        } else {
+          console.error("Webhook returned error status:", response.status, response.statusText);
+          fail(`Analysis failed with status: ${response.status} ${response.statusText}`);
+        }
+      } catch (e: any) {
+        if (e.name === 'AbortError') {
+          console.log("Upload cancelled");
+          // already handled by abort listener
+        } else {
+          console.error("Upload/Network failed:", e);
+          fail("Failed to connect to analysis engine. Please checks your network.");
+        }
+      }
     });
   };
 
-  // Single file processing (for backwards compatibility)
   const processAudio = async () => {
     if (files.length === 0) return;
 
-    // Check all file sizes
+    if (files.length > 5) {
+      setError("Please upload a maximum of 5 files at a time.");
+      setStatus('error');
+      return;
+    }
+
     const oversizedFile = files.find(f => f.size > MAX_FILE_SIZE_MB * 1024 * 1024);
     if (oversizedFile) {
       setError(`"${oversizedFile.name}" exceeds ${MAX_FILE_SIZE_MB}MB limit.`);
@@ -198,73 +254,40 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
       return;
     }
 
-    // Single file mode
-    if (files.length === 1) {
-      setStatus('processing');
-      setError(null);
-      setIsCorsError(false);
-      startSimulation();
-
-      try {
-        const result = await analyzeWithWebhook(files[0]);
-
-        completeSimulation();
-
-        setTimeout(() => {
-          if (onUploadSuccess) onUploadSuccess();
-          setStatus(result.queued ? 'queued' : 'success');
-
-          setTimeout(() => {
-            onClose();
-            resetState();
-          }, 2500);
-        }, 500);
-
-      } catch (err: any) {
-        handleError(err);
-      }
-    } else {
-      // Batch mode
-      await processBatch();
-    }
-  };
-
-  // Batch processing for multiple files
-  const processBatch = async () => {
     setStatus('processing');
     setError(null);
     setIsCorsError(false);
-    setBatchResults([]);
-    setCurrentFileIndex(0);
 
-    const results: BatchResult[] = [];
+    try {
+      await analyzeWithWebhook(files);
 
-    for (let i = 0; i < files.length; i++) {
-      setCurrentFileIndex(i);
-      setProgress(0);
-      startSimulation();
+      // Slight delay for UI to show 100%
+      setTimeout(() => {
+        if (onUploadSuccess) onUploadSuccess();
+        setStatus('success');
 
-      const file = files[i];
-      console.log(`Processing file ${i + 1}/${files.length}: ${file.name}`);
+        setTimeout(() => {
+          onClose();
+          resetState();
+        }, 3000);
+      }, 1000);
 
-      try {
-        await analyzeWithWebhook(file);
-        results.push({ fileName: file.name, success: true });
-        console.log(`✅ File ${i + 1} completed successfully`);
-      } catch (err: any) {
-        console.error(`❌ File ${i + 1} failed:`, err.message);
-        results.push({ fileName: file.name, success: false, error: err.message });
+    } catch (err: any) {
+      if (err.message === "Analysis cancelled by user") {
+        setStatus('idle');
+      } else {
+        handleError(err);
       }
-
-      setBatchResults([...results]);
     }
+  };
 
-    if (progressInterval.current) clearInterval(progressInterval.current);
-
-    // Refresh the data
-    if (onUploadSuccess) onUploadSuccess();
-
-    setStatus('batch-complete');
+  const cancelAnalysis = () => {
+    if (abortController.current) {
+      abortController.current.abort();
+    }
+    setStatus('idle');
+    setProcessedCount(0);
+    setProgress(0);
   };
 
   const handleError = (err: any) => {
@@ -278,7 +301,6 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
 
     setError(message);
     setStatus('error');
-    if (progressInterval.current) clearInterval(progressInterval.current);
   };
 
   const resetState = () => {
@@ -287,8 +309,7 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
     setFiles([]);
     setManualAgentName('');
     setProgress(0);
-    setBatchResults([]);
-    setCurrentFileIndex(0);
+    setProcessedCount(0);
   };
 
   const handleRetry = () => {
@@ -305,9 +326,6 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
     setFiles(prev => prev.filter((_, i) => i !== index));
   };
 
-  const successCount = batchResults.filter(r => r.success).length;
-  const failCount = batchResults.filter(r => !r.success).length;
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
       <div
@@ -320,15 +338,7 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
         <div className="flex justify-between items-center p-6 border-b border-white/5 bg-[#2E1065]/50">
           <div className="flex items-center gap-3">
             <div className="relative w-10 h-10 bg-gradient-to-br from-purple-600 to-indigo-600 rounded-xl shadow-[0_0_20px_rgba(147,51,234,0.4)] flex items-center justify-center overflow-hidden">
-              <svg viewBox="0 0 40 40" className="w-6 h-6">
-                <circle cx="20" cy="20" r="14" fill="none" stroke="rgba(255,255,255,0.3)" strokeWidth="1.5" />
-                <circle cx="20" cy="20" r="9" fill="none" stroke="rgba(255,255,255,0.5)" strokeWidth="1" strokeDasharray="2,2" />
-                <circle cx="20" cy="20" r="4" fill="white" opacity="0.9" />
-                <line x1="20" y1="4" x2="20" y2="10" stroke="rgba(255,255,255,0.4)" strokeWidth="1" />
-                <line x1="20" y1="30" x2="20" y2="36" stroke="rgba(255,255,255,0.4)" strokeWidth="1" />
-                <line x1="4" y1="20" x2="10" y2="20" stroke="rgba(255,255,255,0.4)" strokeWidth="1" />
-                <line x1="30" y1="20" x2="36" y2="20" stroke="rgba(255,255,255,0.4)" strokeWidth="1" />
-              </svg>
+              <Zap size={20} className="text-white" />
             </div>
             <div>
               <h2 className="text-lg font-bold text-white tracking-tight">Pitch Vision AI</h2>
@@ -344,57 +354,80 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
 
         <div className="p-8 max-h-[70vh] overflow-y-auto">
           {status === 'processing' ? (
-            <div className="py-8 text-center relative overflow-hidden min-h-[300px] flex flex-col justify-center">
-              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64 bg-purple-600/20 rounded-full blur-[60px] animate-pulse pointer-events-none" />
+            <div className="py-4 text-center relative overflow-hidden min-h-[300px] flex flex-col justify-center">
 
-              {/* Batch progress indicator */}
-              {files.length > 1 && (
-                <div className="mb-6 bg-white/5 rounded-xl p-4 border border-white/10">
-                  <div className="flex items-center justify-between mb-2">
-                    <span className="text-xs font-bold text-purple-300 uppercase tracking-widest">Batch Progress</span>
-                    <span className="text-sm font-bold text-white">{currentFileIndex + 1} / {files.length}</span>
-                  </div>
-                  <div className="h-2 w-full bg-slate-800 rounded-full overflow-hidden">
-                    <div
-                      className="h-full bg-gradient-to-r from-indigo-500 to-purple-500 transition-all duration-300"
-                      style={{ width: `${((currentFileIndex) / files.length) * 100}%` }}
-                    />
-                  </div>
-                  <p className="text-xs text-slate-400 mt-2 truncate">
-                    Current: {files[currentFileIndex]?.name}
-                  </p>
-                </div>
-              )}
-
-              <div className="relative h-24 w-24 mx-auto mb-8 flex items-center justify-center">
-                <div className="absolute inset-0 border-2 border-purple-500/30 rounded-full animate-[spin_3s_linear_infinite]" />
-                <div className="absolute inset-2 border border-indigo-400/30 rounded-full animate-[spin_4s_linear_infinite_reverse]" />
-                <div className="relative z-10 bg-[#1a0b2e] p-3 rounded-full border border-purple-400/50 shadow-[0_0_30px_rgba(168,85,247,0.4)]">
-                  <Aperture size={32} className="text-white animate-[spin_10s_linear_infinite]" />
-                </div>
+              {/* Cancel Button */}
+              <div className="absolute top-0 right-0 z-20">
+                <button
+                  onClick={cancelAnalysis}
+                  className="flex items-center gap-1 px-3 py-1 bg-white/5 hover:bg-red-500/20 text-slate-400 hover:text-red-300 rounded-full text-xs font-bold transition-all border border-transparent hover:border-red-500/30"
+                >
+                  <StopCircle size={12} /> Cancel
+                </button>
               </div>
 
-              <div className="w-64 mx-auto mb-4">
-                <div className="flex justify-between text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">
-                  <span>File Progress</span>
-                  <span className="text-emerald-400 animate-pulse">Running...</span>
+              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64 bg-purple-600/20 rounded-full blur-[60px] animate-pulse pointer-events-none" />
+
+              {/* Progress Bar & Status */}
+              <div className="mb-8 px-8 w-full mx-auto">
+                <div className="flex justify-between items-end mb-2">
+                  <span className="text-xs font-bold text-white uppercase tracking-wider">
+                    Total Progress
+                  </span>
+                  <span className="text-xs font-mono text-purple-300">
+                    {Math.round(progress)}%
+                  </span>
                 </div>
-                <div className="h-1.5 w-full bg-slate-800 rounded-full overflow-hidden relative">
+
+                <div className="h-2 w-full bg-white/10 rounded-full overflow-hidden mb-2">
                   <div
-                    className="absolute top-0 left-0 h-full bg-gradient-to-r from-indigo-500 via-purple-500 to-emerald-500 transition-all duration-300 ease-out"
+                    className="h-full bg-gradient-to-r from-purple-500 to-indigo-400 rounded-full transition-all duration-300 ease-out"
                     style={{ width: `${progress}%` }}
                   />
                 </div>
+
+                <div className="flex justify-between items-center text-[10px] text-slate-500 font-medium uppercase tracking-widest">
+                  <span>{files.length} Item{files.length !== 1 ? 's' : ''}</span>
+                  <span>EST: ~{estimatedSeconds}s remaining</span>
+                </div>
+              </div>
+
+              {/* Individual File Progress */}
+              <div className="max-w-xs mx-auto space-y-2 mb-8 bg-black/20 p-4 rounded-xl border border-white/5 max-h-40 overflow-y-auto">
+                {files.map((file, idx) => {
+                  const isDone = idx < processedCount;
+                  const isProcessing = idx === processedCount;
+                  const isPending = idx > processedCount;
+
+                  return (
+                    <div key={idx} className="flex flex-col gap-1">
+                      <div className="flex items-center gap-3 text-sm">
+                        <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 
+                                    ${isDone ? 'bg-emerald-500 text-white' : isProcessing ? 'bg-purple-500 text-white' : 'bg-white/10 text-slate-500'}`}>
+                          {isDone ? <CheckCircle2 size={12} /> : isProcessing ? <Loader2 size={12} className="animate-spin" /> : <div className="w-2 h-2 bg-slate-500 rounded-full" />}
+                        </div>
+                        <span className={`truncate flex-1 text-left ${isDone ? 'text-emerald-300 opacity-70' : isProcessing ? 'text-white font-bold' : 'text-slate-500'}`}>
+                          {file.name}
+                        </span>
+                        {isProcessing && <span className="text-[10px] text-purple-300 font-mono">Analyzing...</span>}
+                      </div>
+
+                      {/* Mini progress bar for current item */}
+                      {isProcessing && (
+                        <div className="h-1 w-full bg-white/5 rounded-full overflow-hidden ml-8">
+                          <div className="h-full bg-purple-500/50 animate-[pulse_2s_infinite] w-2/3 rounded-full" />
+                        </div>
+                      )}
+                    </div>
+                  )
+                })}
               </div>
 
               <div className="flex flex-col items-center justify-center gap-2">
-                <p className="text-2xl font-black text-transparent bg-clip-text bg-gradient-to-r from-white to-slate-400 tracking-tight">
-                  {Math.floor(progress)}%
-                </p>
-                <p className="text-[10px] font-bold text-purple-300 uppercase tracking-[0.2em] animate-pulse max-w-[250px] leading-relaxed">
+                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] animate-pulse leading-relaxed">
                   {LOADING_STATEMENTS[statementIndex]}
                 </p>
-                <p className="text-[9px] text-slate-500 mt-4">Do not close this window</p>
+                <p className="text-[9px] text-slate-600 mt-2">Listening for database updates...</p>
               </div>
             </div>
           ) : status === 'success' ? (
@@ -406,70 +439,10 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
                 </div>
               </div>
               <h3 className="text-2xl font-bold text-white mb-2">Analysis Complete</h3>
-              <p className="text-slate-400 text-sm">Synchronizing dashboard...</p>
+              <p className="text-emerald-300/80 text-sm font-medium">Successfully processed {files.length} recordings</p>
             </div>
           ) : status === 'batch-complete' ? (
-            <div className="py-8 text-center animate-in zoom-in-95 min-h-[300px] flex flex-col justify-center">
-              <div className="relative h-20 w-20 mx-auto mb-6">
-                <div className="absolute inset-0 bg-emerald-500/20 rounded-full blur-xl animate-pulse" />
-                <div className="relative h-full w-full bg-emerald-500/10 rounded-full flex items-center justify-center border border-emerald-500/30 shadow-[0_0_30px_rgba(16,185,129,0.2)]">
-                  <Files size={36} className="text-emerald-500" />
-                </div>
-              </div>
-
-              <h3 className="text-2xl font-bold text-white mb-4">Batch Complete</h3>
-
-              <div className="flex justify-center gap-6 mb-6">
-                <div className="text-center">
-                  <div className="text-3xl font-black text-emerald-400">{successCount}</div>
-                  <div className="text-xs text-slate-400 uppercase tracking-widest">Successful</div>
-                </div>
-                {failCount > 0 && (
-                  <div className="text-center">
-                    <div className="text-3xl font-black text-rose-400">{failCount}</div>
-                    <div className="text-xs text-slate-400 uppercase tracking-widest">Failed</div>
-                  </div>
-                )}
-              </div>
-
-              {failCount > 0 && (
-                <div className="mb-6">
-                  <button
-                    onClick={() => setShowFailedDetails(!showFailedDetails)}
-                    className="text-xs text-rose-400 hover:text-rose-300 flex items-center gap-1 mx-auto"
-                  >
-                    {showFailedDetails ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-                    {showFailedDetails ? 'Hide' : 'Show'} failed files
-                  </button>
-
-                  {showFailedDetails && (
-                    <div className="mt-3 bg-rose-500/10 border border-rose-500/20 rounded-xl p-3 max-h-32 overflow-y-auto text-left">
-                      {batchResults.filter(r => !r.success).map((r, i) => (
-                        <div key={i} className="text-xs text-slate-300 mb-1">
-                          <span className="font-bold text-rose-400">✕</span> {r.fileName}
-                          <span className="text-slate-500 ml-2">- {r.error}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              )}
-
-              <div className="flex gap-3 justify-center">
-                <button
-                  onClick={() => { onClose(); resetState(); }}
-                  className="px-6 py-2.5 bg-white text-black font-bold rounded-xl hover:bg-slate-200 transition-colors"
-                >
-                  Done
-                </button>
-                <button
-                  onClick={resetState}
-                  className="px-6 py-2.5 bg-purple-600 text-white font-bold rounded-xl hover:bg-purple-500 transition-colors flex items-center gap-2"
-                >
-                  <Upload size={16} /> Upload More
-                </button>
-              </div>
-            </div>
+            <div />
           ) : status === 'error' ? (
             <div className="py-12 text-center animate-in zoom-in-95 min-h-[300px] flex flex-col justify-center">
               <div className="relative h-24 w-24 mx-auto mb-8">

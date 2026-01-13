@@ -73,31 +73,42 @@ export interface CallData {
 export interface DatabaseCallRow {
     id: number;
     created_at: string;
-    "Call ID": string | null;
-    "Campaign Type": string | null;
-    "Agent Name": string | null;
-    "Phone Number": string | null;
-    "Call Duration": string | null;
-    "Call Date": string | null;
-    "Call Time": string | null;
-    "Call Status": string | null;
-    "Call Score": string | null;
-    "Risk Level": string | null;
-    "Checklist": ChecklistItem[] | string | null;
-    "Violations": string[] | string | null;
-    "Review Flags": string[] | string | null;
-    "Coaching Notes": string[] | string | null;
-    "Summary": string | null;
-    "Key Quotes": KeyQuote[] | string | null;
-    "Call Recording URL": string | null;
-    "Call Analyzed Date/Time": string | null;
-    "Transcript": string | null;
+    call_id: string | null;
+    campaign_type: string | null;
+    agent_name: string | null;
+    phone_number: string | null;
+    call_duration: string | null;
+    call_date: string | null;
+    call_time: string | null;
+    call_status: string | null;
+    call_score: string | null;
+    risk_level: string | null;
+
+    // JSONB Columns
+    checklist: any | null;
+    violations: any | null;
+    review_flags: any | null;
+    coaching_notes: any | null;
+    summary: string | null;
+    key_quotes: any | null;
+    recording_url: string | null;
+    analyzed_at: string | null;
+    transcript: string | null;
+
+    // New JSONB Structure items
+    duration_assessment: any | null;
+    language_assessment: any | null;
+    focus_areas: any | null;
+    call_analysis: any | null; // Raw/Backup
+
     // QA Workflow columns
-    "QA Status": string | null;
-    "QA Reviewed By": string | null;
-    "QA Reviewed At": string | null;
-    "QA Notes": string | null;
-    "Review Priority": string | null;
+    qa_status: string | null;
+    qa_reviewed_by: string | null;
+    qa_reviewed_at: string | null;
+    qa_notes: string | null;
+    review_priority: string | null;
+    buyer: string | null;
+    compliance_score: number | null;
 }
 
 export interface FilterState {

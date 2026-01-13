@@ -30,15 +30,17 @@ import {
 // Transform database row to CallData format
 function transformRow(row: DatabaseCallRow): CallData {
     // Parse compliance score (e.g., "85" or "85%" -> 85)
-    const parseScore = (score: string | null): number => {
+    const parseScore = (score: string | number | null): number => {
+        if (typeof score === 'number') return score;
         if (!score) return 0;
-        const match = score.match(/(\d+)/);
+        const match = String(score).match(/(\d+)/);
         return match ? parseInt(match[1], 10) : 0;
     };
 
-    // Parse JSON fields that might be stored as strings
+    // Parse JSON fields that might be stored as strings OR are already objects
     const parseJsonField = <T,>(field: T | string | null, fallback: T): T => {
         if (!field) return fallback;
+        if (typeof field === 'object') return field as T; // Already JSONB
         if (typeof field === 'string') {
             try {
                 return JSON.parse(field) as T;
@@ -51,11 +53,11 @@ function transformRow(row: DatabaseCallRow): CallData {
 
     // Determine QA status based on Call Status if not explicitly set
     const determineQAStatus = (): 'pending' | 'approved' | 'rejected' | 'escalated' | 'training_flagged' => {
-        if (row["QA Status"]) {
-            return row["QA Status"] as 'pending' | 'approved' | 'rejected' | 'escalated' | 'training_flagged';
+        if (row.qa_status) {
+            return row.qa_status as 'pending' | 'approved' | 'rejected' | 'escalated' | 'training_flagged';
         }
         // Auto-set based on compliance status
-        const callStatus = row["Call Status"]?.toUpperCase();
+        const callStatus = row.call_status?.toUpperCase();
         if (callStatus === 'COMPLIANT') return 'approved';
         if (callStatus === 'COMPLIANCE_FAIL') return 'rejected';
         return 'pending';
@@ -65,31 +67,34 @@ function transformRow(row: DatabaseCallRow): CallData {
         id: String(row.id),
         createdAt: row.created_at,
         timestamp: row.created_at,
-        callId: row["Call ID"] || `CALL-${row.id}`,
-        campaignType: row["Campaign Type"] || "General",
-        agentName: row["Agent Name"] || "Unknown Agent",
-        phoneNumber: row["Phone Number"] || "",
-        duration: row["Call Duration"] || "",
-        callDate: row["Call Date"] || "",
-        callTime: row["Call Time"] || "",
-        status: row["Call Status"] || "",
-        complianceScore: parseScore(row["Call Score"]),
-        riskLevel: row["Risk Level"] || "Low",
-        checklist: parseJsonField(row["Checklist"], []),
-        violations: parseJsonField(row["Violations"], []),
-        reviewFlags: parseJsonField(row["Review Flags"], []),
-        coachingNotes: parseJsonField(row["Coaching Notes"], []),
-        summary: row["Summary"] || "",
-        keyQuotes: parseJsonField(row["Key Quotes"], []),
-        recordingUrl: row["Call Recording URL"] || "",
-        analyzedAt: row["Call Analyzed Date/Time"] || row.created_at,
-        transcript: row["Transcript"] || "",
+        callId: row.call_id || `CALL-${row.id}`,
+        campaignType: row.campaign_type || "General",
+        agentName: row.agent_name || "Unknown Agent",
+        phoneNumber: row.phone_number || "",
+        duration: row.call_duration || "",
+        callDate: row.call_date || "",
+        callTime: row.call_time || "",
+        status: row.call_status || "",
+        // Prefer integer column, fallback to parsing text column
+        complianceScore: parseScore(row.compliance_score ?? row.call_score),
+        riskLevel: row.risk_level || "Low",
+
+        checklist: parseJsonField(row.checklist, []),
+        violations: parseJsonField(row.violations, []),
+        reviewFlags: parseJsonField(row.review_flags, []),
+        coachingNotes: parseJsonField(row.coaching_notes, []),
+        summary: row.summary || "",
+        keyQuotes: parseJsonField(row.key_quotes, []),
+        recordingUrl: row.recording_url || "",
+        analyzedAt: row.analyzed_at || row.created_at,
+        transcript: row.transcript || "",
+
         // QA Workflow fields
         qaStatus: determineQAStatus(),
-        qaReviewedBy: row["QA Reviewed By"] || undefined,
-        qaReviewedAt: row["QA Reviewed At"] || undefined,
-        qaNotes: row["QA Notes"] || undefined,
-        reviewPriority: (row["Review Priority"] as 'urgent' | 'normal' | 'low') || 'normal',
+        qaReviewedBy: row.qa_reviewed_by || undefined,
+        qaReviewedAt: row.qa_reviewed_at || undefined,
+        qaNotes: row.qa_notes || undefined,
+        reviewPriority: (row.review_priority as 'urgent' | 'normal' | 'low') || 'normal',
     };
 }
 
