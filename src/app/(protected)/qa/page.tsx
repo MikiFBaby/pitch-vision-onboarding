@@ -574,11 +574,15 @@ export default function QADashboard() {
                     // 1. Exclude finalized items
                     if (c.qaStatus === 'approved' || c.qaStatus === 'rejected') return false;
 
-                    // 2. Include review-needed status
+                    // 2. EXPLICIT EXCLUSION: High Compliance (90-100%) should NOT be in review queue
+                    // unless specifically marked as failed/rejected (handled by finalized check above)
+                    if (c.complianceScore >= 90) return false;
+
+                    // 3. Include review-needed status
                     const statusLower = (c.status || '').toLowerCase();
                     const isReviewStatus = statusLower.includes('review') || statusLower.includes('requires');
 
-                    // 3. Include medium risk score (70-89%)
+                    // 4. Include medium risk score (70-89%)
                     const isMidRangeScore = c.complianceScore >= 70 && c.complianceScore < 90;
 
                     return isReviewStatus || isMidRangeScore;
