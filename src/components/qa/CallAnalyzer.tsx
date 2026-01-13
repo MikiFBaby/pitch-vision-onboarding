@@ -4,6 +4,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { Upload, X, CheckCircle2, Zap, AlertTriangle, FileAudio, Aperture, User, RotateCcw, Files, Loader2, StopCircle } from 'lucide-react';
 import { CallData } from '@/types/qa-types';
 import { supabase } from '@/lib/supabase-client';
+import { PitchVisionLogo } from '@/components/ui/pitch-vision-logo';
 
 interface CallAnalyzerProps {
   isOpen: boolean;
@@ -75,10 +76,10 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
       const totalSizeMB = files.reduce((acc, f) => acc + f.size, 0) / (1024 * 1024);
 
       // Estimation Formula: 
-      // Base overhead (connection/handshake): 2s
-      // Upload speed assumption: ~2s per MB (conservative for mobile/avg wifi)
-      // Analysis processing: ~3s per MB
-      const durationMs = 2000 + (totalSizeMB * 5000);
+      // Base overhead (connection/handshake): 10s (was 2s)
+      // Upload speed assumption: ~30s per MB (was 5s)
+      // This slows down the bar significantly as requested.
+      const durationMs = 10000 + (totalSizeMB * 30000);
       setEstimatedSeconds(Math.ceil(durationMs / 1000));
 
       const updateFrequency = 100; // update every 100ms
@@ -215,12 +216,15 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
           const result = await response.json().catch(() => ({})); // Try to parse JSON if returned
           console.log("Webhook Response:", result);
 
-          // Force completion if webhook returns success, even if realtime hasn't fired yet
-          // UPDATE: User requested to wait for Supabase Realtime Event to confirm analysis completion.
-          // We do NOT short-circuit here anymore. We just confirm upload is done.
-          console.log("Upload successful. Waiting for Realtime confirmation...");
-          // We can optionally speed up the progress bar to 90% or keep it waiting
-          // But we DO NOT set done=true.
+          // Force completion if webhook returns success, satisfying "updates... once we receive confirmation from the webhook response"
+          console.log("Upload successful. Webhook confirmed completion.");
+
+          // Speed up to 100%
+          setProgress(100);
+          setProcessedCount(totalFiles);
+          done = true;
+          cleanup();
+          resolve({ success: true, queued: false });
         } else {
           console.error("Webhook returned error status:", response.status, response.statusText);
           fail(`Analysis failed with status: ${response.status} ${response.statusText}`);
@@ -336,14 +340,9 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
 
         <div className="flex justify-between items-center p-6 border-b border-white/5 bg-[#2E1065]/50">
           <div className="flex items-center gap-3">
-            <div className="relative w-10 h-10 bg-gradient-to-br from-purple-600 to-indigo-600 rounded-xl shadow-[0_0_20px_rgba(147,51,234,0.4)] flex items-center justify-center overflow-hidden">
-              <Zap size={20} className="text-white" />
-            </div>
-            <div>
-              <h2 className="text-lg font-bold text-white tracking-tight">Pitch Vision AI</h2>
-              <p className="text-[10px] text-purple-300 font-semibold uppercase tracking-widest">
-                {files.length > 1 ? 'Bulk Compliance Audit' : 'Compliance Audit'}
-              </p>
+            {/* Replaced Generic Zap Icon with Brand Logo */}
+            <div className="scale-75 origin-left">
+              <PitchVisionLogo />
             </div>
           </div>
           {status !== 'processing' && (
