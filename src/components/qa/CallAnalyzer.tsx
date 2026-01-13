@@ -1,5 +1,6 @@
 "use client";
 
+// Version: 1.1.0 - Final QA Release (Logo, Slow Progress, Webhook Fix)
 import React, { useState, useEffect, useRef } from 'react';
 import { Upload, X, CheckCircle2, Zap, AlertTriangle, FileAudio, Aperture, User, RotateCcw, Files, Loader2, StopCircle } from 'lucide-react';
 import { CallData } from '@/types/qa-types';
