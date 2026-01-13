@@ -2,11 +2,6 @@ import { NextResponse } from 'next/server';
 import type { NextRequest } from 'next/server';
 
 export function middleware(request: NextRequest) {
-    // 1. Temporary Redirect: Force root to /qa for internal testing
-    if (request.nextUrl.pathname === '/') {
-        return NextResponse.redirect(new URL('/qa', request.url));
-    }
-
     // Check if we are in "QA Only" mode via Environment Variable
     const isQaLocked = process.env.NEXT_PUBLIC_QA_ONLY === 'true';
 
