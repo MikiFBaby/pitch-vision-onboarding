@@ -431,20 +431,26 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
                   return (
                     <div key={idx} className="flex flex-col gap-1">
                       <div className="flex items-center gap-3 text-sm">
-                        <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 
-                                    ${isDone ? 'bg-emerald-500 text-white' : 'bg-purple-500 text-white'}`}>
-                          {isDone ? <CheckCircle2 size={12} /> : <Loader2 size={12} className="animate-spin" />}
+                        <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 transition-colors duration-300
+                                      ${isDone ? 'bg-emerald-500 text-white' :
+                            isProcessing ? 'bg-purple-500 text-white' : 'bg-slate-700 text-slate-400'}`}>
+                          {isDone ? <CheckCircle2 size={12} /> :
+                            isProcessing ? <Loader2 size={12} className="animate-spin" /> :
+                              <div className="w-1.5 h-1.5 rounded-full bg-slate-500" />}
                         </div>
-                        <span className={`truncate flex-1 text-left ${isDone ? 'text-emerald-300 opacity-70' : 'text-white font-bold'}`}>
+                        <span className={`truncate flex-1 text-left transition-colors duration-300 ${isDone ? 'text-emerald-300 opacity-70' :
+                          isProcessing ? 'text-white font-bold' : 'text-slate-500'}`}>
                           {file.name}
                         </span>
-                        {isProcessing && <span className="text-[10px] text-purple-300 font-mono">Analyzing...</span>}
+                        {isProcessing && <span className="text-[10px] text-purple-300 font-mono animate-pulse">Analyzing...</span>}
+                        {!isDone && !isProcessing && <span className="text-[10px] text-slate-600 font-mono">Pending</span>}
+                        {isDone && <span className="text-[10px] text-emerald-400 font-mono">Complete</span>}
                       </div>
 
                       {/* Mini progress bar for current item */}
                       {isProcessing && (
                         <div className="h-1 w-full bg-white/5 rounded-full overflow-hidden ml-8">
-                          <div className="h-full bg-purple-500/50 animate-[pulse_2s_infinite] w-2/3 rounded-full" />
+                          <div className="h-full bg-purple-500/50 animate-[pulse_1s_infinite] w-full origin-left scale-x-75 rounded-full" />
                         </div>
                       )}
                     </div>
