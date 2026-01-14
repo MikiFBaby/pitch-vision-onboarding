@@ -107,7 +107,12 @@ function transformRow(row: DatabaseCallRow): CallData {
             let earned = 0;
             let possible = 0;
 
-            parsedChecklist.forEach(item => {
+            // Normalize checklist to array (Handle Object vs Array format)
+            const checklistItems = Array.isArray(parsedChecklist)
+                ? parsedChecklist
+                : Object.entries(parsedChecklist).map(([key, val]) => ({ ...(val as any), name: key }));
+
+            checklistItems.forEach(item => {
                 const name = item.name || item.requirement || 'Item';
                 const status = (item.status || '').toLowerCase();
                 if (status === 'n/a') return;
