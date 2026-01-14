@@ -223,24 +223,36 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
   const parseTimeToSeconds = (timeStr: string) => {
     if (!timeStr) return 0;
 
-    // Handle time ranges like "0:20-0:49" - take the start time
-    let cleanTime = timeStr;
-    if (timeStr.includes('-')) {
-      // Could be "0:20-0:49" (range) or just contains a dash somewhere
-      const rangeParts = timeStr.split('-');
-      // If first part looks like a time (contains colon), use that
-      if (rangeParts[0].includes(':')) {
-        cleanTime = rangeParts[0].trim();
+    // Clean up: remove surrounding brackets/parens, trim
+    let clean = timeStr.replace(/[\[\]\(\)]/g, '').trim();
+
+    // Handle "X seconds" or "Xs" e.g. "14s", "14 seconds"
+    if (/^\d+\s*(s|sec|seconds)$/i.test(clean)) {
+      return parseInt(clean, 10);
+    }
+
+    // Handle range "0:20-0:49" -> take 0:20
+    if (clean.includes('-')) {
+      clean = clean.split('-')[0].trim();
+    }
+
+    // Handle "MM:SS" or "HH:MM:SS" with potential trailing text
+    // Extract the first occurrence of \d+:\d+(:\d+)?
+    const match = clean.match(/(\d+):(\d+)(?::(\d+))?/);
+    if (match) {
+      const p1 = parseInt(match[1], 10);
+      const p2 = parseInt(match[2], 10);
+      const p3 = match[3] ? parseInt(match[3], 10) : 0;
+
+      if (match[3]) {
+        // HH:MM:SS
+        return p1 * 3600 + p2 * 60 + p3;
+      } else {
+        // MM:SS
+        return p1 * 60 + p2;
       }
     }
 
-    const parts = cleanTime.split(':').map(Number);
-    if (parts.length === 2 && !isNaN(parts[0]) && !isNaN(parts[1])) {
-      return parts[0] * 60 + parts[1];
-    }
-    if (parts.length === 3 && !isNaN(parts[0]) && !isNaN(parts[1]) && !isNaN(parts[2])) {
-      return parts[0] * 3600 + parts[1] * 60 + parts[2];
-    }
     return 0;
   };
 
