@@ -385,85 +385,98 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
           {status === 'processing' ? (
             <div className="py-4 text-center relative overflow-hidden min-h-[300px] flex flex-col justify-center">
 
-              {/* Cancel Button */}
-              <div className="absolute top-0 right-0 z-20">
-                <button
-                  onClick={cancelAnalysis}
-                  className="flex items-center gap-1 px-3 py-1 bg-white/5 hover:bg-red-500/20 text-slate-400 hover:text-red-300 rounded-full text-xs font-bold transition-all border border-transparent hover:border-red-500/30"
-                >
-                  <StopCircle size={12} /> Cancel
-                </button>
-              </div>
-
-              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-64 h-64 bg-purple-600/20 rounded-full blur-[60px] animate-pulse pointer-events-none" />
-
-              {/* Progress Bar & Status */}
-              <div className="mb-8 px-8 w-full mx-auto">
-                <div className="flex justify-between items-end mb-2">
-                  <span className="text-xs font-bold text-white uppercase tracking-wider">
-                    Total Progress
-                  </span>
-                  <span className="text-xs font-mono text-purple-300">
-                    {Math.round(progress)}%
-                  </span>
+              <div className="flex flex-col items-center relative z-10 w-full px-4">
+                {/* Cancel Button - Top Right of Processing Area */}
+                <div className="absolute -top-4 right-0">
+                  <button
+                    onClick={cancelAnalysis}
+                    className="flex items-center gap-2 px-3 py-1.5 bg-white/5 hover:bg-white/10 text-slate-400 hover:text-white rounded-full text-[11px] font-medium transition-all group backdrop-blur-sm border border-transparent hover:border-white/10"
+                  >
+                    <StopCircle size={14} className="group-hover:text-red-400 transition-colors" />
+                    <span>Cancel</span>
+                  </button>
                 </div>
 
-                <div className="h-2 w-full bg-white/10 rounded-full overflow-hidden mb-2">
-                  <div
-                    className="h-full bg-gradient-to-r from-purple-500 to-indigo-400 rounded-full transition-all duration-300 ease-out"
-                    style={{ width: `${progress}%` }}
-                  />
-                </div>
+                <div className="w-full space-y-3 mb-8 mt-6">
+                  <div className="flex justify-between items-end px-1">
+                    <span className="text-xs font-bold tracking-widest text-slate-400 uppercase">Total Progress</span>
+                    <span className="text-2xl font-black text-white">{progress}%</span>
+                  </div>
 
-                <div className="flex justify-between items-center text-[10px] text-slate-500 font-medium uppercase tracking-widest">
-                  <span>{files.length} Item{files.length !== 1 ? 's' : ''}</span>
-                  <span>EST: ~{estimatedSeconds}s remaining</span>
-                </div>
-              </div>
-
-              {/* Individual File Progress */}
-              <div className="max-w-xs mx-auto space-y-2 mb-8 bg-black/20 p-4 rounded-xl border border-white/5 max-h-40 overflow-y-auto">
-                {files.map((file, idx) => {
-                  const isDone = idx < processedCount;
-                  // In concurrent mode, everything not done is processing
-                  const isProcessing = !isDone;
-
-                  return (
-                    <div key={idx} className="flex flex-col gap-1">
-                      <div className="flex items-center gap-3 text-sm">
-                        <div className={`w-5 h-5 rounded-full flex items-center justify-center shrink-0 transition-colors duration-300
-                                      ${isDone ? 'bg-emerald-500 text-white' :
-                            isProcessing ? 'bg-purple-500 text-white' : 'bg-slate-700 text-slate-400'}`}>
-                          {isDone ? <CheckCircle2 size={12} /> :
-                            isProcessing ? <Loader2 size={12} className="animate-spin" /> :
-                              <div className="w-1.5 h-1.5 rounded-full bg-slate-500" />}
-                        </div>
-                        <span className={`truncate flex-1 text-left transition-colors duration-300 ${isDone ? 'text-emerald-300 opacity-70' :
-                          isProcessing ? 'text-white font-bold' : 'text-slate-500'}`}>
-                          {file.name}
-                        </span>
-                        {isProcessing && <span className="text-[10px] text-purple-300 font-mono animate-pulse">Analyzing...</span>}
-                        {!isDone && !isProcessing && <span className="text-[10px] text-slate-600 font-mono">Pending</span>}
-                        {isDone && <span className="text-[10px] text-emerald-400 font-mono">Complete</span>}
-                      </div>
-
-                      {/* Mini progress bar for current item */}
-                      {isProcessing && (
-                        <div className="h-1 w-full bg-white/5 rounded-full overflow-hidden ml-8">
-                          <div className="h-full bg-purple-500/50 animate-[pulse_1s_infinite] w-full origin-left scale-x-75 rounded-full" />
-                        </div>
-                      )}
+                  {/* Glassy Progress Bar Track */}
+                  <div className="h-4 w-full bg-black/40 rounded-full overflow-hidden border border-white/5 relative shadow-inner">
+                    {/* Gradient Progress Fill */}
+                    <div
+                      className="h-full bg-gradient-to-r from-purple-600 via-indigo-500 to-purple-400 relative transition-all duration-700 ease-out shadow-[0_0_20px_rgba(168,85,247,0.4)]"
+                      style={{ width: `${progress}%` }}
+                    >
+                      {/* Shimmer Effect */}
+                      <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent w-full -translate-x-full animate-[shimmer_2s_infinite]" />
                     </div>
-                  )
-                })}
+                  </div>
+
+                  <div className="flex justify-between items-center text-[10px] text-slate-500 font-medium px-1 uppercase tracking-wider">
+                    <span>{files.length} ITEMS</span>
+                    <span>EST: ~{Math.max(0, Math.ceil((files.length * 90) - (processedCount * 90)))}s REMAINING</span>
+                  </div>
+                </div>
+
+                {/* Active File Card List */}
+                <div className="w-full bg-[#130725]/80 backdrop-blur-sm rounded-2xl border border-white/10 p-4 flex flex-col gap-3 shadow-2xl max-h-[220px] overflow-y-auto custom-scrollbar">
+                  {files.map((file, idx) => {
+                    const isDone = idx < processedCount;
+                    const isProcessing = idx === processedCount;
+
+                    return (
+                      <div key={idx} className={`relative overflow-hidden rounded-xl p-3 transition-all duration-500 border
+                                      ${isProcessing ? 'border-purple-500/30 bg-purple-500/10' : 'border-transparent bg-white/[0.03]'}`}>
+                        {/* Status Indicator & Name */}
+                        <div className="flex items-center gap-3 relative z-10">
+                          <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 transition-all duration-500
+                                      ${isDone ? 'bg-emerald-500 text-white shadow-[0_0_10px_rgba(16,185,129,0.4)]' :
+                              isProcessing ? 'bg-purple-600 text-white shadow-[0_0_15px_rgba(147,51,234,0.5)]' :
+                                'bg-slate-800 text-slate-500'}`}>
+                            {isDone ? <CheckCircle2 size={16} strokeWidth={3} /> :
+                              isProcessing ? <Loader2 size={16} className="animate-spin" /> :
+                                <div className="w-2 h-2 rounded-full bg-slate-600" />}
+                          </div>
+
+                          <div className="flex flex-col min-w-0 flex-1">
+                            <span className={`truncate text-sm font-semibold transition-colors duration-300 ${isDone ? 'text-emerald-400' :
+                              isProcessing ? 'text-white' : 'text-slate-500'}`}>
+                              {file.name}
+                            </span>
+                            <span className="text-[10px] uppercase tracking-wider font-bold">
+                              {isDone ? <span className="text-emerald-500/70">Analysis Complete</span> :
+                                isProcessing ? <span className="text-purple-300 animate-pulse">Analyzing...</span> :
+                                  <span className="text-slate-600">Pending</span>}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Active File Progress Bar (Mini) */}
+                        {isProcessing && (
+                          <div className="absolute bottom-0 left-0 w-full h-0.5 bg-purple-500/20">
+                            <div className="h-full bg-purple-400 w-full origin-left animate-[progress_3s_ease-in-out_infinite]" />
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+
+                <div className="mt-8 text-center space-y-2">
+                  <p className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.25em] animate-pulse">
+                    Handshaking with Pitch Vision Neural Core...
+                  </p>
+                  <p className="text-[9px] text-slate-600">Listening for database updates...</p>
+                </div>
+
               </div>
 
-              <div className="flex flex-col items-center justify-center gap-2">
-                <p className="text-[10px] font-bold text-slate-400 uppercase tracking-[0.2em] animate-pulse leading-relaxed">
-                  {LOADING_STATEMENTS[statementIndex]}
-                </p>
-                <p className="text-[9px] text-slate-600 mt-2">Listening for database updates...</p>
-              </div>
+              {/* Background ambient glow */}
+              <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full h-full bg-purple-600/5 rounded-full blur-[80px] pointer-events-none" />
+
             </div>
           ) : status === 'success' ? (
             <div className="py-12 text-center animate-in zoom-in-95 min-h-[300px] flex flex-col justify-center">
