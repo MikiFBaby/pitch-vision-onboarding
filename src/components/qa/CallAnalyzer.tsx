@@ -399,8 +399,8 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
 
                 <div className="w-full space-y-3 mb-8 mt-6">
                   <div className="flex justify-between items-end px-1">
-                    <span className="text-xs font-bold tracking-widest text-slate-400 uppercase">Total Progress</span>
-                    <span className="text-2xl font-black text-white">{progress}%</span>
+                    <span className="text-sm font-bold text-white">Audio Processing Queue</span>
+                    <span className="text-sm font-mono text-purple-300">{Math.round(progress)}%</span>
                   </div>
 
                   {/* Glassy Progress Bar Track */}
@@ -421,43 +421,45 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
                   </div>
                 </div>
 
-                {/* Active File Card List */}
-                <div className="w-full bg-[#130725]/80 backdrop-blur-sm rounded-2xl border border-white/10 p-4 flex flex-col gap-3 shadow-2xl max-h-[220px] overflow-y-auto custom-scrollbar">
+                <div className="w-full bg-[#0F0818] rounded-xl border border-white/5 p-2 flex flex-col gap-2 shadow-xl max-h-[220px] overflow-y-auto custom-scrollbar">
                   {files.map((file, idx) => {
                     const isDone = idx < processedCount;
-                    const isProcessing = idx === processedCount;
+                    // Concurrent mode: If it's not done, it IS analyzing.
+                    const isProcessing = !isDone;
 
                     return (
-                      <div key={idx} className={`relative overflow-hidden rounded-xl p-3 transition-all duration-500 border
-                                      ${isProcessing ? 'border-purple-500/30 bg-purple-500/10' : 'border-transparent bg-white/[0.03]'}`}>
-                        {/* Status Indicator & Name */}
-                        <div className="flex items-center gap-3 relative z-10">
-                          <div className={`w-8 h-8 rounded-full flex items-center justify-center shrink-0 transition-all duration-500
-                                      ${isDone ? 'bg-emerald-500 text-white shadow-[0_0_10px_rgba(16,185,129,0.4)]' :
-                              isProcessing ? 'bg-purple-600 text-white shadow-[0_0_15px_rgba(147,51,234,0.5)]' :
-                                'bg-slate-800 text-slate-500'}`}>
-                            {isDone ? <CheckCircle2 size={16} strokeWidth={3} /> :
-                              isProcessing ? <Loader2 size={16} className="animate-spin" /> :
-                                <div className="w-2 h-2 rounded-full bg-slate-600" />}
-                          </div>
+                      <div key={idx} className={`relative overflow-hidden rounded-lg px-4 py-3 transition-all duration-300 border
+                                      ${isDone ? 'border-emerald-500/50 bg-emerald-500/5' :
+                          'border-white/5 bg-white/[0.02]'}`}>
 
-                          <div className="flex flex-col min-w-0 flex-1">
-                            <span className={`truncate text-sm font-semibold transition-colors duration-300 ${isDone ? 'text-emerald-400' :
-                              isProcessing ? 'text-white' : 'text-slate-500'}`}>
+                        <div className="flex items-center gap-3 relative z-10 w-full">
+                          {/* Name */}
+                          <div className="flex-1 min-w-0 flex flex-col items-start">
+                            <span className={`truncate text-sm font-medium w-full text-left transition-colors duration-300 ${isDone ? 'text-white' : 'text-slate-200'}`}>
                               {file.name}
                             </span>
-                            <span className="text-[10px] uppercase tracking-wider font-bold">
-                              {isDone ? <span className="text-emerald-500/70">Analysis Complete</span> :
-                                isProcessing ? <span className="text-purple-300 animate-pulse">Analyzing...</span> :
-                                  <span className="text-slate-600">Pending</span>}
-                            </span>
                           </div>
+
+                          {/* Right Side Status */}
+                          {isDone ? (
+                            <div className="flex items-center gap-2 text-emerald-400 shrink-0">
+                              <div className="w-6 h-6 rounded-full border-2 border-emerald-500 flex items-center justify-center shadow-[0_0_8px_rgba(16,185,129,0.4)]">
+                                <CheckCircle2 size={14} strokeWidth={3} />
+                              </div>
+                              <span className="text-sm font-medium hidden sm:inline">Complete</span>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-2 text-purple-400 shrink-0">
+                              <Loader2 size={16} className="animate-spin" />
+                              <span className="text-sm font-medium animate-pulse hidden sm:inline">Analyzing...</span>
+                            </div>
+                          )}
                         </div>
 
-                        {/* Active File Progress Bar (Mini) */}
+                        {/* Active File Progress Bar (Mini) - Only for processing */}
                         {isProcessing && (
-                          <div className="absolute bottom-0 left-0 w-full h-0.5 bg-purple-500/20">
-                            <div className="h-full bg-purple-400 w-full origin-left animate-[progress_3s_ease-in-out_infinite]" />
+                          <div className="absolute bottom-0 left-0 w-full h-[2px] bg-purple-500/10">
+                            <div className="h-full bg-gradient-to-r from-purple-500 to-fuchsia-500 w-1/2 blur-[2px] animate-[loading_1.5s_ease-in-out_infinite]" />
                           </div>
                         )}
                       </div>
