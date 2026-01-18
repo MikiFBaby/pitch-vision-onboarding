@@ -294,9 +294,10 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
             const { jsPDF } = await import('jspdf');
             const autoTableModule = await import('jspdf-autotable');
 
-            const doc = new jsPDF();
-            const pageWidth = doc.internal.pageSize.width;
-            const pageHeight = doc.internal.pageSize.height;
+            // 1. Landscape Orientation for Data Density
+            const doc = new jsPDF({ orientation: 'landscape' });
+            const pageWidth = doc.internal.pageSize.width; // ~297mm
+            const pageHeight = doc.internal.pageSize.height; // ~210mm
 
             // --- Helper: Load Image ---
             const loadImage = (url: string): Promise<HTMLImageElement> => {
@@ -314,16 +315,16 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
             const TEXT_MAIN: [number, number, number] = [30, 30, 30];
             const TEXT_LIGHT: [number, number, number] = [100, 100, 100];
 
-            // 1. Header Integration
+            // 2. Header Integration
             // Top thick brand line
             doc.setFillColor(...ACCENT_COLOR);
             doc.rect(0, 0, pageWidth, 3, 'F');
 
             // Logo & Title Block
             try {
-                // Use the main logo which is likely better formatted than the specific report one
-                const logoImg = await loadImage('/images/logo.png');
-                const logoHeight = 14;
+                // Correct Logo: 'logo-header.png' (Pitch Perfect)
+                const logoImg = await loadImage('/images/logo-header.png');
+                const logoHeight = 12;
                 const logoWidth = (logoImg.width / logoImg.height) * logoHeight;
                 doc.addImage(logoImg, 'PNG', 14, 10, logoWidth, logoHeight);
             } catch (e) {
@@ -354,34 +355,27 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
             doc.line(14, 30, pageWidth - 14, 30);
 
             // --- Table Section ---
-            // Prepare Data: Date | Time | Agent Name | Phone Number | Violation | Score | Risk
-
             const tableBody = reportData.map(call => {
                 const dateObj = new Date(call.timestamp);
                 const date = dateObj.toLocaleDateString('en-US');
                 const time = dateObj.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
 
                 // Construct Violation Text
-                // Prioritize 'violations' array, then fallback to failed checklist items
                 let violationText = '';
                 if (Array.isArray(call.violations) && call.violations.length > 0) {
-                    // Use newlines for vertical listing - cleaner look
                     violationText = call.violations.join('\n• ');
                     if (violationText) violationText = '• ' + violationText;
                 } else if (call.checklist && Array.isArray(call.checklist)) {
-                    // Find failed items
                     const failed = call.checklist.filter(i =>
                         i.status === 'not_met' || i.status === 'FAIL'
                     );
                     violationText = failed.map(i => {
-                        // Use evidence if short, otherwise name
                         return i.evidence ? `• "${i.evidence}"` : `• ${i.name}`;
                     }).join('\n');
                 }
 
-                // If no specific violation text found but score is low, use summary
                 if (!violationText && call.complianceScore < 100 && call.summary) {
-                    violationText = call.summary.substring(0, 100) + '...';
+                    violationText = call.summary.substring(0, 120) + '...';
                 }
 
                 return [
@@ -390,15 +384,14 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
                     call.agentName || '-',
                     formatPhoneNumber(call.phoneNumber),
                     violationText || '-',
-                    `${call.complianceScore}%`, // Score
-                    call.riskLevel || 'Low'     // Risk
+                    `${call.complianceScore}%`,
+                    call.riskLevel || 'Low'
                 ];
             });
 
-            // AutoTable
+            // AutoTable (Landscape Config)
             autoTableModule.default(doc, {
                 startY: 35,
-                // Add Score and Risk columns for better density/insight
                 head: [['DATE', 'TIME', 'AGENT NAME', 'PHONE', 'VIOLATIONS', 'SCORE', 'RISK']],
                 body: tableBody,
                 theme: 'plain',
@@ -406,32 +399,32 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
                     font: 'helvetica',
                     fontSize: 8,
                     textColor: TEXT_MAIN,
-                    cellPadding: 4,
+                    cellPadding: 3,
                     lineColor: [230, 230, 230],
                     lineWidth: 0,
                     overflow: 'linebreak',
-                    valign: 'top',
+                    valign: 'middle', // Better vertical alignment
                 },
                 headStyles: {
-                    fillColor: [248, 250, 252], // Subtle Slate-50 background for header
+                    fillColor: [248, 250, 252],
                     textColor: THEME_COLOR,
-                    fontSize: 7,
+                    fontSize: 8,
                     fontStyle: 'bold',
                     halign: 'left',
-                    lineWidth: 0,
-                    cellPadding: 4,
+                    cellPadding: 3,
                 },
+                // Precise Column Widths for Landscape (Total ~270mm usable)
                 columnStyles: {
-                    0: { cellWidth: 18 }, // Date
-                    1: { cellWidth: 12 }, // Time
-                    2: { cellWidth: 35, fontStyle: 'bold' }, // Agent Name
-                    3: { cellWidth: 22 }, // Phone 
-                    4: { cellWidth: 'auto' }, // Violation (Dominant width)
-                    5: { cellWidth: 12, halign: 'right' }, // Score
-                    6: { cellWidth: 18, fontStyle: 'bold' }  // Risk
+                    0: { cellWidth: 20 }, // Date
+                    1: { cellWidth: 15 }, // Time (Fixed, no wrap)
+                    2: { cellWidth: 50, fontStyle: 'bold' }, // Agent Name (Generous)
+                    3: { cellWidth: 35 }, // Phone
+                    4: { cellWidth: 'auto' }, // Violations (Fills rest)
+                    5: { cellWidth: 15, halign: 'right' }, // Score (Fixed, no wrap)
+                    6: { cellWidth: 25, fontStyle: 'bold' }  // Risk
                 },
                 didDrawPage: function (data) {
-                    // Header line for each page's table
+                    // Header line
                     if (data.cursor) {
                         doc.setDrawColor(30, 41, 59);
                         doc.setLineWidth(0.5);
@@ -439,40 +432,37 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
                     }
                 },
                 didParseCell: (data) => {
-                    // Custom styling for specific columns based on value
                     if (data.section === 'body') {
-                        // Risk Column Coloring
+                        // Risk Color
                         if (data.column.index === 6) {
                             const risk = (data.cell.raw as string).toLowerCase();
                             if (risk === 'high' || risk === 'critical') {
-                                data.cell.styles.textColor = [220, 38, 38]; // Red-600
+                                data.cell.styles.textColor = [220, 38, 38];
                             } else if (risk === 'medium' || risk === 'warning') {
-                                data.cell.styles.textColor = [217, 119, 6]; // Amber-600
+                                data.cell.styles.textColor = [217, 119, 6];
                             } else {
-                                data.cell.styles.textColor = [5, 150, 105]; // Emerald-600
+                                data.cell.styles.textColor = [5, 150, 105];
                             }
                         }
-                        // Score Column Coloring
+                        // Score Color
                         if (data.column.index === 5) {
                             const score = parseInt((data.cell.raw as string).replace('%', ''));
                             if (score < 70) {
-                                data.cell.styles.textColor = [220, 38, 38]; // Red
+                                data.cell.styles.textColor = [220, 38, 38];
                             } else if (score < 90) {
-                                data.cell.styles.textColor = [217, 119, 6]; // Amber
+                                data.cell.styles.textColor = [217, 119, 6];
                             } else {
-                                data.cell.styles.textColor = [5, 150, 105]; // Emerald
+                                data.cell.styles.textColor = [5, 150, 105];
                             }
                         }
                     }
                 },
                 didDrawCell: (data) => {
-                    // Draw line only under header row
                     if (data.section === 'head' && data.row.index === 0) {
                         doc.setDrawColor(200, 200, 200);
                         doc.setLineWidth(0.1);
                         doc.line(data.cell.x, data.cell.y + data.cell.height, data.cell.x + data.cell.width, data.cell.y + data.cell.height);
                     }
-                    // Draw light line under body rows
                     if (data.section === 'body') {
                         doc.setDrawColor(245, 245, 245);
                         doc.setLineWidth(0.1);
@@ -481,12 +471,12 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
                 }
             });
 
-            // --- Trends & Observations Section (After Rows) ---
+            // --- Trends & Observations Section ---
             const finalY = (doc as any).lastAutoTable?.finalY || 40;
 
             // Allow for page break if near bottom
             let currentY = finalY + 15;
-            if (currentY > pageHeight - 40) {
+            if (currentY > pageHeight - 30) {
                 doc.addPage();
                 currentY = 20;
             }
@@ -503,8 +493,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
 
             currentY += 10;
 
-            // Trend Analysis
-            // 1. Common Violations
+            // Trend Analysis Calculation
+            // ... (Metrics logic remains same, just ensuring landscape width text)
             const allViolations: string[] = [];
             reportData.forEach(c => {
                 if (c.checklist && Array.isArray(c.checklist)) {
@@ -513,17 +503,12 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
                     });
                 }
             });
-
             const violationCounts = allViolations.reduce((acc, curr) => {
                 acc[curr] = (acc[curr] || 0) + 1;
                 return acc;
             }, {} as Record<string, number>);
+            const topViolations = Object.entries(violationCounts).sort((a, b) => b[1] - a[1]).slice(0, 3);
 
-            const topViolations = Object.entries(violationCounts)
-                .sort((a, b) => b[1] - a[1])
-                .slice(0, 3);
-
-            // 2. High Risk Agents
             const agentRisk = reportData.reduce((acc, curr) => {
                 const name = curr.agentName || 'Unknown';
                 if (!acc[name]) acc[name] = { total: 0, fail: 0 };
@@ -531,20 +516,20 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
                 if (curr.complianceScore < 70 || (curr.riskLevel === 'High' || curr.riskLevel === 'Critical')) acc[name].fail++;
                 return acc;
             }, {} as Record<string, { total: number, fail: number }>);
-
             const riskyAgents = Object.entries(agentRisk)
                 .filter(([_, stats]) => stats.fail > 0)
                 .map(([name, stats]) => ({ name, rate: (stats.fail / stats.total) * 100 }))
                 .sort((a, b) => b.rate - a.rate)
                 .slice(0, 3);
 
-            // Draw Observations
+            // Draw Observations (Landscape Width)
             doc.setFont('helvetica', 'normal');
             doc.setFontSize(9);
             doc.setTextColor(...THEME_COLOR);
 
             // Helper to safely add text
             const addTextWithPageCheck = (text: string) => {
+                // Use Landscape width: pageWidth - 28
                 const splitText = doc.splitTextToSize(text, pageWidth - 28);
                 if (currentY + (splitText.length * 5) > pageHeight - 20) {
                     doc.addPage();
@@ -570,7 +555,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
                 addTextWithPageCheck(obsText2);
             }
 
-            // Observation 3: General Summary
+            // Observation 3: Summary
             const obsText3 = `Summary: Analyzed ${reportData.length} calls with an average compliance score of ${stats.avgScore}%. ${stats.riskCount} calls were flagged as high risk.`;
             addTextWithPageCheck(obsText3);
 
@@ -594,7 +579,6 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
         } catch (error: any) {
             console.error('PDF Export Error:', error);
             setIsExporting(false);
-            // Show detailed error message to user
             setExportMessage(`Error: ${error?.message || 'Unknown PDF error'}`);
             setTimeout(() => setExportMessage(null), 5000);
         }
