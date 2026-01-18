@@ -308,179 +308,245 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
                 });
             };
 
-            // --- Brand Colors ---
-            // Cast as tuples to satisfy jsPDF spread arguments
-            const BRAND_PURPLE: [number, number, number] = [147, 51, 234]; // #9333ea
-            const SLATE_900: [number, number, number] = [15, 23, 42];      // #0f172a
-            const SLATE_500: [number, number, number] = [100, 116, 139];   // #64748b
-            const SLATE_50: [number, number, number] = [248, 250, 252];    // #f8fafc
+            // --- Colors (Deep Corporate Style) ---
+            const THEME_COLOR: [number, number, number] = [30, 41, 59];    // Classic Dark Slate
+            const ACCENT_COLOR: [number, number, number] = [147, 51, 234]; // Brand Purple
+            const TEXT_MAIN: [number, number, number] = [30, 30, 30];
+            const TEXT_LIGHT: [number, number, number] = [100, 100, 100];
 
-            // --- Header Section ---
-            // 1. Top Accent Line (Thicker to match brand)
-            doc.setFillColor(...BRAND_PURPLE);
-            doc.rect(0, 0, pageWidth, 4, 'F');
+            // 1. Header Integration
+            // Top thick brand line
+            doc.setFillColor(...ACCENT_COLOR);
+            doc.rect(0, 0, pageWidth, 3, 'F');
 
-            // 2. Logo Integration
+            // Logo & Title Block
             try {
                 const logoImg = await loadImage('/images/report-logo.png');
-                // Calculate aspect ratio to fit height of 15mm
-                const logoHeight = 15;
+                const logoHeight = 12; // slightly smaller/more discrete
                 const logoWidth = (logoImg.width / logoImg.height) * logoHeight;
                 doc.addImage(logoImg, 'PNG', 14, 10, logoWidth, logoHeight);
-
-                // 3. Report Title (Right Aligned - Shifted down slightly)
-                doc.setFont('helvetica', 'bold');
-                doc.setFontSize(22);
-                doc.setTextColor(...SLATE_900);
-                doc.text("EXECUTIVE REPORT", pageWidth - 14, 20, { align: 'right' });
             } catch (e) {
-                // Fallback text if logo fails
+                // Fallback text
                 doc.setFont('helvetica', 'bold');
-                doc.setFontSize(22);
-                doc.setTextColor(...SLATE_900);
-                doc.text("Pitch Perfect", 14, 22);
-
-                doc.setFontSize(14);
-                doc.setTextColor(80, 80, 80);
-                doc.text("EXECUTIVE REPORT", pageWidth - 14, 22, { align: 'right' });
+                doc.setFontSize(16);
+                doc.setTextColor(...THEME_COLOR);
+                doc.text("Pitch Vision", 14, 18);
             }
 
-            // 4. Meta Data (Right Aligned)
+            // Report Title (Right Aligned)
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(14);
+            doc.setTextColor(...THEME_COLOR);
+            doc.text("COMPLIANCE AUDIT REPORT", pageWidth - 14, 16, { align: 'right' });
+
+            // Meta Data (Under Title)
             doc.setFont('helvetica', 'normal');
             doc.setFontSize(9);
-            doc.setTextColor(...SLATE_500);
+            doc.setTextColor(...TEXT_LIGHT);
             const dateStr = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
-            doc.text(`Generated: ${dateStr}`, pageWidth - 14, 26, { align: 'right' });
-            doc.text(`Period: ${startDate || 'All Time'} - ${endDate || 'Present'}`, pageWidth - 14, 31, { align: 'right' });
+            doc.text(`Generated: ${dateStr}`, pageWidth - 14, 21, { align: 'right' });
+            doc.text(`Period: ${startDate || 'All Time'} - ${endDate || 'Present'}`, pageWidth - 14, 25, { align: 'right' });
 
-            // --- Summary Section (Cards) ---
-            const startY = 45;
-            const cardWidth = (pageWidth - 28 - 10) / 3; // 3 cards, 14px margin sides, 5px gap
-            const cardHeight = 24;
+            // Divider Line
+            doc.setDrawColor(200, 200, 200);
+            doc.setLineWidth(0.1);
+            doc.line(14, 30, pageWidth - 14, 30);
 
-            // Helper to draw varied metric cards
-            const drawMetricCard = (x: number, label: string, value: string, subtext: string, accentColor: [number, number, number]) => {
-                // Card bg
-                doc.setFillColor(252, 252, 252);
-                doc.setDrawColor(230, 230, 230);
-                doc.roundedRect(x, startY, cardWidth, cardHeight, 2, 2, 'FD');
+            // --- Table Section ---
+            // Prepare Data: Date | Time | Agent Name | Phone Number | Violation
 
-                // Left accent strip
-                doc.setFillColor(...accentColor);
-                doc.rect(x, startY, 1.5, cardHeight, 'F'); // strip
+            const tableBody = reportData.map(call => {
+                const dateObj = new Date(call.timestamp);
+                const date = dateObj.toLocaleDateString('en-US');
+                const time = dateObj.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
 
-                // Label
-                doc.setFontSize(8);
-                doc.setTextColor(...SLATE_500);
-                doc.text(label.toUpperCase(), x + 6, startY + 8);
+                // Construct Violation Text
+                // Prioritize 'violations' array, then fallback to failed checklist items
+                let violationText = '';
+                if (call.violations && call.violations.length > 0) {
+                    violationText = call.violations.join(', ');
+                } else if (call.checklist && Array.isArray(call.checklist)) {
+                    // Find failed items
+                    const failed = call.checklist.filter(i =>
+                        i.status === 'not_met' || i.status === 'FAIL'
+                    );
+                    violationText = failed.map(i => {
+                        // Use evidence if short, otherwise name
+                        return i.evidence ? `"${i.evidence}"` : i.name;
+                    }).join('; ');
+                }
 
-                // Value
-                doc.setFontSize(12);
-                doc.setFont('helvetica', 'bold');
-                doc.setTextColor(...SLATE_900);
-                doc.text(value, x + 6, startY + 18);
-            };
+                // If no specific violation text found but score is low, use summary
+                if (!violationText && call.complianceScore < 100 && call.summary) {
+                    violationText = call.summary.substring(0, 100) + '...';
+                }
 
-            drawMetricCard(14, "Total Calls", `${reportData.length}`, "Records", [59, 130, 246] as [number, number, number]); // Blue accent
-            drawMetricCard(14 + cardWidth + 5, "Avg Score", `${stats.avgScore}%`, "Compliance", [147, 51, 234] as [number, number, number]); // Purple accent
-            drawMetricCard(14 + (cardWidth + 5) * 2, "High Risks", `${stats.riskCount}`, "Critical", [239, 68, 68] as [number, number, number]); // Red accent
+                return [
+                    date,
+                    time,
+                    call.agentName || '-',
+                    formatPhoneNumber(call.phoneNumber),
+                    violationText || '-'
+                ];
+            });
 
-            // --- Divider ---
-            doc.setDrawColor(240, 240, 240);
-            doc.line(14, startY + cardHeight + 10, pageWidth - 14, startY + cardHeight + 10);
-
-            // --- Table Data Preparation ---
-            // Columns: Date | Agent | Campaign | Duration | Risk | Score | Status
-            const tableBody = reportData.map(call => [
-                new Date(call.timestamp).toLocaleDateString(),
-                call.agentName || '-',
-                call.campaignType || '-',
-                call.duration || '0:00',
-                call.riskLevel || '-',
-                `${call.complianceScore}%`,
-                (call.status || '-').toUpperCase()
-            ]);
-
-            // --- AutoTable ---
+            // AutoTable
             autoTableModule.default(doc, {
-                startY: startY + cardHeight + 15,
-                head: [['Date', 'Agent', 'Campaign', 'Duration', 'Risk', 'Score', 'Status']],
+                startY: 35,
+                head: [['DATE', 'TIME', 'AGENT NAME', 'PHONE NUMBER', 'VIOLATION']],
                 body: tableBody,
-                theme: 'grid', // 'grid' gives us cleaner borders we can customize
+                theme: 'plain', // Minimalist "McKinsey" style
                 styles: {
                     font: 'helvetica',
                     fontSize: 8,
-                    textColor: [51, 65, 85],
-                    cellPadding: 4,
-                    lineColor: [241, 245, 249],
-                    lineWidth: 0.1,
+                    textColor: TEXT_MAIN,
+                    cellPadding: 3,
+                    lineColor: [220, 220, 220],
+                    lineWidth: 0, // No vertical lines typically
                 },
                 headStyles: {
-                    fillColor: [30, 41, 59], // Slate 800
-                    textColor: [255, 255, 255],
+                    fillColor: [255, 255, 255], // White background
+                    textColor: THEME_COLOR,     // Dark Slate text
                     fontSize: 8,
                     fontStyle: 'bold',
                     halign: 'left',
-                    cellPadding: 4
-                },
-                alternateRowStyles: {
-                    fillColor: [248, 250, 252] // Slate 50
+                    lineWidth: 0,
+                    cellPadding: 3,
+                    // Bottom border for header
                 },
                 columnStyles: {
-                    0: { cellWidth: 25 }, // Date
-                    1: { cellWidth: 40 }, // Agent
-                    2: { cellWidth: 35 }, // Campaign
-                    3: { cellWidth: 15, halign: 'center' }, // Duration
-                    4: { cellWidth: 20 }, // Risk
-                    5: { cellWidth: 15, halign: 'center', fontStyle: 'bold' }, // Score
-                    6: { cellWidth: 30 }  // Status
+                    0: { cellWidth: 20 }, // Date
+                    1: { cellWidth: 15 }, // Time
+                    2: { cellWidth: 40, fontStyle: 'bold' }, // Agent Name
+                    3: { cellWidth: 30 }, // Phone
+                    4: { cellWidth: 'auto' } // Violation (takes remaining space)
                 },
-                didParseCell: function (data) {
-                    // Color code the Status and Risk columns
-                    if (data.section === 'body') {
-                        if (data.column.index === 5) { // Score
-                            const score = parseInt(data.cell.raw as string);
-                            if (score >= 90) data.cell.styles.textColor = [16, 185, 129]; // Emerald
-                            else if (score < 70) data.cell.styles.textColor = [239, 68, 68]; // Red
-                        }
-                        if (data.column.index === 6) { // Status
-                            const text = (data.cell.raw as string) || '';
-                            if (text.includes('CONSENT') && !text.includes('NO')) {
-                                data.cell.styles.textColor = [16, 185, 129];
-                            } else if (text.includes('FAIL') || text.includes('NO')) {
-                                data.cell.styles.textColor = [239, 68, 68];
-                            } else {
-                                data.cell.styles.textColor = [217, 119, 6]; // Amber
-                            }
-                        }
-                        if (data.column.index === 4) { // Risk
-                            const text = (data.cell.raw as string).toUpperCase();
-                            if (text === 'HIGH' || text === 'CRITICAL') {
-                                data.cell.styles.textColor = [220, 38, 38];
-                                data.cell.styles.fontStyle = 'bold';
-                            }
-                        }
+                didDrawPage: function (data) {
+                    // Header line for each page's table
+                    if (data.cursor) {
+                        doc.setDrawColor(30, 41, 59); // Dark Slate
+                        doc.setLineWidth(0.5);
+                        doc.line(14, data.cursor.y, pageWidth - 14, data.cursor.y); // Line under header doesn't work easily in didDrawPage for the header...
                     }
                 },
-                // Add footer to each page
-                didDrawPage: function (data) {
-                    // Footer line
-                    doc.setDrawColor(240, 240, 240);
-                    doc.line(14, pageHeight - 15, pageWidth - 14, pageHeight - 15);
-
-                    // Footer Text
-                    doc.setFontSize(8);
-                    doc.setTextColor(...SLATE_500);
-                    doc.text("Pitch Vision Solutions - Confidential - Executive Report", 14, pageHeight - 10);
-
-                    // Page Number
-                    const pageStr = `Page ${doc.getNumberOfPages()}`;
-                    doc.text(pageStr, pageWidth - 14, pageHeight - 10, { align: 'right' });
+                // Add a bold line under the header manually using didParseCell or hooks, 
+                // but theme 'plain' + specific border config is cleaner.
+                // Let's stick to simple efficient clean look:
+                didDrawCell: (data) => {
+                    // Draw line only under header row
+                    if (data.section === 'head' && data.row.index === 0) {
+                        doc.setDrawColor(30, 41, 59);
+                        doc.setLineWidth(0.5);
+                        doc.line(data.cell.x, data.cell.y + data.cell.height, data.cell.x + data.cell.width, data.cell.y + data.cell.height);
+                    }
+                    // Draw light line under body rows
+                    if (data.section === 'body') {
+                        doc.setDrawColor(240, 240, 240);
+                        doc.setLineWidth(0.1);
+                        doc.line(data.cell.x, data.cell.y + data.cell.height, data.cell.x + data.cell.width, data.cell.y + data.cell.height);
+                    }
                 }
             });
 
-            // Save PDF
-            const filename = `${reportTitle.replace(/[^a-z0-9]/gi, '_')}_${new Date().toISOString().split('T')[0]}.pdf`;
+            // --- Trends & Observations Section (After Rows) ---
+            const finalY = (doc as any).lastAutoTable.finalY || 40;
+
+            // Allow for page break if near bottom
+            let currentY = finalY + 15;
+            if (currentY > pageHeight - 40) {
+                doc.addPage();
+                currentY = 20;
+            }
+
+            // Section Title
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(10);
+            doc.setTextColor(...ACCENT_COLOR);
+            doc.text("TRENDS & OBSERVATIONS", 14, currentY);
+
+            doc.setDrawColor(...ACCENT_COLOR);
+            doc.setLineWidth(0.5);
+            doc.line(14, currentY + 2, pageWidth - 14, currentY + 2);
+
+            currentY += 10;
+
+            // Trend Analysis
+            // 1. Common Violations
+            const allViolations: string[] = [];
+            reportData.forEach(c => {
+                if (c.checklist) {
+                    c.checklist.forEach(i => {
+                        if (i.status === 'not_met' || i.status === 'FAIL') allViolations.push(i.name);
+                    });
+                }
+            });
+
+            const violationCounts = allViolations.reduce((acc, curr) => {
+                acc[curr] = (acc[curr] || 0) + 1;
+                return acc;
+            }, {} as Record<string, number>);
+
+            const topViolations = Object.entries(violationCounts)
+                .sort((a, b) => b[1] - a[1])
+                .slice(0, 3);
+
+            // 2. High Risk Agents
+            const agentRisk = reportData.reduce((acc, curr) => {
+                const name = curr.agentName || 'Unknown';
+                if (!acc[name]) acc[name] = { total: 0, fail: 0 };
+                acc[name].total++;
+                if (curr.complianceScore < 70 || (curr.riskLevel === 'High' || curr.riskLevel === 'Critical')) acc[name].fail++;
+                return acc;
+            }, {} as Record<string, { total: number, fail: number }>);
+
+            const riskyAgents = Object.entries(agentRisk)
+                .filter(([_, stats]) => stats.fail > 0)
+                .map(([name, stats]) => ({ name, rate: (stats.fail / stats.total) * 100 }))
+                .sort((a, b) => b.rate - a.rate)
+                .slice(0, 3);
+
+            // Draw Observations
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(9);
+            doc.setTextColor(...THEME_COLOR);
+
+            // Observation 1: Violations
+            let obsText1 = "Top Recurring Violations: ";
+            if (topViolations.length > 0) {
+                obsText1 += topViolations.map(([name, count]) => `${name} (${count} occurrences)`).join(', ') + '.';
+            } else {
+                obsText1 += "No significant violation trends detected in this batch.";
+            }
+            const splitText1 = doc.splitTextToSize(obsText1, pageWidth - 28);
+            doc.text(splitText1, 14, currentY);
+            currentY += (splitText1.length * 5) + 3;
+
+            // Observation 2: Agents
+            if (riskyAgents.length > 0) {
+                let obsText2 = "Agent Focus Areas: ";
+                obsText2 += riskyAgents.map(a => `${a.name} (${Math.round(a.rate)}% failure rate)`).join(', ') + '.';
+                const splitText2 = doc.splitTextToSize(obsText2, pageWidth - 28);
+                doc.text(splitText2, 14, currentY);
+                currentY += (splitText2.length * 5) + 3;
+            }
+
+            // Observation 3: General Summary
+            const obsText3 = `Summary: Analyzed ${reportData.length} calls with an average compliance score of ${stats.avgScore}%. ${stats.riskCount} calls were flagged as high risk.`;
+            const splitText3 = doc.splitTextToSize(obsText3, pageWidth - 28);
+            doc.text(splitText3, 14, currentY);
+
+            // Footer
+            const pageCount = doc.getNumberOfPages();
+            for (let i = 1; i <= pageCount; i++) {
+                doc.setPage(i);
+                doc.setFontSize(8);
+                doc.setTextColor(...TEXT_LIGHT);
+                doc.text("Pitch Vision Solutions - Internal Confidential", 14, pageHeight - 10);
+                doc.text(`Page ${i} of ${pageCount}`, pageWidth - 14, pageHeight - 10, { align: 'right' });
+            }
+
+            // Output
+            const filename = `${reportTitle.replace(/[^a-z0-9]/gi, '_')}.pdf`;
             doc.save(filename);
 
             setIsExporting(false);
@@ -489,7 +555,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
         } catch (error) {
             console.error('PDF Export Error:', error);
             setIsExporting(false);
-            setExportMessage("Error generating PDF. Please try again.");
+            setExportMessage("Error exporting PDF");
             setTimeout(() => setExportMessage(null), 3000);
         }
     };
