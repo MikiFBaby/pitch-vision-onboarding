@@ -321,8 +321,9 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
 
             // Logo & Title Block
             try {
-                const logoImg = await loadImage('/images/report-logo.png');
-                const logoHeight = 12; // slightly smaller/more discrete
+                // Use the main logo which is likely better formatted than the specific report one
+                const logoImg = await loadImage('/images/logo.png');
+                const logoHeight = 14;
                 const logoWidth = (logoImg.width / logoImg.height) * logoHeight;
                 doc.addImage(logoImg, 'PNG', 14, 10, logoWidth, logoHeight);
             } catch (e) {
@@ -400,38 +401,36 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
                     font: 'helvetica',
                     fontSize: 8,
                     textColor: TEXT_MAIN,
-                    cellPadding: 3,
+                    cellPadding: 4, // Increased padding for breathability
                     lineColor: [220, 220, 220],
-                    lineWidth: 0, // No vertical lines typically
+                    lineWidth: 0,
+                    overflow: 'linebreak', // Critical: ensures text wraps instead of overlapping
+                    valign: 'top',
                 },
                 headStyles: {
-                    fillColor: [255, 255, 255], // White background
-                    textColor: THEME_COLOR,     // Dark Slate text
+                    fillColor: [255, 255, 255],
+                    textColor: THEME_COLOR,
                     fontSize: 8,
                     fontStyle: 'bold',
                     halign: 'left',
                     lineWidth: 0,
-                    cellPadding: 3,
-                    // Bottom border for header
+                    cellPadding: 4,
                 },
                 columnStyles: {
-                    0: { cellWidth: 20 }, // Date
+                    0: { cellWidth: 22 }, // Date
                     1: { cellWidth: 15 }, // Time
-                    2: { cellWidth: 40, fontStyle: 'bold' }, // Agent Name
-                    3: { cellWidth: 30 }, // Phone
-                    4: { cellWidth: 'auto' } // Violation (takes remaining space)
+                    2: { cellWidth: 45, fontStyle: 'bold' }, // Agent Name (Widened)
+                    3: { cellWidth: 32 }, // Phone (Fixed width)
+                    4: { cellWidth: 'auto' } // Violation (Takes remaining space)
                 },
                 didDrawPage: function (data) {
                     // Header line for each page's table
                     if (data.cursor) {
-                        doc.setDrawColor(30, 41, 59); // Dark Slate
+                        doc.setDrawColor(30, 41, 59);
                         doc.setLineWidth(0.5);
-                        doc.line(14, data.cursor.y, pageWidth - 14, data.cursor.y); // Line under header doesn't work easily in didDrawPage for the header...
+                        doc.line(14, data.cursor.y, pageWidth - 14, data.cursor.y);
                     }
                 },
-                // Add a bold line under the header manually using didParseCell or hooks,
-                // but theme 'plain' + specific border config is cleaner.
-                // Let's stick to simple efficient clean look:
                 didDrawCell: (data) => {
                     // Draw line only under header row
                     if (data.section === 'head' && data.row.index === 0) {
