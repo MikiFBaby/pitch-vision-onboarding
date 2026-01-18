@@ -15,10 +15,10 @@ export async function DELETE(request: NextRequest) {
         // Convert string IDs to integers
         const numericIds = ids.map((id: string) => parseInt(id, 10));
 
-        console.log('Deleting from Pitch Perfect, IDs:', numericIds);
+        console.log('Deleting from QA Results, IDs:', numericIds); // Updated console log
 
-        const { error, count } = await supabaseAdmin
-            .from('Pitch Perfect')
+        const { error, count } = await supabaseAdmin // Kept supabaseAdmin as per original, only table name changed
+            .from('QA Results') // Changed 'Pitch Perfect' to 'QA Results'
             .delete()
             .in('id', numericIds);
 

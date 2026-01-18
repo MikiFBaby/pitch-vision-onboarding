@@ -25,7 +25,7 @@ export async function POST(request: NextRequest) {
 
         // Build query
         let query = supabase
-            .from('Pitch Perfect')
+            .from('QA Results')
             .select(`
         id,
         created_at,

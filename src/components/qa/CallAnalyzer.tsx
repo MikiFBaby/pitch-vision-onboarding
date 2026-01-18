@@ -218,7 +218,7 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onU
           { event: 'INSERT', schema: 'public' },
           (payload) => {
             // Check table name loosely
-            if (payload.table === 'Pitch Perfect' || payload.table === 'pitch perfect') {
+            if (payload.table === 'QA Results' || payload.table === 'Pitch Perfect' || payload.table === 'qa results') {
               checkCompletion(payload.new);
             }
           }
@@ -230,7 +230,7 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onU
         if (done) return;
         try {
           const { count, error } = await supabase
-            .from('Pitch Perfect')
+            .from('QA Results')
             .select('*', { count: 'exact', head: true })
             .gt('created_at', startTime);
 

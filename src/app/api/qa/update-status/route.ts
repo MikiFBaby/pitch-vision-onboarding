@@ -37,7 +37,7 @@ export async function POST(request: NextRequest) {
         }
 
         const { error } = await supabaseAdmin
-            .from('Pitch Perfect')
+            .from('QA Results')
             .update(updateData)
             .eq('id', parseInt(id, 10));
 

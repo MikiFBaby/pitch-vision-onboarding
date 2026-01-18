@@ -185,7 +185,7 @@ function QADashboardContent() {
         if (!silent) setIsLoading(true);
         try {
             const { data, error } = await supabase
-                .from('Pitch Perfect')
+                .from('QA Results')
                 .select('*')
                 .order('created_at', { ascending: false });
 
@@ -212,13 +212,13 @@ function QADashboardContent() {
     // Real-time subscription for auto-refresh
     useEffect(() => {
         const channel = supabase
-            .channel('pitch-perfect-changes')
+            .channel('qa-results-changes')
             .on(
                 'postgres_changes',
                 {
                     event: '*', // Listen to INSERT, UPDATE, DELETE
                     schema: 'public',
-                    table: 'Pitch Perfect'
+                    table: 'QA Results'
                 },
                 (payload) => {
                     console.log('Real-time update received:', payload.eventType);

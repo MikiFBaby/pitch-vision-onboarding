@@ -50,7 +50,7 @@ export async function POST(request: NextRequest) {
 
         // Update the database
         const { error: updateError, data: updateData } = await supabaseAdmin
-            .from('Pitch Perfect')
+            .from('QA Results')
             .update({
                 'Call Score': score,
                 'Call Status': newStatus,

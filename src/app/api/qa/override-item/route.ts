@@ -200,7 +200,7 @@ export async function POST(request: NextRequest) {
 
         // Update QA Notes, Score, Status, and Risk Level - DO NOT touch the original Checklist
         const { error: updateError, data: updateData } = await supabaseAdmin
-            .from('Pitch Perfect')
+            .from('QA Results')
             .update({
                 'Call Score': newScore,
                 'Call Status': newStatus,
