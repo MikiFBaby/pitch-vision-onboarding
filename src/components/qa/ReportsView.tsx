@@ -363,7 +363,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
                 // Construct Violation Text
                 // Prioritize 'violations' array, then fallback to failed checklist items
                 let violationText = '';
-                if (call.violations && call.violations.length > 0) {
+                if (Array.isArray(call.violations) && call.violations.length > 0) {
                     violationText = call.violations.join(', ');
                 } else if (call.checklist && Array.isArray(call.checklist)) {
                     // Find failed items
@@ -429,7 +429,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
                         doc.line(14, data.cursor.y, pageWidth - 14, data.cursor.y); // Line under header doesn't work easily in didDrawPage for the header...
                     }
                 },
-                // Add a bold line under the header manually using didParseCell or hooks, 
+                // Add a bold line under the header manually using didParseCell or hooks,
                 // but theme 'plain' + specific border config is cleaner.
                 // Let's stick to simple efficient clean look:
                 didDrawCell: (data) => {
@@ -449,7 +449,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
             });
 
             // --- Trends & Observations Section (After Rows) ---
-            const finalY = (doc as any).lastAutoTable.finalY || 40;
+            const finalY = (doc as any).lastAutoTable?.finalY || 40;
 
             // Allow for page break if near bottom
             let currentY = finalY + 15;
@@ -474,7 +474,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
             // 1. Common Violations
             const allViolations: string[] = [];
             reportData.forEach(c => {
-                if (c.checklist) {
+                if (c.checklist && Array.isArray(c.checklist)) {
                     c.checklist.forEach(i => {
                         if (i.status === 'not_met' || i.status === 'FAIL') allViolations.push(i.name);
                     });
@@ -510,6 +510,17 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
             doc.setFontSize(9);
             doc.setTextColor(...THEME_COLOR);
 
+            // Helper to safely add text
+            const addTextWithPageCheck = (text: string) => {
+                const splitText = doc.splitTextToSize(text, pageWidth - 28);
+                if (currentY + (splitText.length * 5) > pageHeight - 20) {
+                    doc.addPage();
+                    currentY = 20;
+                }
+                doc.text(splitText, 14, currentY);
+                currentY += (splitText.length * 5) + 3;
+            };
+
             // Observation 1: Violations
             let obsText1 = "Top Recurring Violations: ";
             if (topViolations.length > 0) {
@@ -517,23 +528,18 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
             } else {
                 obsText1 += "No significant violation trends detected in this batch.";
             }
-            const splitText1 = doc.splitTextToSize(obsText1, pageWidth - 28);
-            doc.text(splitText1, 14, currentY);
-            currentY += (splitText1.length * 5) + 3;
+            addTextWithPageCheck(obsText1);
 
             // Observation 2: Agents
             if (riskyAgents.length > 0) {
                 let obsText2 = "Agent Focus Areas: ";
                 obsText2 += riskyAgents.map(a => `${a.name} (${Math.round(a.rate)}% failure rate)`).join(', ') + '.';
-                const splitText2 = doc.splitTextToSize(obsText2, pageWidth - 28);
-                doc.text(splitText2, 14, currentY);
-                currentY += (splitText2.length * 5) + 3;
+                addTextWithPageCheck(obsText2);
             }
 
             // Observation 3: General Summary
             const obsText3 = `Summary: Analyzed ${reportData.length} calls with an average compliance score of ${stats.avgScore}%. ${stats.riskCount} calls were flagged as high risk.`;
-            const splitText3 = doc.splitTextToSize(obsText3, pageWidth - 28);
-            doc.text(splitText3, 14, currentY);
+            addTextWithPageCheck(obsText3);
 
             // Footer
             const pageCount = doc.getNumberOfPages();
@@ -552,11 +558,12 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
             setIsExporting(false);
             setExportMessage("PDF downloaded successfully!");
             setTimeout(() => setExportMessage(null), 3000);
-        } catch (error) {
+        } catch (error: any) {
             console.error('PDF Export Error:', error);
             setIsExporting(false);
-            setExportMessage("Error exporting PDF");
-            setTimeout(() => setExportMessage(null), 3000);
+            // Show detailed error message to user
+            setExportMessage(`Error: ${error?.message || 'Unknown PDF error'}`);
+            setTimeout(() => setExportMessage(null), 5000);
         }
     };
 
