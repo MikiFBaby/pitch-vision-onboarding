@@ -291,84 +291,197 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
 
     const generatePDF = async () => {
         try {
-            // Dynamic import for client-side only
             const { jsPDF } = await import('jspdf');
             const autoTableModule = await import('jspdf-autotable');
 
             const doc = new jsPDF();
+            const pageWidth = doc.internal.pageSize.width;
+            const pageHeight = doc.internal.pageSize.height;
 
-            // -- Header --
-            doc.setFillColor(147, 51, 234);
-            doc.rect(0, 0, 210, 25, 'F');
+            // --- Helper: Load Image ---
+            const loadImage = (url: string): Promise<HTMLImageElement> => {
+                return new Promise((resolve, reject) => {
+                    const img = new Image();
+                    img.src = url;
+                    img.onload = () => resolve(img);
+                    img.onerror = reject;
+                });
+            };
 
-            doc.setTextColor(255, 255, 255);
-            doc.setFontSize(18);
-            doc.setFont('helvetica', 'bold');
-            doc.text("Pitch Vision Solutions", 14, 16);
+            // --- Brand Colors ---
+            // Cast as tuples to satisfy jsPDF spread arguments
+            const BRAND_PURPLE: [number, number, number] = [147, 51, 234]; // #9333ea
+            const SLATE_900: [number, number, number] = [15, 23, 42];      // #0f172a
+            const SLATE_500: [number, number, number] = [100, 116, 139];   // #64748b
+            const SLATE_50: [number, number, number] = [248, 250, 252];    // #f8fafc
 
-            doc.setFontSize(10);
+            // --- Header Section ---
+            // 1. Top Accent Line (Thicker to match brand)
+            doc.setFillColor(...BRAND_PURPLE);
+            doc.rect(0, 0, pageWidth, 4, 'F');
+
+            // 2. Logo Integration
+            try {
+                const logoImg = await loadImage('/images/report-logo.png');
+                // Calculate aspect ratio to fit height of 15mm
+                const logoHeight = 15;
+                const logoWidth = (logoImg.width / logoImg.height) * logoHeight;
+                doc.addImage(logoImg, 'PNG', 14, 10, logoWidth, logoHeight);
+
+                // 3. Report Title (Right Aligned - Shifted down slightly)
+                doc.setFont('helvetica', 'bold');
+                doc.setFontSize(22);
+                doc.setTextColor(...SLATE_900);
+                doc.text("EXECUTIVE REPORT", pageWidth - 14, 20, { align: 'right' });
+            } catch (e) {
+                // Fallback text if logo fails
+                doc.setFont('helvetica', 'bold');
+                doc.setFontSize(22);
+                doc.setTextColor(...SLATE_900);
+                doc.text("Pitch Perfect", 14, 22);
+
+                doc.setFontSize(14);
+                doc.setTextColor(80, 80, 80);
+                doc.text("EXECUTIVE REPORT", pageWidth - 14, 22, { align: 'right' });
+            }
+
+            // 4. Meta Data (Right Aligned)
             doc.setFont('helvetica', 'normal');
-            doc.text("Enterprise Compliance Report", 196, 16, { align: 'right' });
+            doc.setFontSize(9);
+            doc.setTextColor(...SLATE_500);
+            const dateStr = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
+            doc.text(`Generated: ${dateStr}`, pageWidth - 14, 26, { align: 'right' });
+            doc.text(`Period: ${startDate || 'All Time'} - ${endDate || 'Present'}`, pageWidth - 14, 31, { align: 'right' });
 
-            // -- Report Title & Meta --
-            doc.setTextColor(30, 41, 59);
-            doc.setFontSize(16);
-            doc.setFont('helvetica', 'bold');
-            doc.text(reportTitle, 14, 40);
+            // --- Summary Section (Cards) ---
+            const startY = 45;
+            const cardWidth = (pageWidth - 28 - 10) / 3; // 3 cards, 14px margin sides, 5px gap
+            const cardHeight = 24;
 
-            doc.setFontSize(10);
-            doc.setTextColor(100, 116, 139);
-            doc.setFont('helvetica', 'normal');
-            doc.text(`Generated: ${new Date().toLocaleString()}`, 14, 46);
-            doc.text(`Period: ${startDate || 'All Time'} to ${endDate || 'Present'}`, 14, 51);
+            // Helper to draw varied metric cards
+            const drawMetricCard = (x: number, label: string, value: string, subtext: string, accentColor: [number, number, number]) => {
+                // Card bg
+                doc.setFillColor(252, 252, 252);
+                doc.setDrawColor(230, 230, 230);
+                doc.roundedRect(x, startY, cardWidth, cardHeight, 2, 2, 'FD');
 
-            // -- Summary Stats --
-            doc.setFontSize(11);
-            doc.setTextColor(30, 41, 59);
-            doc.text(`Total Calls: ${reportData.length}  |  Avg Score: ${stats.avgScore}%  |  High Risks: ${stats.riskCount}`, 14, 62);
+                // Left accent strip
+                doc.setFillColor(...accentColor);
+                doc.rect(x, startY, 1.5, cardHeight, 'F'); // strip
 
-            // -- Table Data --
-            const tableData = reportData.map(call => [
+                // Label
+                doc.setFontSize(8);
+                doc.setTextColor(...SLATE_500);
+                doc.text(label.toUpperCase(), x + 6, startY + 8);
+
+                // Value
+                doc.setFontSize(12);
+                doc.setFont('helvetica', 'bold');
+                doc.setTextColor(...SLATE_900);
+                doc.text(value, x + 6, startY + 18);
+            };
+
+            drawMetricCard(14, "Total Calls", `${reportData.length}`, "Records", [59, 130, 246] as [number, number, number]); // Blue accent
+            drawMetricCard(14 + cardWidth + 5, "Avg Score", `${stats.avgScore}%`, "Compliance", [147, 51, 234] as [number, number, number]); // Purple accent
+            drawMetricCard(14 + (cardWidth + 5) * 2, "High Risks", `${stats.riskCount}`, "Critical", [239, 68, 68] as [number, number, number]); // Red accent
+
+            // --- Divider ---
+            doc.setDrawColor(240, 240, 240);
+            doc.line(14, startY + cardHeight + 10, pageWidth - 14, startY + cardHeight + 10);
+
+            // --- Table Data Preparation ---
+            // Columns: Date | Agent | Campaign | Duration | Risk | Score | Status
+            const tableBody = reportData.map(call => [
                 new Date(call.timestamp).toLocaleDateString(),
                 call.agentName || '-',
                 call.campaignType || '-',
+                call.duration || '0:00',
+                call.riskLevel || '-',
                 `${call.complianceScore}%`,
-                call.status || '-'
+                (call.status || '-').toUpperCase()
             ]);
 
-            // Use autoTable
+            // --- AutoTable ---
             autoTableModule.default(doc, {
-                startY: 70,
-                head: [['Date', 'Agent', 'Campaign', 'Score', 'Status']],
-                body: tableData,
-                theme: 'striped',
-                headStyles: {
-                    fillColor: [147, 51, 234],
-                    fontSize: 9,
-                    fontStyle: 'bold',
-                    halign: 'left'
-                },
+                startY: startY + cardHeight + 15,
+                head: [['Date', 'Agent', 'Campaign', 'Duration', 'Risk', 'Score', 'Status']],
+                body: tableBody,
+                theme: 'grid', // 'grid' gives us cleaner borders we can customize
                 styles: {
+                    font: 'helvetica',
                     fontSize: 8,
-                    cellPadding: 3,
-                    textColor: [51, 65, 85]
+                    textColor: [51, 65, 85],
+                    cellPadding: 4,
+                    lineColor: [241, 245, 249],
+                    lineWidth: 0.1,
+                },
+                headStyles: {
+                    fillColor: [30, 41, 59], // Slate 800
+                    textColor: [255, 255, 255],
+                    fontSize: 8,
+                    fontStyle: 'bold',
+                    halign: 'left',
+                    cellPadding: 4
                 },
                 alternateRowStyles: {
-                    fillColor: [248, 250, 252]
+                    fillColor: [248, 250, 252] // Slate 50
                 },
                 columnStyles: {
-                    0: { cellWidth: 25 },
-                    1: { cellWidth: 45 },
-                    2: { cellWidth: 45 },
-                    3: { cellWidth: 20, halign: 'center', fontStyle: 'bold' },
-                    4: { cellWidth: 35 }
+                    0: { cellWidth: 25 }, // Date
+                    1: { cellWidth: 40 }, // Agent
+                    2: { cellWidth: 35 }, // Campaign
+                    3: { cellWidth: 15, halign: 'center' }, // Duration
+                    4: { cellWidth: 20 }, // Risk
+                    5: { cellWidth: 15, halign: 'center', fontStyle: 'bold' }, // Score
+                    6: { cellWidth: 30 }  // Status
+                },
+                didParseCell: function (data) {
+                    // Color code the Status and Risk columns
+                    if (data.section === 'body') {
+                        if (data.column.index === 5) { // Score
+                            const score = parseInt(data.cell.raw as string);
+                            if (score >= 90) data.cell.styles.textColor = [16, 185, 129]; // Emerald
+                            else if (score < 70) data.cell.styles.textColor = [239, 68, 68]; // Red
+                        }
+                        if (data.column.index === 6) { // Status
+                            const text = (data.cell.raw as string) || '';
+                            if (text.includes('CONSENT') && !text.includes('NO')) {
+                                data.cell.styles.textColor = [16, 185, 129];
+                            } else if (text.includes('FAIL') || text.includes('NO')) {
+                                data.cell.styles.textColor = [239, 68, 68];
+                            } else {
+                                data.cell.styles.textColor = [217, 119, 6]; // Amber
+                            }
+                        }
+                        if (data.column.index === 4) { // Risk
+                            const text = (data.cell.raw as string).toUpperCase();
+                            if (text === 'HIGH' || text === 'CRITICAL') {
+                                data.cell.styles.textColor = [220, 38, 38];
+                                data.cell.styles.fontStyle = 'bold';
+                            }
+                        }
+                    }
+                },
+                // Add footer to each page
+                didDrawPage: function (data) {
+                    // Footer line
+                    doc.setDrawColor(240, 240, 240);
+                    doc.line(14, pageHeight - 15, pageWidth - 14, pageHeight - 15);
+
+                    // Footer Text
+                    doc.setFontSize(8);
+                    doc.setTextColor(...SLATE_500);
+                    doc.text("Pitch Vision Solutions - Confidential - Executive Report", 14, pageHeight - 10);
+
+                    // Page Number
+                    const pageStr = `Page ${doc.getNumberOfPages()}`;
+                    doc.text(pageStr, pageWidth - 14, pageHeight - 10, { align: 'right' });
                 }
             });
 
-            // Generate blob and use file-saver for reliable download
-            const pdfBlob = doc.output('blob');
+            // Save PDF
             const filename = `${reportTitle.replace(/[^a-z0-9]/gi, '_')}_${new Date().toISOString().split('T')[0]}.pdf`;
-            saveAs(pdfBlob, filename);
+            doc.save(filename);
 
             setIsExporting(false);
             setExportMessage("PDF downloaded successfully!");
