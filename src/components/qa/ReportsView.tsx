@@ -354,7 +354,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
             doc.line(14, 30, pageWidth - 14, 30);
 
             // --- Table Section ---
-            // Prepare Data: Date | Time | Agent Name | Phone Number | Violation
+            // Prepare Data: Date | Time | Agent Name | Phone Number | Violation | Score | Risk
 
             const tableBody = reportData.map(call => {
                 const dateObj = new Date(call.timestamp);
@@ -365,7 +365,9 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
                 // Prioritize 'violations' array, then fallback to failed checklist items
                 let violationText = '';
                 if (Array.isArray(call.violations) && call.violations.length > 0) {
-                    violationText = call.violations.join(', ');
+                    // Use newlines for vertical listing - cleaner look
+                    violationText = call.violations.join('\n• ');
+                    if (violationText) violationText = '• ' + violationText;
                 } else if (call.checklist && Array.isArray(call.checklist)) {
                     // Find failed items
                     const failed = call.checklist.filter(i =>
@@ -373,8 +375,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
                     );
                     violationText = failed.map(i => {
                         // Use evidence if short, otherwise name
-                        return i.evidence ? `"${i.evidence}"` : i.name;
-                    }).join('; ');
+                        return i.evidence ? `• "${i.evidence}"` : `• ${i.name}`;
+                    }).join('\n');
                 }
 
                 // If no specific violation text found but score is low, use summary
@@ -387,41 +389,46 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
                     time,
                     call.agentName || '-',
                     formatPhoneNumber(call.phoneNumber),
-                    violationText || '-'
+                    violationText || '-',
+                    `${call.complianceScore}%`, // Score
+                    call.riskLevel || 'Low'     // Risk
                 ];
             });
 
             // AutoTable
             autoTableModule.default(doc, {
                 startY: 35,
-                head: [['DATE', 'TIME', 'AGENT NAME', 'PHONE NUMBER', 'VIOLATION']],
+                // Add Score and Risk columns for better density/insight
+                head: [['DATE', 'TIME', 'AGENT NAME', 'PHONE', 'VIOLATIONS', 'SCORE', 'RISK']],
                 body: tableBody,
-                theme: 'plain', // Minimalist "McKinsey" style
+                theme: 'plain',
                 styles: {
                     font: 'helvetica',
                     fontSize: 8,
                     textColor: TEXT_MAIN,
-                    cellPadding: 4, // Increased padding for breathability
-                    lineColor: [220, 220, 220],
+                    cellPadding: 4,
+                    lineColor: [230, 230, 230],
                     lineWidth: 0,
-                    overflow: 'linebreak', // Critical: ensures text wraps instead of overlapping
+                    overflow: 'linebreak',
                     valign: 'top',
                 },
                 headStyles: {
-                    fillColor: [255, 255, 255],
+                    fillColor: [248, 250, 252], // Subtle Slate-50 background for header
                     textColor: THEME_COLOR,
-                    fontSize: 8,
+                    fontSize: 7,
                     fontStyle: 'bold',
                     halign: 'left',
                     lineWidth: 0,
                     cellPadding: 4,
                 },
                 columnStyles: {
-                    0: { cellWidth: 22 }, // Date
-                    1: { cellWidth: 15 }, // Time
-                    2: { cellWidth: 45, fontStyle: 'bold' }, // Agent Name (Widened)
-                    3: { cellWidth: 32 }, // Phone (Fixed width)
-                    4: { cellWidth: 'auto' } // Violation (Takes remaining space)
+                    0: { cellWidth: 18 }, // Date
+                    1: { cellWidth: 12 }, // Time
+                    2: { cellWidth: 35, fontStyle: 'bold' }, // Agent Name
+                    3: { cellWidth: 22 }, // Phone 
+                    4: { cellWidth: 'auto' }, // Violation (Dominant width)
+                    5: { cellWidth: 12, halign: 'right' }, // Score
+                    6: { cellWidth: 18, fontStyle: 'bold' }  // Risk
                 },
                 didDrawPage: function (data) {
                     // Header line for each page's table
@@ -431,16 +438,43 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
                         doc.line(14, data.cursor.y, pageWidth - 14, data.cursor.y);
                     }
                 },
+                didParseCell: (data) => {
+                    // Custom styling for specific columns based on value
+                    if (data.section === 'body') {
+                        // Risk Column Coloring
+                        if (data.column.index === 6) {
+                            const risk = (data.cell.raw as string).toLowerCase();
+                            if (risk === 'high' || risk === 'critical') {
+                                data.cell.styles.textColor = [220, 38, 38]; // Red-600
+                            } else if (risk === 'medium' || risk === 'warning') {
+                                data.cell.styles.textColor = [217, 119, 6]; // Amber-600
+                            } else {
+                                data.cell.styles.textColor = [5, 150, 105]; // Emerald-600
+                            }
+                        }
+                        // Score Column Coloring
+                        if (data.column.index === 5) {
+                            const score = parseInt((data.cell.raw as string).replace('%', ''));
+                            if (score < 70) {
+                                data.cell.styles.textColor = [220, 38, 38]; // Red
+                            } else if (score < 90) {
+                                data.cell.styles.textColor = [217, 119, 6]; // Amber
+                            } else {
+                                data.cell.styles.textColor = [5, 150, 105]; // Emerald
+                            }
+                        }
+                    }
+                },
                 didDrawCell: (data) => {
                     // Draw line only under header row
                     if (data.section === 'head' && data.row.index === 0) {
-                        doc.setDrawColor(30, 41, 59);
-                        doc.setLineWidth(0.5);
+                        doc.setDrawColor(200, 200, 200);
+                        doc.setLineWidth(0.1);
                         doc.line(data.cell.x, data.cell.y + data.cell.height, data.cell.x + data.cell.width, data.cell.y + data.cell.height);
                     }
                     // Draw light line under body rows
                     if (data.section === 'body') {
-                        doc.setDrawColor(240, 240, 240);
+                        doc.setDrawColor(245, 245, 245);
                         doc.setLineWidth(0.1);
                         doc.line(data.cell.x, data.cell.y + data.cell.height, data.cell.x + data.cell.width, data.cell.y + data.cell.height);
                     }
