@@ -152,7 +152,7 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
     if (selectedCalls.length === 0) return;
 
     // Create CSV Content
-    const headers = ["ID", "Date", "Agent", "Campaign", "Score", "Type", "Status", "Risk Level", "Summary"];
+    const headers = ["ID", "Date", "Agent", "Campaign", "Score", "Source", "Status", "Risk Level", "Summary"];
     const rows = selectedCalls.map(c => [
       `"${c.callId}"`,
       `"${c.callDate}"`,
@@ -625,7 +625,7 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
                 <th className="px-6 py-4 w-10"></th> {/* Arrow Column */}
                 <th className="px-4 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Call Date</th>
                 <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Analyzed At</th>
-                <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest text-center">Type</th>
+                <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest text-center">Source</th>
                 <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Agent</th>
                 <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Campaign</th>
                 <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Contact</th>

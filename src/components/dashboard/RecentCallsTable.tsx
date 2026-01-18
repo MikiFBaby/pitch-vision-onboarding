@@ -29,7 +29,7 @@ export default function RecentCallsTable() {
                         <TableHead className="text-[10px] font-bold text-white/40 uppercase tracking-widest py-4">Date</TableHead>
                         <TableHead className="text-[10px] font-bold text-white/40 uppercase tracking-widest py-4">Customer</TableHead>
                         <TableHead className="text-[10px] font-bold text-white/40 uppercase tracking-widest py-4">Duration</TableHead>
-                        <TableHead className="text-[10px] font-bold text-white/40 uppercase tracking-widest py-4 text-center">Type</TableHead>
+                        <TableHead className="text-[10px] font-bold text-white/40 uppercase tracking-widest py-4 text-center">Source</TableHead>
                         <TableHead className="text-[10px] font-bold text-white/40 uppercase tracking-widest py-4 text-center">Score</TableHead>
                         <TableHead className="text-[10px] font-bold text-white/40 uppercase tracking-widest py-4 text-right">Status</TableHead>
                     </TableRow>
