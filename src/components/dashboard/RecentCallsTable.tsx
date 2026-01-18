@@ -10,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { getRecentCalls } from "@/lib/mock-data";
 import { cn } from "@/lib/utils";
 import { motion } from "framer-motion";
+import { Bot, UploadCloud } from "lucide-react";
 
 export default function RecentCallsTable() {
     const calls = getRecentCalls();
@@ -28,6 +29,7 @@ export default function RecentCallsTable() {
                         <TableHead className="text-[10px] font-bold text-white/40 uppercase tracking-widest py-4">Date</TableHead>
                         <TableHead className="text-[10px] font-bold text-white/40 uppercase tracking-widest py-4">Customer</TableHead>
                         <TableHead className="text-[10px] font-bold text-white/40 uppercase tracking-widest py-4">Duration</TableHead>
+                        <TableHead className="text-[10px] font-bold text-white/40 uppercase tracking-widest py-4 text-center">Type</TableHead>
                         <TableHead className="text-[10px] font-bold text-white/40 uppercase tracking-widest py-4 text-center">Score</TableHead>
                         <TableHead className="text-[10px] font-bold text-white/40 uppercase tracking-widest py-4 text-right">Status</TableHead>
                     </TableRow>
@@ -47,6 +49,21 @@ export default function RecentCallsTable() {
                             <TableCell className="text-xs text-white/40 py-4">{call.date}</TableCell>
                             <TableCell className="text-xs font-medium text-white/80 py-4">{call.customer}</TableCell>
                             <TableCell className="text-xs text-white/40 py-4">{call.duration}</TableCell>
+                            <TableCell className="py-4 text-center">
+                                <div className="flex justify-center">
+                                    {call.uploadType === 'automated' ? (
+                                        <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-slate-100/5 border border-white/10 text-white/60" title="Automated">
+                                            <Bot size={10} className="text-purple-400" />
+                                            <span className="text-[9px] font-bold uppercase tracking-wider">Auto</span>
+                                        </div>
+                                    ) : (
+                                        <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-slate-100/5 border border-white/10 text-white/60" title="Manual">
+                                            <UploadCloud size={10} className="text-blue-400" />
+                                            <span className="text-[9px] font-bold uppercase tracking-wider">Manual</span>
+                                        </div>
+                                    )}
+                                </div>
+                            </TableCell>
                             <TableCell className="py-4">
                                 <div className="flex justify-center">
                                     <span className={cn(

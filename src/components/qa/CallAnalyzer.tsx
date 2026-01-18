@@ -1,8 +1,7 @@
 "use client";
 
-// Version: 1.1.3 - Concurrent UI (All Processors Active)
 import React, { useState, useEffect, useRef } from 'react';
-import { Upload, X, CheckCircle2, Zap, AlertTriangle, FileAudio, Aperture, User, RotateCcw, Files, Loader2, StopCircle } from 'lucide-react';
+import { Upload, X, CheckCircle2, Zap, AlertTriangle, FileAudio, User, RotateCcw, Files, Loader2, StopCircle } from 'lucide-react';
 import { CallData } from '@/types/qa-types';
 import { supabase } from '@/lib/supabase-client';
 import { PitchVisionLogo } from '@/components/ui/pitch-vision-logo';
@@ -10,18 +9,20 @@ import { PitchVisionLogo } from '@/components/ui/pitch-vision-logo';
 interface CallAnalyzerProps {
   isOpen: boolean;
   onClose: () => void;
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   onAnalysisComplete: (data: CallData) => void;
   onUploadSuccess?: () => void;
 }
 
-interface BatchResult {
-  fileName: string;
-  success: boolean;
-  error?: string;
+interface FileState {
+  file: File;
+  id: string; // generated ID to track
+  progress: number; // 0-100
+  status: 'pending' | 'analyzing' | 'completed' | 'error';
+  estimatedDuration: number; // seconds
 }
 
-const WEBHOOK_URL = 'https://sailient.app.n8n.cloud/webhook/UIDrop';
-// Support large call recordings
+const WEBHOOK_URL = 'https://n8n.pitchvision.io/webhook/UIDrop';
 const MAX_FILE_SIZE_MB = 250;
 
 const LOADING_STATEMENTS = [
@@ -38,22 +39,22 @@ const LOADING_STATEMENTS = [
   "Almost there... finalizing results..."
 ];
 
-export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onAnalysisComplete, onUploadSuccess }) => {
+export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onUploadSuccess }) => {
   // Multi-file state
-  const [files, setFiles] = useState<File[]>([]);
+  const [fileStates, setFileStates] = useState<FileState[]>([]);
   const [manualAgentName, setManualAgentName] = useState('');
   const [status, setStatus] = useState<'idle' | 'processing' | 'success' | 'queued' | 'error' | 'batch-complete'>('idle');
   const [error, setError] = useState<string | null>(null);
+
+  // For UI troubleshooting msg
   const [isCorsError, setIsCorsError] = useState(false);
 
-  // Progress tracking
-  const [processedCount, setProcessedCount] = useState(0);
-  const [progress, setProgress] = useState(0);
-  const [estimatedSeconds, setEstimatedSeconds] = useState(0);
+  // Global Progress tracking (Aggregate)
+  const [globalProgress, setGlobalProgress] = useState(0);
   const [statementIndex, setStatementIndex] = useState(0);
 
   const statementInterval = useRef<ReturnType<typeof setInterval> | null>(null);
-  const progressInterval = useRef<ReturnType<typeof setInterval> | null>(null);
+  const progressIntervals = useRef<{ [key: string]: NodeJS.Timeout }>({});
   const abortController = useRef<AbortController | null>(null);
 
   // Statement Rotation
@@ -70,70 +71,108 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
     };
   }, [status]);
 
-  // Dynamic Progress Bar Logic
+  // Clean up intervals on unmount
   useEffect(() => {
-    if (status === 'processing' && files.length > 0) {
-      // Calculate total size in MB
-      const totalSizeMB = files.reduce((acc, f) => acc + f.size, 0) / (1024 * 1024);
-
-      // Estimation Formula: 
-      // Base overhead (connection/handshake): 10s (was 2s)
-      // Upload speed assumption: ~30s per MB (was 5s)
-      // This slows down the bar significantly as requested.
-      const durationMs = 10000 + (totalSizeMB * 30000);
-      setEstimatedSeconds(Math.ceil(durationMs / 1000));
-
-      const updateFrequency = 100; // update every 100ms
-      const incrementPerStep = 90 / (durationMs / updateFrequency); // Target 90% over duration
-
-      if (progressInterval.current) clearInterval(progressInterval.current);
-
-      progressInterval.current = setInterval(() => {
-        setProgress(prev => {
-          const next = prev + incrementPerStep;
-          // Cap at 95% until actual completion
-          return next >= 95 ? 95 : next;
-        });
-      }, updateFrequency);
-    } else {
-      if (progressInterval.current) clearInterval(progressInterval.current);
-    }
-
     return () => {
-      if (progressInterval.current) clearInterval(progressInterval.current);
+      Object.values(progressIntervals.current).forEach(clearInterval);
+      if (statementInterval.current) clearInterval(statementInterval.current);
     };
-  }, [status, files]);
+  }, []);
 
-  if (!isOpen) return null;
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files) {
+      const selectedMap: FileState[] = Array.from(e.target.files).map(f => ({
+        file: f,
+        id: Math.random().toString(36).substring(7),
+        progress: 0,
+        status: 'pending',
+        // Estimate: 10s base + 30s per MB
+        estimatedDuration: 10 + (f.size / (1024 * 1024)) * 30
+      }));
+      setFileStates(selectedMap);
+      setError(null);
+    }
+  };
 
-  const analyzeWithWebhook = async (filesToUpload: File[]): Promise<{ success: boolean; queued: boolean }> => {
+  const removeFile = (index: number) => {
+    setFileStates(prev => prev.filter((_, i) => i !== index));
+  };
+
+  const startSimulatedProgress = (fileId: string, durationSec: number) => {
+    if (progressIntervals.current[fileId]) return;
+
+    const updateFreq = 100;
+    const totalSteps = (durationSec * 1000) / updateFreq;
+    const increment = 90 / totalSteps;
+
+    progressIntervals.current[fileId] = setInterval(() => {
+      setFileStates(prev => prev.map(fs => {
+        if (fs.id !== fileId) return fs;
+        const next = fs.progress + increment;
+        return {
+          ...fs,
+          progress: next >= 90 ? 90 : next, // Cap at 90% until complete
+          status: 'analyzing'
+        };
+      }));
+    }, updateFreq);
+  };
+
+  const completeFile = (index: number) => {
+    setFileStates(prev => {
+      const newState = [...prev];
+      if (newState[index]) {
+        // Clear interval
+        const id = newState[index].id;
+        if (progressIntervals.current[id]) {
+          clearInterval(progressIntervals.current[id]);
+          delete progressIntervals.current[id];
+        }
+        newState[index] = { ...newState[index], progress: 100, status: 'completed' };
+      }
+      return newState;
+    });
+  };
+
+  const cancelAnalysis = () => {
+    if (abortController.current) {
+      abortController.current.abort();
+    }
+    // Cleanup
+    Object.values(progressIntervals.current).forEach(clearInterval);
+    progressIntervals.current = {};
+
+    setStatus('idle');
+    setFileStates([]);
+    setGlobalProgress(0);
+  };
+
+  const analyzeWithWebhook = async (states: FileState[]): Promise<{ success: boolean; queued: boolean }> => {
     console.log("=== UPLOADING BATCH TO N8N ===");
-    console.log(`Files (${filesToUpload.length}):`, filesToUpload.map(f => `${f.name} (${f.size}b)`).join(', '));
 
-    // Reset counters
-    setProcessedCount(0);
-    setProgress(0);
+    // Start simulations for ALL files immediately (Concurrent UI)
+    states.forEach(state => startSimulatedProgress(state.id, state.estimatedDuration));
+
     abortController.current = new AbortController();
-
+    const filesToUpload = states.map(s => s.file);
     const totalFiles = filesToUpload.length;
-    const MAX_WAIT = 10 * 60 * 1000; // 10 minutes total for batch
+    const MAX_WAIT = 10 * 60 * 1000;
 
     return new Promise(async (resolve, reject) => {
       let done = false;
-      let completed = 0;
+      let completedCount = 0;
       let pollingTimer: ReturnType<typeof setInterval>;
       const startTime = new Date().toISOString();
       let subscription: ReturnType<typeof supabase.channel>;
       let timeoutTimer: ReturnType<typeof setTimeout>;
 
-      // Cleanup helper
       const cleanup = () => {
         if (subscription) supabase.removeChannel(subscription);
         clearTimeout(timeoutTimer);
         if (pollingTimer) clearInterval(pollingTimer);
+        Object.values(progressIntervals.current).forEach(clearInterval);
       };
 
-      // Support Cancel
       abortController.current?.signal.addEventListener('abort', () => {
         if (!done) {
           done = true;
@@ -142,24 +181,23 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
         }
       });
 
-      // Success Handler for Realtime & Polling
       const checkCompletion = (newRecord?: any) => {
         if (done) return;
 
-        // Count completion - For simplicity in batch, if we find enough new records, we are done
-        // Polling will return the Total count of new records
         if (!newRecord) {
-          // Called from Polling (count check)
-          completed = totalFiles; // Assume if we found enough rows, we are done
+          // Polling check logic (handled below)
         } else {
-          // Called from Realtime
+          // Realtime
           console.log("🎉 Realtime Insert Detected:", newRecord.id);
-          completed++;
+          // Mark the next available pending/analyzing file as complete
+          completeFile(completedCount);
+          completedCount++;
         }
 
-        setProcessedCount(completed);
+        // Update global progress
+        setGlobalProgress((completedCount / totalFiles) * 100);
 
-        if (completed >= totalFiles) {
+        if (completedCount >= totalFiles) {
           done = true;
           cleanup();
           resolve({ success: true, queued: false });
@@ -173,117 +211,96 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
         reject(new Error(errorStr));
       };
 
-      // 1. Start Subscription - Broadened for Debugging
+      // 1. Start Subscription
       subscription = supabase
         .channel('qa-batch-' + Date.now())
         .on('postgres_changes',
-          { event: 'INSERT', schema: 'public' }, // Listen to everything in public
+          { event: 'INSERT', schema: 'public' },
           (payload) => {
-            console.log("🔔 Realtime Event Received:", payload);
-            console.log("Payload Table:", payload.table);
-
-            // Check if it's our table (handling potential casing/quoting issues)
+            // Check table name loosely
             if (payload.table === 'Pitch Perfect' || payload.table === 'pitch perfect') {
               checkCompletion(payload.new);
             }
           }
         )
-        .subscribe((status) => {
-          console.log("Realtime subscription status:", status);
-          if (status === 'SUBSCRIBED') {
-            console.log("✅ Successfully subscribed to public schema changes");
-          }
-        });
+        .subscribe();
 
-      // 2. Start Polling Fallback (Every 3s)
+      // 2. Start Polling Fallback 
       pollingTimer = setInterval(async () => {
         if (done) return;
         try {
-          // Count rows created AFTER we started this upload
           const { count, error } = await supabase
             .from('Pitch Perfect')
             .select('*', { count: 'exact', head: true })
             .gt('created_at', startTime);
 
-          if (error) {
-            console.error("Polling error:", error);
-            return;
+          if (!error && count !== null) {
+            // If polling finds more rows than we have locally tracked, catch up
+            if (count > completedCount) {
+              for (let i = completedCount; i < count; i++) {
+                // Ensure we don't overflow
+                if (i < totalFiles) completeFile(i);
+              }
+              completedCount = count;
+              setGlobalProgress((completedCount / totalFiles) * 100);
+            }
+            if (count >= totalFiles) {
+              checkCompletion();
+            }
           }
+        } catch (e) { console.error(e); }
+      }, 5000);
 
-          console.log(`Polling Check: Found ${count} new rows since ${startTime}`);
-
-          if (count !== null && count >= totalFiles) {
-            console.log("✅ Polling confirmed completion!");
-            // Pass nothing to indicate "Bulk Success" from polling
-            checkCompletion();
-          }
-        } catch (e) {
-          console.error("Polling Exception:", e);
-        }
-      }, 5000); // Check every 5 seconds
-
-      // 3. Set Timeout
+      // 3. Timeout
       timeoutTimer = setTimeout(() => {
-        if (completed > 0) {
-          // If we finished some but not all, consider it partial success?
-          // For now, let's just finish what we have.
+        if (completedCount > 0) {
           done = true;
           cleanup();
-          resolve({ success: true, queued: true }); // Queued/Partial
+          resolve({ success: true, queued: true });
         } else {
-          fail("Analysis timed out. No results received within 10 minutes.");
+          fail("Analysis timed out.");
         }
       }, MAX_WAIT);
 
-      // 4. Upload Files
+      // 4. Upload
       const formData = new FormData();
       filesToUpload.forEach(f => formData.append('file', f));
+      formData.append('upload_type', 'manual');
+      if (manualAgentName) formData.append('agent_name', manualAgentName);
 
       try {
-        console.log("Sending files to N8N webhook...");
         const response = await fetch(WEBHOOK_URL, {
           method: 'POST',
           body: formData,
-          signal: abortController.current?.signal // Bind abort signal
-          // Removed 'no-cors' to allow reading response status
-          // Note: This requires the N8N webhook to have CORS enabled/configured to accept requests from this origin
+          signal: abortController.current?.signal
         });
 
         if (response.ok) {
-          console.log("Batch uploaded and processed successfully by N8N. Waiting for Realtime update...");
-          const result = await response.json().catch(() => ({})); // Try to parse JSON if returned
-          console.log("Webhook Response:", result);
-
-          // DO NOT force completion here. 
-          // If N8n responds early, we must wait for the actual DB insert (handled by checkCompletion or Polling).
+          // Wait for DB events
         } else {
-          console.error("Webhook returned error status:", response.status, response.statusText);
-          fail(`Analysis failed with status: ${response.status} ${response.statusText}`);
+          fail(`Analysis failed: ${response.status}`);
         }
       } catch (e: any) {
-        if (e.name === 'AbortError') {
-          console.log("Upload cancelled");
-          // already handled by abort listener
-        } else {
-          console.error("Upload/Network failed:", e);
-          fail("Failed to connect to analysis engine. Please checks your network.");
+        if (e.name !== 'AbortError') {
+          if (e.message.includes('fetch')) setIsCorsError(true);
+          fail("Network failed.");
         }
       }
     });
   };
 
   const processAudio = async () => {
-    if (files.length === 0) return;
+    if (fileStates.length === 0) return;
 
-    if (files.length > 5) {
-      setError("Please upload a maximum of 5 files at a time.");
+    if (fileStates.length > 5) {
+      setError("Please upload a maximum of 5 files.");
       setStatus('error');
       return;
     }
 
-    const oversizedFile = files.find(f => f.size > MAX_FILE_SIZE_MB * 1024 * 1024);
+    const oversizedFile = fileStates.find(fs => fs.file.size > MAX_FILE_SIZE_MB * 1024 * 1024);
     if (oversizedFile) {
-      setError(`"${oversizedFile.name}" exceeds ${MAX_FILE_SIZE_MB}MB limit.`);
+      setError(`"${oversizedFile.file.name}" exceeds ${MAX_FILE_SIZE_MB}MB limit.`);
       setStatus('error');
       return;
     }
@@ -293,72 +310,39 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
     setIsCorsError(false);
 
     try {
-      await analyzeWithWebhook(files);
+      await analyzeWithWebhook(fileStates);
 
-      // Slight delay for UI to show 100%
+      // All done
+      setStatus('batch-complete');
       setTimeout(() => {
         if (onUploadSuccess) onUploadSuccess();
-        setStatus('success');
-
         setTimeout(() => {
           onClose();
-          resetState();
-        }, 3000);
+          // Clean reset
+          setStatus('idle');
+          setFileStates([]);
+          setGlobalProgress(0);
+        }, 2000);
       }, 1000);
 
     } catch (err: any) {
       if (err.message === "Analysis cancelled by user") {
-        setStatus('idle');
+        // reset handled in cancel func
       } else {
-        handleError(err);
+        setError(err.message || 'Analysis failed');
+        setStatus('error');
       }
     }
   };
 
-  const cancelAnalysis = () => {
-    if (abortController.current) {
-      abortController.current.abort();
-    }
-    setStatus('idle');
-    setProcessedCount(0);
-    setProgress(0);
-  };
-
-  const handleError = (err: any) => {
-    console.error("Analysis Process Error:", err);
-    let message = err.message || "An unexpected error occurred.";
-
-    if (message.includes("Failed to fetch") || message.includes("NetworkError")) {
-      message = "Connection Failed. The server may be unreachable or blocking the request.";
-      setIsCorsError(true);
-    }
-
-    setError(message);
-    setStatus('error');
-  };
-
-  const resetState = () => {
+  const handleRetry = () => {
     setStatus('idle');
     setError(null);
-    setFiles([]);
-    setManualAgentName('');
-    setProgress(0);
-    setProcessedCount(0);
+    setFileStates([]);
+    setGlobalProgress(0);
   };
 
-  const handleRetry = () => {
-    resetState();
-  };
-
-  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files) {
-      setFiles(Array.from(e.target.files));
-    }
-  };
-
-  const removeFile = (index: number) => {
-    setFiles(prev => prev.filter((_, i) => i !== index));
-  };
+  if (!isOpen) return null;
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
@@ -371,7 +355,6 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
 
         <div className="flex justify-between items-center p-6 border-b border-white/5 bg-[#2E1065]/50">
           <div className="flex items-center gap-3">
-            {/* Replaced Generic Zap Icon with Brand Logo */}
             <div className="scale-75 origin-left">
               <PitchVisionLogo />
             </div>
@@ -400,7 +383,7 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
                 <div className="w-full space-y-3 mb-8 mt-6">
                   <div className="flex justify-between items-end px-1">
                     <span className="text-sm font-bold text-white">Audio Processing Queue</span>
-                    <span className="text-sm font-mono text-purple-300">{Math.round(progress)}%</span>
+                    <span className="text-sm font-mono text-purple-300">{Math.round(globalProgress)}%</span>
                   </div>
 
                   {/* Glassy Progress Bar Track */}
@@ -408,7 +391,7 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
                     {/* Gradient Progress Fill */}
                     <div
                       className="h-full bg-gradient-to-r from-purple-600 via-indigo-500 to-purple-400 relative transition-all duration-700 ease-out shadow-[0_0_20px_rgba(168,85,247,0.4)]"
-                      style={{ width: `${progress}%` }}
+                      style={{ width: `${globalProgress}%` }}
                     >
                       {/* Shimmer Effect */}
                       <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/30 to-transparent w-full -translate-x-full animate-[shimmer_2s_infinite]" />
@@ -416,50 +399,78 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
                   </div>
 
                   <div className="flex justify-between items-center text-[10px] text-slate-500 font-medium px-1 uppercase tracking-wider">
-                    <span>{files.length} ITEMS</span>
-                    <span>EST: ~{Math.max(0, Math.ceil((files.length * 90) - (processedCount * 90)))}s REMAINING</span>
+                    <span>{fileStates.length} ITEMS</span>
+                    <span>PROCESSING BATCH...</span>
                   </div>
                 </div>
 
-                <div className="w-full bg-[#0F0818] rounded-xl border border-white/5 p-2 flex flex-col gap-2 shadow-xl max-h-[220px] overflow-y-auto custom-scrollbar">
-                  {files.map((file, idx) => {
-                    const isDone = idx < processedCount;
-                    // Concurrent mode: If it's not done, it IS analyzing.
-                    const isProcessing = !isDone;
+                <div className="w-full bg-[#0A0510]/50 backdrop-blur-sm rounded-xl border border-white/5 p-3 flex flex-col gap-3 shadow-2xl max-h-[300px] overflow-y-auto custom-scrollbar">
+                  {fileStates.map((fs, index) => {
+                    const isDone = fs.status === 'completed';
+                    const isProcessing = fs.status === 'analyzing';
 
                     return (
-                      <div key={idx} className={`relative overflow-hidden rounded-lg px-4 py-3 transition-all duration-300 border
-                                      ${isDone ? 'border-emerald-500/50 bg-emerald-500/5' :
-                          'border-white/5 bg-white/[0.02]'}`}>
+                      <div
+                        key={fs.id}
+                        style={{ animationDelay: `${index * 100}ms` }}
+                        className={`relative overflow-hidden rounded-xl transition-all duration-500 border group
+                                      ${isDone
+                            ? 'border-emerald-500/40 bg-gradient-to-r from-emerald-500/15 to-emerald-500/5 shadow-[0_0_20px_rgba(16,185,129,0.15)]'
+                            : 'border-purple-500/20 bg-gradient-to-r from-purple-500/10 to-transparent'
+                          } animate-in fade-in slide-in-from-bottom-2 fill-mode-forwards`}
+                      >
+                        {/* Main Content Row */}
+                        <div className="flex items-center justify-between gap-4 px-4 pt-4 pb-3">
+                          {/* Left: Icon & Name */}
+                          <div className="flex items-center gap-3 flex-1 min-w-0">
+                            <div className={`w-10 h-10 rounded-lg flex items-center justify-center shrink-0 transition-colors duration-300 
+                                            ${isDone ? 'bg-emerald-500/30 border border-emerald-500/50' : 'bg-purple-500/20 border border-purple-500/30'}`}>
+                              {isDone ? (
+                                <CheckCircle2 size={18} className="text-emerald-400" />
+                              ) : isProcessing ? (
+                                <FileAudio size={18} className="text-purple-300 animate-pulse" />
+                              ) : (
+                                <FileAudio size={18} className="text-slate-400" />
+                              )}
+                            </div>
 
-                        <div className="flex items-center gap-3 relative z-10 w-full">
-                          {/* Name */}
-                          <div className="flex-1 min-w-0 flex flex-col items-start">
-                            <span className={`truncate text-sm font-medium w-full text-left transition-colors duration-300 ${isDone ? 'text-white' : 'text-slate-200'}`}>
-                              {file.name}
-                            </span>
+                            <div className="flex flex-col min-w-0 gap-0.5">
+                              <span className={`truncate text-sm font-semibold transition-colors duration-300 ${isDone ? 'text-white' : 'text-white/90'}`}>
+                                {fs.file.name}
+                              </span>
+                              <span className={`text-xs font-medium ${isDone ? 'text-emerald-400' : isProcessing ? 'text-purple-300' : 'text-slate-400'}`}>
+                                {isDone ? '✓ Ready for review' : isProcessing ? `Analyzing audio... ${Math.round(fs.progress)}%` : 'In queue'}
+                              </span>
+                            </div>
                           </div>
 
-                          {/* Right Side Status */}
-                          {isDone ? (
-                            <div className="flex items-center gap-2 text-emerald-400 shrink-0">
-                              <div className="w-6 h-6 rounded-full border-2 border-emerald-500 flex items-center justify-center shadow-[0_0_8px_rgba(16,185,129,0.4)]">
-                                <CheckCircle2 size={14} strokeWidth={3} />
+                          {/* Right: Status Indicator */}
+                          <div className="shrink-0 flex items-center justify-center w-8">
+                            {isDone ? (
+                              <div className="w-6 h-6 rounded-full bg-emerald-500/30 flex items-center justify-center">
+                                <CheckCircle2 size={14} className="text-emerald-400" />
                               </div>
-                              <span className="text-sm font-medium hidden sm:inline">Complete</span>
-                            </div>
-                          ) : (
-                            <div className="flex items-center gap-2 text-purple-400 shrink-0">
-                              <Loader2 size={16} className="animate-spin" />
-                              <span className="text-sm font-medium animate-pulse hidden sm:inline">Analyzing...</span>
-                            </div>
-                          )}
+                            ) : isProcessing ? (
+                              <div className="flex gap-[3px] items-end h-4">
+                                <div className="w-1 bg-purple-400 rounded-full h-full animate-[music-bar_1s_ease-in-out_infinite]" />
+                                <div className="w-1 bg-purple-400 rounded-full h-2/3 animate-[music-bar_1.2s_ease-in-out_infinite_0.1s]" />
+                                <div className="w-1 bg-purple-400 rounded-full h-full animate-[music-bar_0.8s_ease-in-out_infinite_0.2s]" />
+                              </div>
+                            ) : (
+                              <div className="w-2 h-2 rounded-full bg-slate-600" />
+                            )}
+                          </div>
                         </div>
 
-                        {/* Active File Progress Bar (Mini) - Only for processing */}
+                        {/* Progress Bar Row - Only for processing items */}
                         {isProcessing && (
-                          <div className="absolute bottom-0 left-0 w-full h-[2px] bg-purple-500/10">
-                            <div className="h-full bg-gradient-to-r from-purple-500 to-fuchsia-500 w-1/2 blur-[2px] animate-[loading_1.5s_ease-in-out_infinite]" />
+                          <div className="px-4 pb-3">
+                            <div className="w-full h-1.5 bg-purple-950/50 rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-gradient-to-r from-purple-500 via-fuchsia-400 to-purple-500 rounded-full shadow-[0_0_8px_rgba(168,85,247,0.6)] transition-all duration-300 ease-out"
+                                style={{ width: `${fs.progress}%` }}
+                              />
+                            </div>
                           </div>
                         )}
                       </div>
@@ -469,7 +480,7 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
 
                 <div className="mt-8 text-center space-y-2">
                   <p className="text-[10px] font-bold text-slate-500 uppercase tracking-[0.25em] animate-pulse">
-                    Handshaking with Pitch Vision Neural Core...
+                    {LOADING_STATEMENTS[statementIndex]}
                   </p>
                   <p className="text-[9px] text-slate-600">Listening for database updates...</p>
                 </div>
@@ -480,7 +491,7 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
               <div className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 w-full h-full bg-purple-600/5 rounded-full blur-[80px] pointer-events-none" />
 
             </div>
-          ) : status === 'success' ? (
+          ) : status === 'success' || status === 'batch-complete' ? (
             <div className="py-12 text-center animate-in zoom-in-95 min-h-[300px] flex flex-col justify-center">
               <div className="relative h-24 w-24 mx-auto mb-8">
                 <div className="absolute inset-0 bg-emerald-500/20 rounded-full blur-xl animate-pulse" />
@@ -489,10 +500,8 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
                 </div>
               </div>
               <h3 className="text-2xl font-bold text-white mb-2">Analysis Complete</h3>
-              <p className="text-emerald-300/80 text-sm font-medium">Successfully processed {files.length} recordings</p>
+              <p className="text-emerald-300/80 text-sm font-medium">Successfully processed {fileStates.length} recordings</p>
             </div>
-          ) : status === 'batch-complete' ? (
-            <div />
           ) : status === 'error' ? (
             <div className="py-12 text-center animate-in zoom-in-95 min-h-[300px] flex flex-col justify-center">
               <div className="relative h-24 w-24 mx-auto mb-8">
@@ -536,36 +545,36 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
                 />
 
                 <div className="h-16 w-16 bg-purple-900/50 rounded-full flex items-center justify-center mx-auto mb-4 group-hover:scale-110 transition-transform shadow-inner border border-purple-500/20">
-                  {files.length > 1 ? <Files size={28} className="text-purple-300" /> : <Upload size={28} className="text-purple-300" />}
+                  {fileStates.length > 1 ? <Files size={28} className="text-purple-300" /> : <Upload size={28} className="text-purple-300" />}
                 </div>
 
                 <h3 className="font-bold text-white text-lg">
-                  {files.length === 0
+                  {fileStates.length === 0
                     ? 'Upload Call Recordings'
-                    : files.length === 1
-                      ? files[0].name
-                      : `${files.length} files selected`}
+                    : fileStates.length === 1
+                      ? fileStates[0].file.name
+                      : `${fileStates.length} files selected`}
                 </h3>
                 <p className="text-xs text-slate-400 mt-2 font-medium">
                   Supports MP3, WAV, WEBM (Max {MAX_FILE_SIZE_MB}MB per file)
                 </p>
-                {files.length === 0 && (
+                {fileStates.length === 0 && (
                   <p className="text-xs text-purple-400 mt-2 font-semibold">
                     Select multiple files for bulk upload
                   </p>
                 )}
               </div>
 
-              {files.length > 0 && (
+              {fileStates.length > 0 && (
                 <div className="space-y-3 animate-in fade-in slide-in-from-top-2">
                   {/* File list with scroll for many files */}
-                  <div className={`space-y-2 ${files.length > 3 ? 'max-h-40 overflow-y-auto pr-2' : ''}`}>
-                    {files.map((file, index) => (
-                      <div key={index} className="flex items-center gap-3 bg-purple-900/20 p-3 rounded-lg border border-purple-500/20">
+                  <div className={`space-y-2 ${fileStates.length > 3 ? 'max-h-40 overflow-y-auto pr-2' : ''}`}>
+                    {fileStates.map((fs, index) => (
+                      <div key={fs.id} className="flex items-center gap-3 bg-purple-900/20 p-3 rounded-lg border border-purple-500/20">
                         <FileAudio size={18} className="text-purple-400 shrink-0" />
                         <div className="flex-1 min-w-0">
-                          <p className="text-xs font-bold text-white truncate">{file.name}</p>
-                          <p className="text-xs text-slate-400">{(file.size / (1024 * 1024)).toFixed(2)} MB</p>
+                          <p className="text-xs font-bold text-white truncate">{fs.file.name}</p>
+                          <p className="text-xs text-slate-400">{(fs.file.size / (1024 * 1024)).toFixed(2)} MB</p>
                         </div>
                         <button
                           onClick={(e) => { e.stopPropagation(); removeFile(index); }}
@@ -578,10 +587,10 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
                   </div>
 
                   {/* File count summary for many files */}
-                  {files.length > 3 && (
+                  {fileStates.length > 3 && (
                     <div className="text-center">
                       <span className="text-xs text-purple-300 font-bold bg-purple-500/20 px-3 py-1 rounded-full">
-                        {files.length} files • {(files.reduce((acc, f) => acc + f.size, 0) / (1024 * 1024)).toFixed(1)} MB total
+                        {fileStates.length} files • {(fileStates.reduce((acc, fs) => acc + fs.file.size, 0) / (1024 * 1024)).toFixed(1)} MB total
                       </span>
                     </div>
                   )}
@@ -602,13 +611,13 @@ export const CallAnalyzer: React.FC<CallAnalyzerProps> = ({ isOpen, onClose, onA
                 </div>
               )}
 
-              {files.length > 0 && (
+              {fileStates.length > 0 && (
                 <button
                   onClick={processAudio}
                   className="w-full py-4 bg-gradient-to-r from-purple-600 to-indigo-600 text-white font-bold rounded-2xl shadow-lg shadow-purple-900/50 hover:shadow-purple-700/50 hover:scale-[1.02] active:scale-[0.98] transition-all flex items-center justify-center gap-2"
                 >
                   <Zap size={18} fill="currentColor" />
-                  {files.length === 1 ? 'Run Compliance Scan' : `Scan ${files.length} Recordings`}
+                  {fileStates.length === 1 ? 'Run Compliance Scan' : `Scan ${fileStates.length} Recordings`}
                 </button>
               )}
             </div>

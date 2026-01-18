@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-const WEBHOOK_URL = 'https://sailient.app.n8n.cloud/webhook/UIDrop';
+const WEBHOOK_URL = 'https://n8n.pitchvision.io/webhook/UIDrop';
 
 export async function POST(req: NextRequest) {
     try {

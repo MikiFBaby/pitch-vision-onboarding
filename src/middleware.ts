@@ -15,6 +15,10 @@ export function middleware(request: NextRequest) {
     // 1. The /qa route and sub-routes
     // 2. Static files (_next, images, favicon)
     // 3. API routes (needed for functionality)
+    // Allow access to:
+    // 1. The /qa route and sub-routes (PUBLIC ACCESS)
+    // 2. Static files (_next, images, favicon)
+    // 3. API routes (needed for functionality)
     if (
         path.startsWith('/qa') ||
         path.startsWith('/_next') ||
@@ -24,8 +28,10 @@ export function middleware(request: NextRequest) {
         return NextResponse.next();
     }
 
-    // Redirect everything else to /qa
-    return NextResponse.redirect(new URL('/qa', request.url));
+    // Redirect the root path to /qa if not authenticated (optional, but good for public entry)
+    if (path === '/') {
+        return NextResponse.redirect(new URL('/qa', request.url));
+    }
 }
 
 export const config = {

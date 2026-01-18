@@ -25,6 +25,7 @@ export const getRecentCalls = () => {
             duration: "4:12",
             score: 92,
             status: "Validated",
+            uploadType: "automated"
         },
         {
             id: "c-1002",
@@ -33,6 +34,7 @@ export const getRecentCalls = () => {
             duration: "7:45",
             score: 78,
             status: "Analyzed",
+            uploadType: "manual"
         },
         {
             id: "c-1003",
@@ -41,6 +43,7 @@ export const getRecentCalls = () => {
             duration: "2:30",
             score: 98,
             status: "Validated",
+            uploadType: "automated"
         },
         {
             id: "c-1004",
@@ -49,6 +52,7 @@ export const getRecentCalls = () => {
             duration: "12:10",
             score: 65,
             status: "Flagged",
+            uploadType: "manual"
         },
     ];
 };

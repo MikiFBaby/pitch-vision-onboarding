@@ -38,7 +38,8 @@ export async function POST(request: NextRequest) {
         "Phone Number",
         "QA Reviewed By",
         "QA Reviewed At",
-        "Checklist"
+        "Checklist",
+        upload_type
       `)
             .order('created_at', { ascending: false });
 
@@ -92,6 +93,7 @@ export async function POST(request: NextRequest) {
                     duration: call['Duration'],
                     reviewedBy: call['QA Reviewed By'],
                     reviewedAt: call['QA Reviewed At'],
+                    uploadType: call.upload_type || 'manual',
                     checklistStats  // Pass/fail counts without full details
                 };
             })

@@ -226,6 +226,14 @@ body {
 }
 
 /* Custom checkbox styling */
-.custom-checkbox {
-  @apply h-4 w-4 rounded border-border bg-foreground/5 text-violet-500 focus:ring-violet-500 focus:ring-offset-background;
+@keyframes music-bar {
+
+  0%,
+  100% {
+    height: 20%;
+  }
+
+  50% {
+    height: 100%;
+  }
 }

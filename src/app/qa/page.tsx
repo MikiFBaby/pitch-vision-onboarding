@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, Suspense } from "react";
 import { useAuth } from "@/context/AuthContext";
-import { useQA } from "@/context/QAContext";
+import { useQA, QAProvider } from "@/context/QAContext";
 import { useSearchParams, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase-client";
 import { CallData, CallStatus, DatabaseCallRow, QAStatus } from "@/types/qa-types";
@@ -145,15 +145,22 @@ function transformRow(row: DatabaseCallRow): CallData {
         qaReviewedAt: row.qa_reviewed_at || undefined,
         qaNotes: row.qa_notes || undefined,
         reviewPriority: (row.review_priority as 'urgent' | 'normal' | 'low') || 'normal',
+        uploadType: (row.upload_type as 'manual' | 'automated') || 'manual',
     };
 }
 
 type ViewType = 'dashboard' | 'live' | 'review' | 'agents' | 'reports';
 
-export default function QADashboard() {
+// ... (imports remain the same above)
+
+// Move the main logic to a sub-component
+function QADashboardContent() {
     const { user, profile } = useAuth();
     const searchParams = useSearchParams();
-    const router = useRouter(); // Use router for manual updates if needed, though mostly using links
+    const router = useRouter();
+
+    // ... (rest of the component logic: state, effects, etc. - copy from lines 158-738)
+    // Be careful to include EVERYTHING from the original component
 
     // State
     const [calls, setCalls] = useState<CallData[]>([]);
@@ -691,8 +698,6 @@ export default function QADashboard() {
     return (
         <DashboardLayout>
             <div className="flex flex-col h-full">
-                {/* REMOVED: Redundant Sub-navigation Tabs */}
-
                 {/* Main content */}
                 <div className="flex-1 overflow-y-auto">
                     {isLoading ? (
@@ -735,5 +740,24 @@ export default function QADashboard() {
                 />
             )}
         </DashboardLayout>
+    );
+}
+
+export default function QADashboard() {
+    return (
+        <QAProvider>
+            <Suspense fallback={
+                <div className="flex items-center justify-center h-screen bg-[#0F0720]">
+                    <div className="flex flex-col items-center gap-6 animate-pulse">
+                        <div className="h-16 w-16 bg-white/5 rounded-2xl flex items-center justify-center border border-white/10 shadow-2xl">
+                            <Zap size={32} className="text-purple-400" fill="currentColor" />
+                        </div>
+                        <p className="text-white/40 font-bold text-xs uppercase tracking-[0.2em]">Loading Dashboard...</p>
+                    </div>
+                </div>
+            }>
+                <QADashboardContent />
+            </Suspense>
+        </QAProvider>
     );
 }

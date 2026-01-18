@@ -67,6 +67,7 @@ export interface CallData {
     qaReviewedAt?: string;
     qaNotes?: string;
     reviewPriority: ReviewPriority;
+    uploadType?: 'manual' | 'automated';
 }
 
 // The shape of the raw row from Supabase "Pitch Perfect" table
@@ -83,6 +84,7 @@ export interface DatabaseCallRow {
     call_status: string | null;
     call_score: string | null;
     risk_level: string | null;
+    upload_type: string | null;
 
     // JSONB Columns
     checklist: any | null;

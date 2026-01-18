@@ -9,7 +9,7 @@ import {
   Award, CheckCircle2, XCircle, AlertCircle,
   ShieldAlert, ShieldCheck, Quote, Check, X,
   RotateCcw, Info, Download, FileSpreadsheet, Mail, Trash2, AlertTriangle, MoreHorizontal, Lightbulb,
-  Target, Zap, ClipboardCopy, GraduationCap, Volume2
+  Target, Zap, ClipboardCopy, GraduationCap, Volume2, Bot, UploadCloud
 } from 'lucide-react';
 
 interface RecentCallsTableProps {
@@ -152,13 +152,14 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
     if (selectedCalls.length === 0) return;
 
     // Create CSV Content
-    const headers = ["ID", "Date", "Agent", "Campaign", "Score", "Status", "Risk Level", "Summary"];
+    const headers = ["ID", "Date", "Agent", "Campaign", "Score", "Type", "Status", "Risk Level", "Summary"];
     const rows = selectedCalls.map(c => [
       `"${c.callId}"`,
       `"${c.callDate}"`,
       `"${c.agentName}"`,
       `"${c.campaignType}"`,
       c.complianceScore,
+      `"${c.uploadType}"`,
       `"${c.status}"`,
       `"${c.riskLevel}"`,
       `"${(c.summary || '').replace(/"/g, '""')}"`
@@ -624,6 +625,7 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
                 <th className="px-6 py-4 w-10"></th> {/* Arrow Column */}
                 <th className="px-4 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Call Date</th>
                 <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Analyzed At</th>
+                <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest text-center">Type</th>
                 <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Agent</th>
                 <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Campaign</th>
                 <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Contact</th>
@@ -698,6 +700,19 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
                           <div className="text-sm font-semibold text-slate-600 whitespace-nowrap">
                             {formatAnalyzedAt(call.analyzedAt)}
                           </div>
+                        </td>
+                        <td className="px-6 py-5 text-center">
+                          {call.uploadType === 'automated' ? (
+                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-100 border border-slate-200 text-slate-600" title="Automated Processing">
+                              <Bot size={12} className="text-purple-500" />
+                              <span className="text-[10px] font-bold uppercase tracking-wider">Auto</span>
+                            </div>
+                          ) : (
+                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-100 border border-slate-200 text-slate-600" title="Manual Upload">
+                              <UploadCloud size={12} className="text-blue-500" />
+                              <span className="text-[10px] font-bold uppercase tracking-wider">Manual</span>
+                            </div>
+                          )}
                         </td>
                         <td className="px-6 py-5">
                           <div className="text-sm font-bold text-slate-900">{call.agentName}</div>
