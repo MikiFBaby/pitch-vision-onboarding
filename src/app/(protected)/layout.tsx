@@ -1,10 +1,10 @@
 "use client";
-import React, { useEffect } from "react";
+import React, { useEffect, Suspense } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { QAProvider } from "@/context/QAContext";
-import { useRouter, usePathname } from "next/navigation";
+import { useRouter, usePathname, useSearchParams } from "next/navigation";
 
-export default function ProtectedLayout({
+function ProtectedLayoutInner({
     children,
 }: {
     children: React.ReactNode;
@@ -12,9 +12,13 @@ export default function ProtectedLayout({
     const { user, profile, loading } = useAuth();
     const router = useRouter();
     const pathname = usePathname();
+    const searchParams = useSearchParams();
 
     // Check for QA Lockdown mode
     const isQaLocked = process.env.NEXT_PUBLIC_QA_ONLY === 'true';
+
+    // Hide floating button on Aura AI page (already has voice there)
+    const isAuraPage = pathname === '/qa' && searchParams.get('view') === 'aura';
 
     useEffect(() => {
         // If in QA Lockdown mode and on the QA path, allow access without user
@@ -60,5 +64,24 @@ export default function ProtectedLayout({
         <QAProvider>
             {children}
         </QAProvider>
+    );
+}
+
+// Wrapper with Suspense for useSearchParams compatibility with Next.js 16+
+export default function ProtectedLayout({
+    children,
+}: {
+    children: React.ReactNode;
+}) {
+    return (
+        <Suspense fallback={
+            <div className="flex h-screen items-center justify-center bg-gray-950 text-white">
+                Loading...
+            </div>
+        }>
+            <ProtectedLayoutInner>
+                {children}
+            </ProtectedLayoutInner>
+        </Suspense>
     );
 }

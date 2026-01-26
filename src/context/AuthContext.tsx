@@ -99,6 +99,8 @@ export const AuthProvider = ({ children }: { children: React.ReactNode }) => {
         try {
             await signOut(auth);
             setProfile(null);
+            // Redirect to login page
+            window.location.href = '/login';
         } catch (error) {
             console.error("Error signing out", error);
         }

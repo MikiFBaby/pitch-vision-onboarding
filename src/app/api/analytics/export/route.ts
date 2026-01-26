@@ -162,7 +162,7 @@ export async function GET(request: NextRequest) {
         sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
 
         const { data: calls, error } = await supabase
-            .from('Pitch Perfect')
+            .from('QA Results')
             .select('id, "Compliance Score", "Risk Level", "QA Status", created_at')
             .gte('created_at', sevenDaysAgo.toISOString())
             .order('created_at', { ascending: false });

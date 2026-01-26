@@ -134,6 +134,11 @@ export async function POST(req: Request) {
         // 3. Determine redirect path based on role
         const redirectTo = user.profile_completed ? `/${user.role}` : '/onboarding';
 
+        // 4. Determine admin status (CTO, executives with specific emails get universal access)
+        const adminEmails = ['miki@pitchperfectsolutions.net'];
+        const adminRoles = ['executive']; // CTO, CEO, President all map to 'executive'
+        const isAdmin = adminEmails.includes(user.email?.toLowerCase()) || adminRoles.includes(user.role);
+
         return NextResponse.json({
             success: true,
             user: {
@@ -144,7 +149,8 @@ export async function POST(req: Request) {
                 profileCompleted: user.profile_completed,
                 first_name: user.first_name,
                 last_name: user.last_name,
-                avatar_url: user.avatar_url
+                avatar_url: user.avatar_url,
+                is_admin: isAdmin // Universal portal access
             },
             redirectTo
         });

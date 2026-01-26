@@ -37,7 +37,7 @@ export async function POST(request: NextRequest) {
 
         // Fetch current call data 
         const { data: callData, error: fetchError } = await supabaseAdmin
-            .from('Pitch Perfect')
+            .from('QA Results')
             .select('Checklist, "Call Score", "QA Notes"')
             .eq('id', numericId)
             .single();

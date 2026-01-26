@@ -7,6 +7,7 @@ export enum CallStatus {
 // QA Workflow status types
 export type QAStatus = 'pending' | 'approved' | 'rejected' | 'escalated' | 'training_flagged';
 export type ReviewPriority = 'urgent' | 'normal' | 'low';
+export type ProductType = 'ACA' | 'MEDICARE' | 'WHATIF';
 
 export interface Chapter {
     title: string;
@@ -30,16 +31,39 @@ export interface KeyQuote {
     assessment: string;
 }
 
+// Speaker metrics from transcript analysis
+export interface SpeakerMetrics {
+    agent: {
+        turnCount: number;
+        speakingTimeSeconds: number;
+        speakingTimeFormatted: string;
+        speakingPercentage: number;
+    };
+    customer: {
+        turnCount: number;
+        speakingTimeSeconds: number;
+        speakingTimeFormatted: string;
+        speakingPercentage: number;
+    };
+    total: {
+        turnCount: number;
+        speakingTimeSeconds: number;
+        speakingTimeFormatted: string;
+    };
+}
+
 // The shape of the data used in the Frontend UI
 export interface CallData {
     id: string;
     createdAt: string;
     timestamp: string;
     callId: string;
+    productType: ProductType;
     campaignType: string;
     agentName: string;
     phoneNumber: string;
     duration: string;
+    originalCallDuration?: string;  // Original recording duration (before any trimming)
     callDate: string;
     callTime: string;
     status: string;
@@ -66,19 +90,60 @@ export interface CallData {
     qaReviewedBy?: string;
     qaReviewedAt?: string;
     qaNotes?: string;
+    qaOverrides?: { [key: string]: string };  // Item key -> override status (PASS/FAIL)
     reviewPriority: ReviewPriority;
     uploadType?: 'manual' | 'automated';
+
+    // Extended analysis fields from n8n pipeline
+    languageAssessment?: any;
+    focusAreas?: { time: string; reason: string }[];
+    callAnalysis?: any;  // Raw analysis data
+
+    timelineMarkers?: {
+        time: string;
+        event?: string;
+        title?: string;
+        type?: string;
+        status?: string;
+        evidence?: string;
+        item_key?: string;
+        confidence?: number;
+    }[];
+    criticalMoments?: { auto_fails: any[]; passes: any[]; warnings: any[] };
+    autoFailTriggered?: boolean;
+    autoFailReasons?: string[];
+
+    // Speaker turn metrics
+    speakerMetrics?: SpeakerMetrics;
+    agentTurnCount?: number;
+    customerTurnCount?: number;
+    agentSpeakingTime?: number;
+    customerSpeakingTime?: number;
+
+    // Tag for escalation/training/audit tracking
+    tag?: 'escalated' | 'training_review' | 'audit_list';
+
+    // Additional metadata
+    batchId?: string;
+    suggestedListenStart?: string;
+    talkRatio?: string;
+    dominantSpeaker?: string;
+    totalTalkTime?: number;
+    agentSpeakingPct?: number;
+    customerSpeakingPct?: number;
 }
 
-// The shape of the raw row from Supabase "Pitch Perfect" table
+// The shape of the raw row from Supabase "QA Results" table
 export interface DatabaseCallRow {
     id: number;
     created_at: string;
     call_id: string | null;
+    product_type: string | null;
     campaign_type: string | null;
     agent_name: string | null;
     phone_number: string | null;
     call_duration: string | null;
+    original_call_duration: string | null;  // Original recording duration (before trimming)
     call_date: string | null;
     call_time: string | null;
     call_status: string | null;
@@ -111,6 +176,26 @@ export interface DatabaseCallRow {
     review_priority: string | null;
     buyer: string | null;
     compliance_score: number | null;
+
+    // Speaker turn metrics
+    speaker_metrics: any | null;
+    timeline_markers: any | null; // Detailed timeline markers for audio player
+    agent_turn_count: number | null;
+    customer_turn_count: number | null;
+    agent_speaking_time: number | null;
+    customer_speaking_time: number | null;
+
+    // Tag for escalation/training/audit tracking
+    tag: string | null;
+
+    // Additional metadata columns
+    batch_id: string | null;
+    suggested_listen_start: string | null;
+    talk_ratio: string | null;
+    dominant_speaker: string | null;
+    total_talk_time: number | null;
+    agent_speaking_pct: number | null;
+    customer_speaking_pct: number | null;
 }
 
 export interface FilterState {
@@ -118,6 +203,7 @@ export interface FilterState {
     dateRange: string;
     status: string;
     minConfidence: number;
+    productType: string;
 }
 
 export interface GaugeData {
@@ -127,4 +213,15 @@ export interface GaugeData {
     total: number;
     color: string;
     subLabel: string;
+}
+
+export interface ProcessingJob {
+    batch_id: string;
+    file_name: string;
+    status: 'pending' | 'processing' | 'completed' | 'error';
+    milestone: string;
+    progress_percent: number;
+    estimated_seconds_remaining: number | null;
+    error_message: string | null;
+    qa_result_id?: string;
 }

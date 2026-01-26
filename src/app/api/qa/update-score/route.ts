@@ -48,13 +48,13 @@ export async function POST(request: NextRequest) {
         }
         // else stays Non-Compliant / High
 
-        // Update the database
+        // Update the database - use snake_case column names
         const { error: updateError, data: updateData } = await supabaseAdmin
             .from('QA Results')
             .update({
-                'Call Score': score,
-                'Call Status': newStatus,
-                'Risk Level': newRiskLevel
+                'compliance_score': score,
+                'call_status': newStatus,
+                'risk_level': newRiskLevel
             })
             .eq('id', numericId)
             .select();

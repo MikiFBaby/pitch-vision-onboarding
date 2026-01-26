@@ -2,6 +2,11 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import "./globals.css";
 import { AuthProvider } from "@/context/AuthContext";
+import { VoiceProvider } from "@/context/VoiceContext";
+import { AuraVoiceWidget } from "@/components/qa/AuraVoiceWidget";
+
+// Force all pages to be dynamically rendered (avoid useSearchParams SSG errors)
+export const dynamic = 'force-dynamic';
 
 const geistSans = Geist({
   variable: "--font-geist-sans",
@@ -29,7 +34,12 @@ export default function RootLayout({
         className={`${geistSans.variable} ${geistMono.variable} antialiased`}
         suppressHydrationWarning
       >
-        <AuthProvider>{children}</AuthProvider>
+        <AuthProvider>
+          <VoiceProvider>
+            {children}
+            <AuraVoiceWidget />
+          </VoiceProvider>
+        </AuthProvider>
       </body>
     </html>
   );

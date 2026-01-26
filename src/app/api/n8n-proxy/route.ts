@@ -1,30 +1,46 @@
 import { NextRequest, NextResponse } from 'next/server';
 
-const WEBHOOK_URL = 'https://n8n.pitchvision.io/webhook/UIDrop';
+const WEBHOOK_URL = 'https://n8n.pitchvision.io/webhook/qa-upload';
+
+// App Router config for large audio files
+export const maxDuration = 60;
+export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
     try {
-        // Get the form data from the client
-        const formData = await req.formData();
-
-        console.log('=== N8N PROXY API ===');
+        console.log('=== N8N PROXY API (Streaming) ===');
         console.log('Forwarding request to:', WEBHOOK_URL);
 
-        // Forward to n8n webhook
+        // Get the content-type header (includes boundary for multipart)
+        const contentType = req.headers.get('content-type');
+        console.log('Content-Type:', contentType);
+
+        // Get the raw body as ArrayBuffer and convert to Buffer
+        const bodyArrayBuffer = await req.arrayBuffer();
+        const bodyBuffer = Buffer.from(bodyArrayBuffer);
+        console.log('Body size:', bodyBuffer.length, 'bytes');
+
+        if (bodyBuffer.length < 1000) {
+            console.error('WARNING: Body seems too small for an audio file!');
+        }
+
+        // Forward the raw body to n8n, preserving the exact multipart format
         const response = await fetch(WEBHOOK_URL, {
             method: 'POST',
-            body: formData,
-            // No mode: 'no-cors' on server side - we can read the response
+            headers: {
+                'Content-Type': contentType || 'application/octet-stream',
+                'Content-Length': bodyBuffer.length.toString(),
+            },
+            body: bodyBuffer,
         });
 
         console.log('N8N Response Status:', response.status);
-        console.log('N8N Response Headers:', Object.fromEntries(response.headers.entries()));
 
-        // Try to read response body
+        // Read response
         let responseData;
-        const contentType = response.headers.get('content-type') || '';
+        const responseContentType = response.headers.get('content-type') || '';
 
-        if (contentType.includes('application/json')) {
+        if (responseContentType.includes('application/json')) {
             responseData = await response.json();
             console.log('N8N Response (JSON):', responseData);
         } else {
@@ -32,7 +48,7 @@ export async function POST(req: NextRequest) {
             console.log('N8N Response (Text):', responseData.substring(0, 500));
         }
 
-        // Return success with any data n8n provided
+        // Return response to client
         return NextResponse.json({
             success: true,
             status: response.status,
@@ -47,11 +63,3 @@ export async function POST(req: NextRequest) {
         );
     }
 }
-
-// Increase body size limit for large audio files
-// export const config = {
-//     api: {
-//         bodyParser: false,
-//         responseLimit: false,
-//     },
-// };

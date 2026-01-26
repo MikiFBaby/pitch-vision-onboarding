@@ -8,15 +8,17 @@ import {
   Volume2, VolumeX, ShieldCheck, Zap, Check, Search, ExternalLink,
   Settings2, ChevronRight, Activity, MousePointer2, Calendar, Copy, Quote, AlertTriangle, MoreHorizontal,
   FileText, Lightbulb, Flag, User, Headphones, Award, CheckCircle, Sliders, Hash, Bookmark, ArrowRight, Minus, Plus, ChevronDown, ChevronUp,
-  Brain, BrainCircuit, Eye, FileSearch, AlertCircle
+  Brain, BrainCircuit, Eye, FileSearch, AlertCircle, ClipboardCheck, Send, GraduationCap, ClipboardList, Users, Layers, Maximize2, Minimize2, Target
 } from 'lucide-react';
 import { NeonButton } from './ui/NeonButton';
 import { useAuth } from '@/context/AuthContext';
+import { supabase } from '@/lib/supabase-client';
 
 interface TranscriptDrawerProps {
   call: CallData | null;
   onClose: () => void;
   onScoreUpdate?: (callId: number | string, newScore: number) => void;
+  onQASubmit?: (callId: string, reviewerName: string, notes?: string) => Promise<void>;
 }
 
 const DEEP_INSIGHT_PROMPTS = [
@@ -119,9 +121,10 @@ const FormattedCoachResponse = ({ text }: { text: string }) => {
   );
 };
 
-export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClose, onScoreUpdate }) => {
+export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClose, onScoreUpdate, onQASubmit }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [activeTab, setActiveTab] = useState<'analysis' | 'transcript'>('analysis');
+  const [isExpanded, setIsExpanded] = useState(false); // Drawer expansion toggle
   const [isConfigOpen, setIsConfigOpen] = useState(false);
   const [expandedAuditIdx, setExpandedAuditIdx] = useState<number | null>(null);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
@@ -131,6 +134,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
   const [playbackRate, setPlaybackRate] = useState(1);
   const [isMuted, setIsMuted] = useState(false);
   const [volume, setVolume] = useState(0.8);
+  const [audioError, setAudioError] = useState<string | null>(null);
 
   // Coach interaction state
   const [coachQuery, setCoachQuery] = useState('');
@@ -143,6 +147,12 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
   const coachSectionRef = useRef<HTMLDivElement>(null);
   const chatContainerRef = useRef<HTMLDivElement>(null);
   const activeTranscriptRef = useRef<HTMLDivElement | null>(null);
+
+  // Audio Sync Offset (in seconds) - allows user to manually align text with audio
+  const [syncOffset, setSyncOffset] = useState(0);
+
+  // Hover state for markers
+  const [hoveredMarker, setHoveredMarker] = useState<number | string | null>(null);
 
   // Get current logged-in user for override tracking
   const { user, profile } = useAuth();
@@ -159,8 +169,36 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
   // Toggle for confidence evidence details
   const [showConfidenceDetails, setShowConfidenceDetails] = useState(false);
 
+  // QA Review state
+  const [qaReviewNotes, setQaReviewNotes] = useState('');
+  const [isSubmittingReview, setIsSubmittingReview] = useState(false);
+
+  // Local tags state for immediate UI feedback
+  const [localTags, setLocalTags] = useState<string[]>([]);
+
   // Confidence threshold for requiring manual review
   const CONFIDENCE_THRESHOLD = 90;
+
+  // Auto-tagging logic based on score
+
+
+  useEffect(() => {
+    if (call?.qaNotes) {
+      try {
+        // Only attempt JSON parse if it looks like JSON (starts with { or [)
+        const notesStr = String(call.qaNotes).trim();
+        if (notesStr.startsWith('{') || notesStr.startsWith('[')) {
+          const notes = JSON.parse(notesStr);
+          if (notes.tags && Array.isArray(notes.tags)) {
+            setLocalTags(notes.tags);
+          }
+        }
+        // Plain text notes are valid - just don't try to parse them as JSON
+      } catch (e) {
+        // Silently ignore parse errors for plain text notes
+      }
+    }
+  }, [call?.qaNotes]);
 
   useEffect(() => {
     if (chatContainerRef.current) {
@@ -174,6 +212,35 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
       activeTranscriptRef.current.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }
   }, [currentTime, activeTab]);
+
+  // Auto-tagging logic based on score (must be at top level, not in JSX)
+  useEffect(() => {
+    if (!call || call.complianceScore === undefined) return;
+
+    const scoreVal = typeof call.complianceScore === 'number'
+      ? call.complianceScore
+      : parseInt(String(call.complianceScore || 0).replace(/\/.*$/, ''), 10);
+
+    setLocalTags(prev => {
+      const next = new Set(prev);
+
+      // 1. Remove stale auto-tags based on new score
+      if (scoreVal >= 50) next.delete('escalated');
+      if (scoreVal < 85) next.delete('training_review');
+
+      // 2. Add correct auto-tags
+      if (scoreVal < 50) next.add('escalated');
+      else if (scoreVal >= 85) next.add('training_review');
+
+      const nextArray = Array.from(next);
+      // Only update if changed to avoid re-renders
+      if (JSON.stringify(nextArray.sort()) !== JSON.stringify(prev.sort())) {
+        return nextArray;
+      }
+      return prev;
+    });
+  }, [call?.complianceScore]);
+
 
   const handleTimeUpdate = () => {
     if (audioRef.current) {
@@ -338,9 +405,46 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
     }
   };
 
+  const handleToggleOverride = (itemName: string, currentStatus: string) => {
+    const itemKey = itemName.toLowerCase();
+    // Toggle logic: if currently passing, make it fail, and vice versa
+    const isCurrentlyPassing = ['met', 'pass', 'yes', 'true'].includes(currentStatus.toLowerCase());
+    const newStatus = isCurrentlyPassing ? 'fail' : 'pass';
+
+    setLocalOverrides(prev => ({
+      ...prev,
+      [itemKey]: newStatus
+    }));
+
+    // Toast feedback
+    setToast({
+      message: `Marked "${itemName}" as ${newStatus.toUpperCase()}`,
+      type: newStatus === 'pass' ? 'success' : 'error'
+    });
+  };
+
   // Enhanced checklist parser to handle various formats from n8n
   const getChecklistArray = (cl: any) => {
     if (!cl) return [];
+
+    // Helper to extract and normalize time from various field names
+    const extractTime = (item: any): string | undefined => {
+      // Check various possible time field names
+      const timeField = item.time || item.timestamp || item.start_time ||
+        item.speaker_start || item.startTime || item.timeStamp;
+
+      if (!timeField) return undefined;
+
+      // If it's a number (seconds), convert to M:SS format
+      if (typeof timeField === 'number') {
+        const mins = Math.floor(timeField / 60);
+        const secs = Math.floor(timeField % 60);
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
+      }
+
+      // If it's already a string, return as-is
+      return String(timeField);
+    };
 
     // Already an array
     if (Array.isArray(cl)) {
@@ -349,10 +453,11 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
         if (typeof item === 'string') {
           return { name: item, status: 'PASS' };
         }
-        // Ensure name is present
+        // Ensure name and time are present
         return {
           ...item,
-          name: item.name || item.requirement || item.requirement_name || `Item ${idx + 1}`
+          name: item.name || item.requirement || item.requirement_name || `Item ${idx + 1}`,
+          time: extractTime(item)
         };
       });
     }
@@ -375,7 +480,8 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
         return {
           ...value,
           name: value?.name || readableName,
-          status: value?.status || 'PASS'
+          status: value?.status || 'PASS',
+          time: extractTime(value)
         };
       });
     }
@@ -453,16 +559,40 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
       return parseInt(match[1]) * 60 + parseInt(match[2]);
     };
 
-    // Sort by timestamp (earliest first)
+    // Helper to normalize confidence - handles both decimal (0.95) and percentage (95) formats
+    const normalizeConfidence = (conf: any): number => {
+      if (conf === undefined || conf === null) return 0;
+      const num = typeof conf === 'string' ? parseFloat(conf) : conf;
+      // If <= 1, likely a decimal (0.95 = 95%), multiply by 100
+      // If > 1 but <= 100, already a percentage
+      if (num <= 1) return Math.round(num * 100);
+      return Math.round(num);
+    };
+
+    // Sort by timestamp and attach confidence
     return parsed.sort((a: any, b: any) => {
       const timeA = timeToSeconds(a.time || a.timestamp || a.start_time);
       const timeB = timeToSeconds(b.time || b.timestamp || b.start_time);
       return timeA - timeB;
+    }).map((item: any) => {
+      // Use API confidence if available, otherwise calculate
+      const apiConfidence = item.confidence;
+      const calculatedConf = calculateItemConfidence(item);
+
+      // If API provides confidence, normalize it; otherwise use calculated
+      const finalConfidence = apiConfidence !== undefined
+        ? normalizeConfidence(apiConfidence)
+        : calculatedConf;
+
+      return {
+        ...item,
+        confidence: finalConfidence
+      };
     });
   }, [call?.checklist]);
 
   const timelineMarkers = useMemo(() => {
-    const list: { title: string, time: string, seconds: number, position: number, color: string, type: 'pass' | 'fail' | 'chapter' }[] = [];
+    const list: { title: string, time: string, seconds: number, position: number, color: string, type: 'pass' | 'fail' | 'chapter', isEstimated?: boolean }[] = [];
 
     // Calculate effective duration (audio object or metadata string)
     const effectiveDuration = duration > 0 ? duration : parseTimeToSeconds(call?.duration || "0:00");
@@ -511,6 +641,41 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
       });
     }
 
+    // Add significant timeline events from database
+    if (call?.timelineMarkers && call.timelineMarkers.length > 0) {
+      call.timelineMarkers.forEach(m => {
+        let timeVal = m.time;
+
+        // Fallback: Extract time from Evidence if time is "N/A"
+        if ((!timeVal || timeVal === 'N/A') && m.evidence) {
+          const match = m.evidence.match(/\[(\d+:\d+)\]/);
+          if (match) {
+            timeVal = match[1];
+          } else if (m.evidence.includes('[0:00]')) {
+            timeVal = '0:00';
+          }
+        }
+
+        const secs = parseTimeToSeconds(timeVal);
+        const pos = (secs / effectiveDuration) * 100;
+
+        // Only verify pos is valid number and within range. 
+        // Note: parseTimeToSeconds returns 0 for invalid inputs, so check if we actually had a valid time string logic if needed, 
+        // but !isNaN check covers the main crash cases.
+        if (pos <= 100 && !isNaN(pos)) {
+          const isPass = (m.status || m.type || '').toLowerCase().includes('pass');
+          list.push({
+            title: m.title || m.event || m.item_key || 'Marker', // Use title from JSON, fallback to 'Marker'
+            time: timeVal,
+            seconds: secs,
+            position: pos,
+            color: isPass ? 'bg-emerald-500' : 'bg-rose-500', // Correct color mapping
+            type: isPass ? 'pass' : 'fail' // Map to expected types for priority logic
+          });
+        }
+      });
+    }
+
     // Process all checklist items with override support
     fullAuditList.forEach((item, idx) => {
       const originalStatus = (item.status || '').toLowerCase();
@@ -540,39 +705,74 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
           seconds: secs,
           position: pos,
           color: isMet ? 'bg-emerald-500' : 'bg-rose-500',
-          type: isMet ? 'pass' : 'fail'
+          type: isMet ? 'pass' : 'fail',
+          isEstimated: !item.time && !item.timestamp
         });
       }
     });
 
-    // Remove duplicates or very close markers to prevent overlap, prioritizing failures
-    const sorted = list.sort((a, b) => a.seconds - b.seconds);
-    const filtered: typeof list = [];
+    // Sort by seconds first
+    list.sort((a, b) => a.seconds - b.seconds);
 
-    sorted.forEach((m, i) => {
-      if (i === 0) {
-        filtered.push(m);
-        return;
+    // Spread overlapping markers visually
+    // If markers are within 0.8% of each other, push the next one to the right
+    // This assumes a visual width of roughly 0.8% prevents total overlap
+    for (let i = 1; i < list.length; i++) {
+      const prev = list[i - 1];
+      const curr = list[i];
+
+      // If current is too close to previous (visual collision)
+      if (curr.position - prev.position < 1.2) {
+        // Shift current
+        curr.position = prev.position + 1.2;
       }
+    }
 
-      const prev = filtered[filtered.length - 1];
-      const distance = Math.abs(m.position - prev.position);
-
-      if (distance < 1.5) {
-        // If very close, only add if it's a higher priority type
-        // fail > chapter > pass
-        const priority = { fail: 3, chapter: 2, pass: 1 };
-        if (priority[m.type] > priority[prev.type]) {
-          filtered[filtered.length - 1] = m; // Replace with higher priority
-        }
-        // otherwise skip m
-        return;
-      }
-      filtered.push(m);
+    // Clamp to 100% just in case
+    list.forEach(item => {
+      if (item.position > 100) item.position = 100;
     });
 
-    return filtered;
-  }, [call?.chapters, fullAuditList, duration, call?.duration, localOverrides]);
+    return list;
+  }, [call?.chapters, fullAuditList, duration, call?.duration, localOverrides, call?.timelineMarkers]);
+
+  // Cluster markers that are too close together
+  const clusteredMarkers = useMemo(() => {
+    if (timelineMarkers.length === 0) return [];
+
+    const clusters: { position: number, startTime: number, items: typeof timelineMarkers }[] = [];
+    const THRESHOLD = 2.0; // % distance threshold for clustering
+
+    // Sort by position first
+    const sorted = [...timelineMarkers].sort((a, b) => a.position - b.position);
+
+    let currentCluster = {
+      position: sorted[0].position,
+      startTime: sorted[0].seconds,
+      items: [sorted[0]]
+    };
+
+    for (let i = 1; i < sorted.length; i++) {
+      const marker = sorted[i];
+      if (marker.position - currentCluster.position < THRESHOLD) {
+        // Add to cluster
+        currentCluster.items.push(marker);
+      } else {
+        // Push finished cluster
+        clusters.push(currentCluster);
+        // Start new cluster
+        currentCluster = {
+          position: marker.position,
+          startTime: marker.seconds,
+          items: [marker]
+        };
+      }
+    }
+    // Push final cluster
+    clusters.push(currentCluster);
+
+    return clusters;
+  }, [timelineMarkers]);
 
   const waveformBars = useMemo(() => {
     return Array.from({ length: 60 }).map(() => Math.random() * 0.7 + 0.1);
@@ -831,7 +1031,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
     // Debounce to avoid multiple updates
     const timer = setTimeout(syncScoreToDatabase, 1000);
     return () => clearTimeout(timer);
-  }, [call?.id, calculatedScore, totalPossible]);
+  }, [call?.id, calculatedScore, totalPossible, onScoreUpdate]);
 
   useEffect(() => {
     if (call) {
@@ -840,6 +1040,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
       setCoachMessages([]);
       setCoachQuery('');
       setExpandedAuditIdx(null);
+      setAudioError(null); // Reset audio error for new call
 
       // Always default to analysis tab - user requested this
       setActiveTab('analysis');
@@ -926,7 +1127,6 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
     const agentNameParts = (call.agentName || '').toLowerCase().split(/\s+/).filter(p => p.length > 2);
 
     const processedLines = tempLines.map((line, i, arr) => {
-      let isAgent = false;
 
       // A. Semantic Signal Score (-10 Customer ... +10 Agent)
       const t = line.content.toLowerCase();
@@ -1020,30 +1220,36 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
       if (t.match(/^(hello|hi|hey)\.?\??$/i) && contentLength < 10) semanticScore -= 6; // Customer answering phone
 
       // B. Determine Role
-      // 1. Strong Semantic Override (Ignore label)
-      if (semanticScore >= 3) {
-        isAgent = true;
-      } else if (semanticScore <= -3) {
-        isAgent = false;
-      } else {
-        // 2. Fallback to Label Matching
-        const lowerLabel = line.speaker.toLowerCase();
-        const labelMatchesAgentName = agentNameParts.some(p => lowerLabel.includes(p));
+      // PRIORITY 1: Trust channel labels (since channels are transcribed separately)
+      const lowerLabel = line.speaker.toLowerCase();
+      const labelMatchesAgentName = agentNameParts.some(p => lowerLabel.includes(p));
 
-        if (labelMatchesAgentName) {
+      let isAgent = false;
+      let labelIsDefinitive = false;
+
+      // Check if label explicitly identifies the speaker
+      if (labelMatchesAgentName) {
+        isAgent = true;
+        labelIsDefinitive = true;
+      } else if (lowerLabel.includes('agent') || lowerLabel.includes('rep') || lowerLabel.includes('specialist')) {
+        isAgent = true;
+        labelIsDefinitive = true;
+      } else if (lowerLabel.includes('customer') || lowerLabel.includes('prospect') || lowerLabel.includes('caller')) {
+        isAgent = false;
+        labelIsDefinitive = true;
+      }
+
+      // PRIORITY 2: ONLY use semantic scoring if label is ambiguous (e.g., "SPEAKER_0", "Speaker 1")
+      if (!labelIsDefinitive) {
+        if (semanticScore >= 5) {
           isAgent = true;
-        } else if (lowerLabel.includes('agent') || lowerLabel.includes('rep')) {
-          isAgent = true;
-        } else if (lowerLabel.includes('customer') || lowerLabel.includes('prospect')) {
+        } else if (semanticScore <= -5) {
           isAgent = false;
+        } else if (i > 0) {
+          // Fallback: continue from previous speaker
+          isAgent = arr[i - 1].isAgent;
         } else {
-          // 3. Fallback to Previous if completely ambiguous (Continuation)
-          // This handles split lines where label might be missing or same
-          if (i > 0) {
-            isAgent = arr[i - 1].isAgent;
-          } else {
-            isAgent = false; // Default start
-          }
+          isAgent = false; // Default first line to customer
         }
       }
 
@@ -1075,7 +1281,21 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
     <div className="fixed inset-0 z-50 flex justify-end font-sans overflow-hidden">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm transition-opacity duration-500" onClick={onClose} />
 
-      <div className="relative w-full max-w-4xl bg-[#F2F2F7] h-full shadow-2xl flex flex-col animate-slide-in-right ring-1 ring-black/5">
+      <div
+        className="relative bg-[#F2F2F7] h-full shadow-2xl flex flex-col animate-slide-in-right ring-1 ring-black/5 transition-all duration-300 ease-out"
+        style={{
+          width: isExpanded ? '720px' : '480px',
+          maxWidth: isExpanded ? '720px' : '480px'
+        }}
+      >
+        {/* Left Edge Expand/Collapse Toggle */}
+        <button
+          onClick={() => setIsExpanded(!isExpanded)}
+          className="absolute left-0 top-1/2 -translate-y-1/2 -translate-x-1/2 z-50 w-6 h-16 bg-white border border-slate-200 rounded-l-lg shadow-md flex items-center justify-center text-slate-400 hover:text-[#007AFF] hover:bg-slate-50 transition-all duration-200"
+          title={isExpanded ? "Collapse panel" : "Expand panel"}
+        >
+          {isExpanded ? <ChevronRight size={14} /> : <ChevronRight size={14} className="rotate-180" />}
+        </button>
 
         {/* Navigation Bar */}
         <div className="px-6 py-3 flex flex-col items-center bg-white/80 backdrop-blur-2xl border-b border-slate-200 z-50 sticky top-0">
@@ -1084,6 +1304,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
             <button onClick={onClose} className="text-[#007AFF] font-medium text-[17px] flex items-center gap-1 transition-opacity active:opacity-50">
               <X size={20} strokeWidth={2.5} /> Close
             </button>
+            {/* 
             <div className="text-center">
               <h2 className="text-[17px] font-bold text-black leading-tight tracking-tight">{call.agentName}</h2>
               <div className="flex items-center justify-center gap-1.5 mt-0.5">
@@ -1091,7 +1312,83 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                 <p className="text-[11px] font-bold text-emerald-600 uppercase tracking-widest">ID: {call.callId}</p>
               </div>
             </div>
+            */}
+            {/* Spacer to balance header */}
             <div className="w-10" />
+          </div>
+
+          {/* Metadata Bar - Sleek connected design */}
+          <div className="w-full mb-4">
+            <div className="flex items-stretch bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex-nowrap">
+              {/* Score - Using computed weighted score for consistency with FINAL SCORE */}
+              <div className={`shrink-0 py-2 px-3 text-center border-r border-slate-100 min-w-[60px] ${calculatedScore >= 85 ? 'bg-emerald-50/50' :
+                calculatedScore >= 70 ? 'bg-amber-50/50' : 'bg-rose-50/50'}`}>
+                <div className={`flex items-center justify-center gap-1 mb-0.5 ${calculatedScore >= 85 ? 'text-emerald-500' :
+                  calculatedScore >= 70 ? 'text-amber-500' : 'text-rose-500'}`}>
+                  <Award size={11} />
+                  <span className="text-[9px] font-bold uppercase tracking-wider">Score</span>
+                </div>
+                <p className={`text-lg font-black leading-none ${calculatedScore >= 85 ? 'text-emerald-600' :
+                  calculatedScore >= 70 ? 'text-amber-600' : 'text-rose-600'}`}>{calculatedScore || 0}</p>
+              </div>
+
+              {/* Status - Based on computed weighted score for consistency */}
+              <div className="shrink-0 py-2 px-3 text-center border-r border-slate-100 flex flex-col items-center justify-center min-w-[70px]">
+                <div className="text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">Status</div>
+                {(() => {
+                  // Use calculatedScore for status consistency
+                  const scoreVal = calculatedScore || 0;
+
+                  let status = 'REVIEW';
+                  let colorClass = 'text-amber-600 bg-amber-100';
+                  let icon = <AlertCircle size={12} />;
+
+                  if (scoreVal < 50) {
+                    status = 'FAIL';
+                    colorClass = 'text-rose-600 bg-rose-100';
+                    icon = <XCircle size={12} />;
+                  } else if (scoreVal >= 85) {
+                    status = 'PASS';
+                    colorClass = 'text-emerald-600 bg-emerald-100';
+                    icon = <CheckCircle2 size={12} />;
+                  }
+
+                  return (
+                    <div className={`px-2.5 py-1 rounded-full ${colorClass} flex items-center gap-1`}>
+                      {icon}
+                      <span className="text-[10px] font-black">{status}</span>
+                    </div>
+                  );
+                })()}
+              </div>
+
+              {/* Agent */}
+              <div className="flex-1 py-2 px-2 text-center border-r border-slate-100 min-w-0">
+                <div className="flex items-center justify-center gap-1 text-slate-500 mb-0.5">
+                  <User size={10} />
+                  <span className="text-[8px] font-bold uppercase tracking-wider">Agent</span>
+                </div>
+                <p className="text-xs font-bold text-slate-800 truncate" title={call.agentName}>{call.agentName}</p>
+              </div>
+
+              {/* Campaign */}
+              <div className="shrink-0 py-2 px-2 text-center border-r border-slate-100 min-w-[65px]">
+                <div className="flex items-center justify-center gap-1 text-slate-500 mb-0.5">
+                  <Zap size={10} />
+                  <span className="text-[8px] font-bold uppercase tracking-wider">Campaign</span>
+                </div>
+                <p className="text-xs font-bold text-slate-800">{call.campaignType || 'ACA'}</p>
+              </div>
+
+              {/* Call Date */}
+              <div className="shrink-0 py-2 px-2 text-center min-w-[80px]">
+                <div className="flex items-center justify-center gap-1 text-slate-500 mb-0.5">
+                  <Calendar size={10} />
+                  <span className="text-[8px] font-bold uppercase tracking-wider whitespace-nowrap">Call Date</span>
+                </div>
+                <p className="text-xs font-bold text-slate-800 whitespace-nowrap">{new Date(call.callDate || call.createdAt || new Date()).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</p>
+              </div>
+            </div>
           </div>
 
           <div className="flex p-0.5 bg-[#E3E3E8] rounded-xl w-full max-w-[280px]">
@@ -1110,20 +1407,67 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
           </div>
         </div>
 
+        {/* Metadata section moved to header */}
+
         {/* Audio Player */}
-        <div className="px-6 pt-6 pb-2 z-40 bg-[#F2F2F7]">
-          <div className="bg-white rounded-[2rem] shadow-[0_15px_40px_-15px_rgba(0,0,0,0.1)] border border-white p-5 flex items-center gap-5 relative overflow-visible">
-            <audio
-              ref={audioRef}
-              src={call.recordingUrl}
-              onTimeUpdate={handleTimeUpdate}
-              onLoadedMetadata={handleLoadedMetadata}
-              onEnded={() => setIsPlaying(false)}
-            />
+        <div className="px-6 pt-4 pb-2 z-40 bg-[#F2F2F7]">
+          <div className="bg-white rounded-2xl shadow-lg border border-slate-200 p-4 flex items-center gap-4 relative overflow-visible">
+            {/* Only render audio element if we have a valid, non-empty URL */}
+            {call.recordingUrl && call.recordingUrl.trim() !== '' && (
+              <audio
+                ref={audioRef}
+                src={call.recordingUrl}
+                onTimeUpdate={handleTimeUpdate}
+                onLoadedMetadata={handleLoadedMetadata}
+                onEnded={() => setIsPlaying(false)}
+                onError={(e) => {
+                  const target = e.target as HTMLAudioElement;
+                  const mediaError = target.error;
+
+                  // Map MediaError codes to human-readable messages
+                  const errorCodes: Record<number, string> = {
+                    1: 'MEDIA_ERR_ABORTED - Playback aborted by user',
+                    2: 'MEDIA_ERR_NETWORK - Network error while downloading',
+                    3: 'MEDIA_ERR_DECODE - Error decoding the media',
+                    4: 'MEDIA_ERR_SRC_NOT_SUPPORTED - Source not supported or file not found (404)'
+                  };
+
+                  const errorCode = mediaError?.code || 0;
+                  const errorMessage = mediaError?.message || errorCodes[errorCode] || 'Unknown error';
+
+                  // Use console.warn for expected missing-file scenarios (code 4) 
+                  // to keep the console cleaner during development
+                  if (errorCode === 4) {
+                    console.warn('[Audio] Recording file not found or format unsupported:', {
+                      url: call.recordingUrl?.substring(0, 80),
+                      errorCode,
+                      hint: 'Verify file exists in R2 bucket and URL is public'
+                    });
+                  } else {
+                    console.error('[Audio] Playback failed:', {
+                      url: call.recordingUrl?.substring(0, 80),
+                      errorCode,
+                      errorMessage
+                    });
+                  }
+
+                  setAudioError(
+                    errorCode === 4
+                      ? 'Recording file not found - verify upload completed'
+                      : `Playback error: ${errorMessage}`
+                  );
+                }}
+              />
+            )}
 
             <button
               onClick={togglePlay}
-              className="h-12 w-12 bg-black text-white rounded-full flex items-center justify-center shrink-0 active:scale-90 transition-transform shadow-lg"
+              disabled={!call.recordingUrl || call.recordingUrl.trim() === '' || !!audioError}
+              className={`h-12 w-12 rounded-full flex items-center justify-center shrink-0 transition-transform shadow-lg ${!call.recordingUrl || call.recordingUrl.trim() === '' || audioError
+                ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
+                : 'bg-black text-white active:scale-90'
+                }`}
+              title={audioError || (!call.recordingUrl || call.recordingUrl.trim() === '' ? 'No recording available' : 'Play/Pause')}
             >
               {isPlaying ? <Pause size={24} fill="currentColor" /> : <Play size={24} fill="currentColor" className="ml-0.5" />}
             </button>
@@ -1134,6 +1478,22 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                 <span>{formatTime(currentTime)}</span>
                 <span className="text-purple-600 font-extrabold uppercase tracking-tighter">Pitch Sync Active</span>
                 <span>{formatTime(duration || 0)}</span>
+              </div>
+
+              {/* Timeline Marker Legend - Moved Above Audio */}
+              <div className="flex items-center justify-end gap-3 px-1 mb-2">
+                <div className="flex items-center gap-1.5">
+                  <div className="w-[2px] h-3 bg-emerald-500" />
+                  <span className="text-[9px] text-slate-500 font-medium uppercase tracking-wider">Passed</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <div className="w-[2px] h-3 bg-rose-500" />
+                  <span className="text-[9px] text-slate-500 font-medium uppercase tracking-wider">Failed</span>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <div className="w-[2px] h-3 bg-indigo-500" />
+                  <span className="text-[9px] text-slate-500 font-medium uppercase tracking-wider">Chapter</span>
+                </div>
               </div>
 
               {/* TIMELINE CONTAINER */}
@@ -1159,44 +1519,114 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                   })}
                 </div>
 
-                {/* MARKERS LAYER - High Z-Index, absolute positioning */}
+                {/* MARKERS LAYER - Clustered & Expanded */}
                 <div className="absolute inset-0 z-30 pointer-events-none">
-                  {timelineMarkers.map((m, idx) => (
-                    <div
-                      key={idx}
-                      className="absolute top-1/2 -translate-y-1/2 group/marker pointer-events-auto cursor-pointer hover:z-50"
-                      style={{ left: `${m.position}%` }}
-                      onClick={(e) => { e.stopPropagation(); handleSeek(m.time); }}
-                    >
-                      {/* Touch Target */}
-                      <div className="absolute -inset-2 bg-transparent" />
+                  {clusteredMarkers.map((cluster, idx) => {
+                    const isCluster = cluster.items.length > 1;
+                    const primaryType = cluster.items.some(i => i.type === 'fail') ? 'fail' :
+                      cluster.items.some(i => i.type === 'chapter') ? 'chapter' : 'pass';
 
-                      {/* Pin */}
-                      <div className={`relative flex flex-col items-center transition-all duration-300 group-hover/marker:scale-125 group-hover/marker:-translate-y-2`}>
-                        <div className={`w-3.5 h-3.5 rounded-full border-2 border-white shadow-md flex items-center justify-center ${m.type === 'pass' ? 'bg-emerald-500' : m.type === 'fail' ? 'bg-rose-500' : 'bg-indigo-500'
-                          }`}>
-                          <div className="w-1 h-1 bg-white rounded-full" />
+                    // Background Class Logic
+                    const bgClass = primaryType === 'chapter' ? 'bg-indigo-500' :
+                      primaryType === 'pass' ? 'bg-emerald-500' : 'bg-rose-500';
+
+                    // Shadow/Glow colors
+                    const shadowGlow = primaryType === 'fail' ? 'shadow-[0_0_12px_rgba(244,63,94,0.8)]' :
+                      primaryType === 'pass' ? 'shadow-[0_0_12px_rgba(16,185,129,0.8)]' : 'shadow-[0_0_12px_rgba(99,102,241,0.8)]';
+
+                    // Icon Logic for Pill
+                    let MarkerIcon = isCluster ? Layers :
+                      primaryType === 'pass' ? Check :
+                        primaryType === 'fail' ? AlertTriangle : Flag;
+
+                    return (
+                      <div
+                        key={idx}
+                        className="absolute inset-y-0 group/marker pointer-events-auto cursor-pointer z-30 flex items-center justify-center -ml-[3px] w-6"
+                        style={{ left: `${cluster.position}%` }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleSeek(cluster.startTime);
+                        }}
+                        onMouseEnter={() => setHoveredMarker(idx)}
+                        onMouseLeave={() => setHoveredMarker(null)}
+                      >
+                        {/* 1. VISUAL: SIMPLE COLORED LINE (Top/Bottom Split) */}
+                        {/* Pass = Top Half, Fail = Bottom Half to be "opposite" */}
+                        <div className={`
+                            absolute w-[3px] rounded-full transition-all duration-300
+                            ${bgClass} ${shadowGlow} opacity-80 group-hover/marker:opacity-100 group-hover/marker:w-[4px]
+                            ${primaryType === 'pass' ? 'top-0 h-1/2 rounded-b-none' :
+                            primaryType === 'fail' ? 'bottom-0 h-1/2 rounded-t-none' : 'inset-y-0'}
+                         `} />
+
+                        {/* HOVER BADGE ONLY (No permanent pill) */}
+                        <div className={`
+                            absolute left-1/2 -translate-x-1/2 z-40
+                            transition-all duration-200 pointer-events-none transform
+                            opacity-0 group-hover/marker:opacity-100 
+                            ${primaryType === 'pass' ? '-top-2 -translate-y-1' : primaryType === 'fail' ? 'bottom-0 translate-y-full' : '-top-2'}
+                        `}>
+                          {isCluster ? (
+                            <div className="bg-slate-800 text-white text-[9px] px-1.5 py-0.5 rounded flex items-center gap-1 shadow-sm whitespace-nowrap">
+                              <Layers size={8} />
+                              <span className="font-bold">{cluster.items.length}</span>
+                            </div>
+                          ) : (
+                            <div className={`p-1 rounded-full shadow-sm ${bgClass} text-white`}>
+                              <MarkerIcon size={8} strokeWidth={3} />
+                            </div>
+                          )}
                         </div>
-                        <div className={`w-0.5 h-6 -mt-1 ${m.type === 'pass' ? 'bg-emerald-500' : m.type === 'fail' ? 'bg-rose-500' : 'bg-indigo-500'
-                          }`} />
-                      </div>
 
-                      {/* Tooltip */}
-                      <div className="absolute bottom-full mb-2 left-1/2 -translate-x-1/2 bg-slate-900 text-white text-[10px] font-bold px-3 py-1.5 rounded-lg opacity-0 group-hover/marker:opacity-100 transition-opacity whitespace-nowrap pointer-events-none shadow-xl border border-white/10 z-50 flex items-center gap-2">
-                        {m.type === 'pass' ? <CheckCircle2 size={10} className="text-emerald-400" /> : m.type === 'fail' ? <XCircle size={10} className="text-rose-400" /> : <Bookmark size={10} className="text-indigo-400" />}
-                        {m.title}
-                        <span className="opacity-50 font-normal">({m.time})</span>
+                        {/* Expandable Tooltip (New "Tesla" Floating Card Style) */}
+                        <div className="absolute bottom-full mb-3 left-1/2 -translate-x-1/2 bg-white/95 backdrop-blur-2xl border border-white/50 rounded-2xl opacity-0 group-hover/marker:opacity-100 transition-all duration-300 transform translate-y-2 group-hover/marker:translate-y-0 pointer-events-none shadow-[0_10px_40px_-10px_rgba(0,0,0,0.15)] z-50 min-w-[200px] overflow-hidden">
+                          {/* Header */}
+                          <div className="px-4 py-2.5 border-b border-slate-100 bg-slate-50/50 flex items-center justify-between gap-3">
+                            <span className="text-[10px] font-bold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                              {isCluster ? <Layers size={10} /> : <Activity size={10} />}
+                              {isCluster ? 'Event Stack' : 'Timeline Event'}
+                            </span>
+                            <span className="text-[10px] font-mono font-medium text-slate-400 bg-white px-1.5 py-0.5 rounded border border-slate-200">
+                              {formatTime(cluster.startTime)}
+                            </span>
+                          </div>
+
+                          {/* Content List */}
+                          <div className="p-2 space-y-1 max-h-[200px] overflow-y-auto custom-scrollbar">
+                            {cluster.items.map((item, i) => {
+                              const iconColor = item.type === 'fail' ? 'text-rose-500' :
+                                item.type === 'pass' ? 'text-emerald-500' : 'text-indigo-500';
+                              const Icon = item.type === 'fail' ? AlertTriangle :
+                                item.type === 'pass' ? Check : Flag;
+
+                              return (
+                                <div key={i} className="flex items-start gap-2.5 p-2 rounded-xl hover:bg-slate-50 transition-colors">
+                                  <div className={`mt-0.5 shrink-0 ${iconColor}`}>
+                                    <Icon size={12} strokeWidth={2.5} />
+                                  </div>
+                                  <div>
+                                    <p className="text-xs font-bold text-slate-700 leading-tight mb-0.5">{item.title}</p>
+                                    <p className="text-[10px] text-slate-500 font-mono">{item.time}</p>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
 
-                {/* Playhead - uses actual audio duration */}
+                {/* Playhead - Premium Update */}
                 <div
-                  className="absolute top-1/2 -translate-y-1/2 w-1.5 bg-purple-900 h-10 rounded-full shadow-xl transition-all pointer-events-none z-20 border border-white/50"
+                  className="absolute top-1/2 -translate-y-1/2 w-[3px] bg-purple-600 h-10 rounded-full shadow-[0_0_15px_rgba(147,51,234,0.6)] transition-all pointer-events-none z-20 border border-white/50"
                   style={{ left: `${Math.min(100, (currentTime / (duration || 1)) * 100)}%` }}
                 />
               </div>
+
+
             </div>
           </div>
         </div>
@@ -1207,7 +1637,17 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
             <div className="px-6 py-8 space-y-6">
               {/* Transcript Content */}
               {parsedTranscript.map((msg, idx) => {
-                const isActive = currentTime >= msg.startSeconds && currentTime < msg.endSeconds;
+                // Apply Sync Offset to the current time check
+                // If audio is "ahead" (need to delay), syncOffset should be positive?
+                // Actually: isActive if currentTime is within [start - offset, end - offset]
+                // Let's think: if user sets +1s offset, it means "Audio is 1s late", so we want the text to highlight 1s LATER.
+                // So if Audio Time is 10s, and offset is +1s, we effectively want to treat it as 9s?
+                // Or: User sets +1s because "Audio is 1s ahead of text". 
+                // Let's standard: 
+                // Offset acts as adjustment to CurrentTime. 
+                // adjustedTime = currentTime + syncOffset.
+                const adjustedTime = Math.max(0, currentTime + syncOffset);
+                const isActive = adjustedTime >= msg.startSeconds && adjustedTime < msg.endSeconds;
                 return (
                   <div
                     key={idx}
@@ -1226,21 +1666,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                               <Play size={8} fill="currentColor" /> {msg.time}
                             </button>
                           )}
-                          {/* Indicator Dot in Header */}
-                          {msg.markers && msg.markers.length > 0 && (
-                            <div className="flex items-center gap-1 ml-2">
-                              {msg.markers.map((m: { seconds: number; type: string; title: string }, i: number) => (
-                                <button
-                                  key={i}
-                                  onClick={(e) => { e.stopPropagation(); handleSeek(m.seconds); }}
-                                  className={`w-2 h-2 rounded-full ring-1 ring-white shadow-sm transition-transform hover:scale-125 cursor-pointer ${m.type === 'pass' ? 'bg-emerald-500' :
-                                    m.type === 'fail' ? 'bg-rose-500' : 'bg-indigo-500'
-                                    }`}
-                                  title={`Jump to ${m.title}`}
-                                />
-                              ))}
-                            </div>
-                          )}
+                          {/* Indicator Dot in Header REMOVED per user request */}
                         </div>
                         <div className={`px-5 py-3.5 text-[15px] leading-relaxed shadow-sm relative transition-all duration-300 border-2 
                                 ${msg.isAgent
@@ -1249,27 +1675,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                           }`}>
                           {msg.content}
 
-                          {/* Compliance Markers linked to text */}
-                          {msg.markers && msg.markers.length > 0 && (
-                            <div className={`mt-3 pt-3 border-t flex flex-wrap gap-2 ${msg.isAgent ? 'border-white/20' : 'border-slate-200'}`}>
-                              {msg.markers.map((marker: { seconds: number; type: string; title: string; time: string }, mIdx: number) => (
-                                <button
-                                  key={mIdx}
-                                  onClick={(e) => { e.stopPropagation(); handleSeek(marker.seconds); }}
-                                  className={`flex items-center gap-1.5 px-2 py-1 rounded-md text-[10px] font-bold uppercase tracking-wide border transition-all hover:scale-105 active:scale-95 cursor-pointer ${marker.type === 'pass'
-                                    ? 'bg-emerald-500/20 text-emerald-200 border-emerald-500/30 hover:bg-emerald-500/30'
-                                    : marker.type === 'fail'
-                                      ? 'bg-rose-500/20 text-rose-200 border-rose-500/30 hover:bg-rose-500/30'
-                                      : 'bg-indigo-500/20 text-indigo-200 border-indigo-500/30 hover:bg-indigo-500/30'
-                                    } ${!msg.isAgent && marker.type === 'pass' ? '!text-emerald-700 !bg-emerald-100 !border-emerald-200 hover:!bg-emerald-200' : ''} ${!msg.isAgent && marker.type === 'fail' ? '!text-rose-700 !bg-rose-100 !border-rose-200 hover:!bg-rose-200' : ''}`}
-                                >
-                                  {marker.type === 'pass' ? <CheckCircle2 size={10} /> : marker.type === 'fail' ? <XCircle size={10} /> : <Bookmark size={10} />}
-                                  {marker.title}
-                                  <span className="opacity-70 font-mono ml-1">({marker.time})</span>
-                                </button>
-                              ))}
-                            </div>
-                          )}
+
                         </div>
                       </div>
                     </div>
@@ -1278,102 +1684,598 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
               })}
             </div>
           ) : (
-            <div className="p-8 space-y-8 animate-in fade-in slide-in-from-bottom-2 duration-400">
+            <div className="p-5 space-y-6 animate-in fade-in slide-in-from-bottom-2 duration-400">
               {/* Meta Grid */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                {[
-                  { icon: User, label: "Agent", value: call.agentName },
-                  { icon: Calendar, label: "Date", value: new Date(call.analyzedAt).toLocaleDateString() },
-                  { icon: Activity, label: "Type", value: call.campaignType },
-                  { icon: Award, label: "Score", value: `${call.complianceScore}%`, color: call.complianceScore >= 85 ? 'text-emerald-500' : call.complianceScore >= 70 ? 'text-amber-500' : 'text-rose-500' }
-                ].map((item, i) => (
-                  <div key={i} className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex flex-col justify-center">
-                    <div className="flex items-center gap-2 mb-1">
-                      <item.icon size={14} className="text-slate-400" />
-                      <span className="text-[10px] font-bold text-slate-400 uppercase tracking-widest">{item.label}</span>
-                    </div>
-                    <p className={`text-sm font-bold truncate ${item.color || 'text-slate-800'}`}>{item.value}</p>
+              {/* Talk Time Distribution - Moved from below */}
+
+
+
+
+
+              {/* Language Assessment Section */}
+              {call.languageAssessment && (
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2 pl-2">
+                    <MessageSquare size={14} className="text-indigo-500" />
+                    <h4 className="text-[11px] font-black text-[#8E8E93] uppercase tracking-widest">Language Assessment</h4>
                   </div>
-                ))}
-              </div>
+                  <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
+                    <div className="space-y-5">
+                      {/* Left Column: Key Metrics */}
+                      <div className="space-y-6">
+                        {/* WPM */}
+                        {(() => {
+                          const agentMetrics = call.speakerMetrics?.agent as any;
+                          let wpm = call.languageAssessment.wpm || call.languageAssessment.WPM;
 
-              {/* AI Coach Section */}
-              <div ref={coachSectionRef} className="space-y-4">
-                <div className="relative overflow-hidden rounded-[2rem] border border-white/20 bg-slate-900 shadow-2xl p-6 space-y-6">
-                  <div className="absolute top-0 right-0 w-[400px] h-[400px] bg-purple-600/20 rounded-full blur-[80px] -mr-32 -mt-32 pointer-events-none" />
+                          // Fallback to speaker metrics
+                          if (!wpm && agentMetrics?.wpm) {
+                            wpm = agentMetrics.wpm;
+                          }
+                          // Calculate if needed
+                          if (!wpm && agentMetrics?.wordCount && agentMetrics?.speakingTimeSeconds) {
+                            wpm = Math.round((agentMetrics.wordCount / agentMetrics.speakingTimeSeconds) * 60);
+                          }
 
-                  <div className="relative z-10 flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-3">
-                      <div className="h-8 w-8 rounded-xl bg-purple-600 flex items-center justify-center">
-                        <Brain size={16} className="text-white" />
+                          const displayWpm = wpm || 'N/A';
+                          const wpmValue = typeof wpm === 'number' ? wpm : 0;
+
+                          return (
+                            <div>
+                              <div className="flex justify-between items-center mb-2">
+                                <span className="text-sm font-semibold text-slate-700">Pace (WPM)</span>
+                                <span className="text-sm font-bold text-slate-900">
+                                  {displayWpm}
+                                </span>
+                              </div>
+                              <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                                <div
+                                  className="h-full bg-indigo-500 rounded-full"
+                                  style={{ width: `${Math.min((wpmValue / 200) * 100, 100)}%` }}
+                                />
+                              </div>
+                              <p className="text-xs text-slate-500 mt-1">Target: 120-150 words per minute</p>
+                            </div>
+                          );
+                        })()}
+
+                        {/* Clarity Score */}
+                        {(() => {
+                          let clarity = call.languageAssessment.clarity_score ?? call.languageAssessment.clarityScore;
+
+                          if (clarity === undefined || clarity === null) {
+                            const agentMetrics = call.speakerMetrics?.agent as any;
+                            clarity = agentMetrics?.clarity_score ?? agentMetrics?.clarityScore ?? agentMetrics?.clarity;
+                          }
+                          const clarityValue = clarity || 0;
+
+                          return (
+                            <div>
+                              <div className="flex justify-between items-center mb-2">
+                                <span className="text-sm font-semibold text-slate-700">Clarity</span>
+                                <span className="text-sm font-bold text-slate-900">{clarityValue}/100</span>
+                              </div>
+                              <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                                <div
+                                  className={`h-full rounded-full ${clarityValue >= 80 ? 'bg-emerald-500' :
+                                    clarityValue >= 60 ? 'bg-yellow-500' : 'bg-rose-500'
+                                    }`}
+                                  style={{ width: `${clarityValue}%` }}
+                                />
+                              </div>
+                            </div>
+                          );
+                        })()}
                       </div>
-                      <div>
-                        <h4 className="text-sm font-bold text-white tracking-wide">AI Quick Actions</h4>
-                        <p className="text-[10px] text-slate-400">One-click analysis for this call</p>
-                      </div>
-                    </div>
-                  </div>
 
-                  {/* Coaching Notes if present */}
-                  {call.coachingNotes && call.coachingNotes.length > 0 && (
-                    <div className="relative z-10 grid grid-cols-1 gap-4">
-                      <h4 className="text-[11px] font-black text-purple-300 uppercase tracking-widest">Coaching Opportunities</h4>
-                      {call.coachingNotes.slice(0, 2).map((note, idx) => (
-                        <div key={idx} className="bg-white/5 border border-white/10 p-4 rounded-xl flex items-start gap-4">
-                          <div className="h-6 w-6 rounded-lg bg-purple-500/20 flex items-center justify-center shrink-0">
-                            <Lightbulb size={14} className="text-purple-300" />
+                      {/* Additional Metrics Grid */}
+                      <div className="grid grid-cols-2 gap-3">
+                        {/* Script Adherence */}
+                        {call.languageAssessment.script_adherence && (
+                          <div className="bg-slate-50 rounded-xl p-3">
+                            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">Script Adherence</span>
+                            <span className={`text-sm font-bold ${call.languageAssessment.script_adherence === 'high' ? 'text-emerald-600' :
+                              call.languageAssessment.script_adherence === 'medium' ? 'text-amber-600' : 'text-rose-600'
+                              }`}>
+                              {call.languageAssessment.script_adherence.charAt(0).toUpperCase() + call.languageAssessment.script_adherence.slice(1)}
+                            </span>
                           </div>
-                          <p className="text-sm text-slate-300 leading-relaxed">{note}</p>
+                        )}
+
+                        {/* Pace */}
+                        {call.languageAssessment.pace && (
+                          <div className="bg-slate-50 rounded-xl p-3">
+                            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">Pace</span>
+                            <span className={`text-sm font-bold ${call.languageAssessment.pace === 'appropriate' ? 'text-emerald-600' :
+                              call.languageAssessment.pace === 'fast' || call.languageAssessment.pace === 'slow' ? 'text-amber-600' : 'text-slate-700'
+                              }`}>
+                              {call.languageAssessment.pace.charAt(0).toUpperCase() + call.languageAssessment.pace.slice(1)}
+                            </span>
+                          </div>
+                        )}
+
+                        {/* Empathy Displayed */}
+                        {call.languageAssessment.empathy_displayed !== undefined && (
+                          <div className="bg-slate-50 rounded-xl p-3">
+                            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">Empathy</span>
+                            <div className="flex items-center gap-1.5">
+                              {call.languageAssessment.empathy_displayed ? (
+                                <>
+                                  <CheckCircle2 size={14} className="text-emerald-500" />
+                                  <span className="text-sm font-bold text-emerald-600">Displayed</span>
+                                </>
+                              ) : (
+                                <>
+                                  <XCircle size={14} className="text-rose-500" />
+                                  <span className="text-sm font-bold text-rose-600">Not Detected</span>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Professionalism Score */}
+                        {call.languageAssessment.professionalism_score !== undefined && (
+                          <div className="bg-slate-50 rounded-xl p-3">
+                            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">Professionalism</span>
+                            <div className="flex items-center gap-2">
+                              <span className={`text-sm font-bold ${call.languageAssessment.professionalism_score >= 8 ? 'text-emerald-600' :
+                                call.languageAssessment.professionalism_score >= 5 ? 'text-amber-600' : 'text-rose-600'
+                                }`}>
+                                {call.languageAssessment.professionalism_score}/10
+                              </span>
+                              <div className="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                                <div
+                                  className={`h-full rounded-full ${call.languageAssessment.professionalism_score >= 8 ? 'bg-emerald-500' :
+                                    call.languageAssessment.professionalism_score >= 5 ? 'bg-amber-500' : 'bg-rose-500'
+                                    }`}
+                                  style={{ width: `${call.languageAssessment.professionalism_score * 10}%` }}
+                                />
+                              </div>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Tone Analysis */}
+                      <div className="bg-slate-50 rounded-xl p-4">
+                        <span className="text-xs font-bold text-slate-500 uppercase tracking-wider block mb-2">Tone Analysis</span>
+                        <div className="flex flex-wrap gap-2">
+                          {(() => {
+                            const keywords = call.languageAssessment.tone_keywords ||
+                              call.languageAssessment.toneKeywords ||
+                              (call.speakerMetrics?.agent as any)?.tone_keywords ||
+                              [];
+
+                            // Also show the main tone value if it exists
+                            const mainTone = call.languageAssessment.tone;
+
+                            return (
+                              <>
+                                {mainTone && !keywords.includes(mainTone) && (
+                                  <span className="px-2.5 py-1 rounded-md bg-indigo-100 border border-indigo-200 text-xs font-semibold text-indigo-700 shadow-sm">
+                                    {mainTone}
+                                  </span>
+                                )}
+                                {keywords.length > 0 ? (
+                                  keywords.map((tone: string, idx: number) => (
+                                    <span key={idx} className="px-2.5 py-1 rounded-md bg-white border border-slate-200 text-xs font-semibold text-slate-700 shadow-sm">
+                                      {tone}
+                                    </span>
+                                  ))
+                                ) : !mainTone && (
+                                  <span className="text-sm text-slate-400 italic">No tone keywords detected</span>
+                                )}
+                              </>
+                            );
+                          })()}
+                        </div>
+                      </div>
+
+                      {/* Summary */}
+                      {(() => {
+                        const summary = call.languageAssessment.summary || (call.speakerMetrics as any)?.summary;
+                        if (summary) {
+                          return (
+                            <div className="text-sm text-slate-600 leading-relaxed italic">
+                              "{summary}"
+                            </div>
+                          );
+                        }
+                        return null;
+                      })()}
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Speaker Metrics (Talk Distribution & Turns) */}
+              {(call.agentSpeakingTime || call.customerSpeakingTime || call.speakerMetrics) && (() => {
+                // Get speaking times: Prioritize speakerMetrics (JSONB column) as requested
+                const agentTime = call.speakerMetrics?.agent?.speakingTimeSeconds ?? call.agentSpeakingTime ?? 0;
+                const customerTime = call.speakerMetrics?.customer?.speakingTimeSeconds ?? call.customerSpeakingTime ?? 0;
+                const totalTime = agentTime + customerTime;
+
+                // Get turns
+                const agentTurns = call.speakerMetrics?.agent?.turnCount ?? call.agentTurnCount ?? 0;
+                const customerTurns = call.speakerMetrics?.customer?.turnCount ?? call.customerTurnCount ?? 0;
+                const totalTurns = agentTurns + customerTurns;
+
+                if (totalTime === 0 && totalTurns === 0) return null;
+
+                const agentPercent = totalTime > 0 ? Math.round((agentTime / totalTime) * 100) : 0;
+                const customerPercent = 100 - agentPercent;
+
+                // Format time helper
+                const formatDuration = (seconds: number) => {
+                  const mins = Math.floor(seconds / 60);
+                  const secs = Math.floor(seconds % 60);
+                  return mins > 0 ? `${mins}m ${secs}s` : `${secs}s`;
+                };
+
+                // SVG donut chart parameters
+                const size = 100;
+                const strokeWidth = 12;
+                const radius = (size - strokeWidth) / 2;
+                const circumference = 2 * Math.PI * radius;
+                const agentOffset = circumference * (1 - agentPercent / 100);
+
+                return (
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-2 pl-2">
+                      <Users size={14} className="text-indigo-500" />
+                      <h4 className="text-[11px] font-black text-[#8E8E93] uppercase tracking-widest">Speaker Analysis</h4>
+                    </div>
+
+                    <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-5">
+                      {/* Left Side: Talk Time Distribution */}
+                      <div>
+                        <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">Talk Time</h5>
+                        <div className="flex items-center gap-6">
+                          {/* Donut Chart */}
+                          <div className="relative flex-shrink-0">
+                            <svg width={size} height={size} className="transform -rotate-90">
+                              {/* Background circle (Customer/Prospect) */}
+                              <circle
+                                cx={size / 2}
+                                cy={size / 2}
+                                r={radius}
+                                fill="none"
+                                stroke="#f1f5f9"
+                                strokeWidth={strokeWidth}
+                              />
+                              {/* Customer segment */}
+                              <circle
+                                cx={size / 2}
+                                cy={size / 2}
+                                r={radius}
+                                fill="none"
+                                stroke="#8b5cf6"
+                                strokeWidth={strokeWidth}
+                                strokeDasharray={circumference}
+                                strokeDashoffset={0}
+                                strokeLinecap="round"
+                                className="transition-all duration-700 ease-out"
+                              />
+                              {/* Agent segment (overlays on top) */}
+                              <circle
+                                cx={size / 2}
+                                cy={size / 2}
+                                r={radius}
+                                fill="none"
+                                stroke="#10b981"
+                                strokeWidth={strokeWidth}
+                                strokeDasharray={circumference}
+                                strokeDashoffset={agentOffset}
+                                strokeLinecap="round"
+                                className="transition-all duration-700 ease-out"
+                              />
+                            </svg>
+                            {/* Center text */}
+                            <div className="absolute inset-0 flex flex-col items-center justify-center">
+                              <span className="text-lg font-bold text-slate-800">{agentPercent}%</span>
+                              <span className="text-[9px] text-slate-500 uppercase">Agent</span>
+                            </div>
+                          </div>
+
+                          {/* Legend */}
+                          <div className="flex-1 space-y-3">
+                            {/* Agent */}
+                            <div className="flex items-center justify-between">
+                              <div className="flex items-center gap-2">
+                                <div className="w-3 h-3 rounded-full bg-emerald-500 shadow-sm shadow-emerald-500/30" />
+                                <span className="text-sm font-medium text-slate-700">Agent</span>
+                              </div>
+                              <div className="text-right">
+                                <span className="text-sm font-bold text-emerald-600">{agentPercent}%</span>
+                                <span className="text-xs text-slate-400 ml-1.5">({formatDuration(agentTime)})</span>
+                              </div>
+                            </div>
+                            {/* Progress bar for agent */}
+                            <div className="h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-gradient-to-r from-emerald-400 to-emerald-500 rounded-full transition-all duration-700"
+                                style={{ width: `${agentPercent}%` }}
+                              />
+                            </div>
+
+                            {/* Customer/Prospect */}
+                            <div className="flex items-center justify-between mt-3">
+                              <div className="flex items-center gap-2">
+                                <div className="w-3 h-3 rounded-full bg-purple-500 shadow-sm shadow-purple-500/30" />
+                                <span className="text-sm font-medium text-slate-700">Prospect</span>
+                              </div>
+                              <div className="text-right">
+                                <span className="text-sm font-bold text-purple-600">{customerPercent}%</span>
+                                <span className="text-xs text-slate-400 ml-1.5">({formatDuration(customerTime)})</span>
+                              </div>
+                            </div>
+                            {/* Progress bar for prospect */}
+                            <div className="h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-gradient-to-r from-purple-400 to-purple-500 rounded-full transition-all duration-700"
+                                style={{ width: `${customerPercent}%` }}
+                              />
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Right Side: Turn Counts */}
+                      <div className="border-l border-slate-100 pl-8">
+                        <h5 className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-4">Engagement (Turns)</h5>
+                        <div className="space-y-6">
+
+                          {/* Agent Turns */}
+                          <div>
+                            <div className="flex justify-between items-center mb-2">
+                              <div className="flex items-center gap-2">
+                                <div className="p-1.5 bg-emerald-100 text-emerald-600 rounded-md">
+                                  <Headphones size={12} />
+                                </div>
+                                <span className="text-sm font-medium text-slate-700">Agent Turns</span>
+                              </div>
+                              <span className="text-lg font-bold text-slate-900">{agentTurns}</span>
+                            </div>
+                            <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-emerald-500"
+                                style={{ width: `${totalTurns > 0 ? (agentTurns / totalTurns) * 100 : 0}%` }}
+                              />
+                            </div>
+                          </div>
+
+                          {/* Customer Turns */}
+                          <div>
+                            <div className="flex justify-between items-center mb-2">
+                              <div className="flex items-center gap-2">
+                                <div className="p-1.5 bg-purple-100 text-purple-600 rounded-md">
+                                  <User size={12} />
+                                </div>
+                                <span className="text-sm font-medium text-slate-700">Prospect Turns</span>
+                              </div>
+                              <span className="text-lg font-bold text-slate-900">{customerTurns}</span>
+                            </div>
+                            <div className="h-2 bg-slate-100 rounded-full overflow-hidden">
+                              <div
+                                className="h-full bg-purple-500"
+                                style={{ width: `${totalTurns > 0 ? (customerTurns / totalTurns) * 100 : 0}%` }}
+                              />
+                            </div>
+                          </div>
+
+
+                          <div className="pt-4 mt-2 border-t border-slate-100">
+                            <div className="flex gap-2 items-start">
+                              <Lightbulb size={14} className="text-amber-500 mt-0.5 shrink-0" />
+                              <p className="text-xs text-slate-500 leading-relaxed">
+                                {(() => {
+                                  const diff = Math.abs(agentTurns - customerTurns);
+                                  const isLowEngagement = totalTurns < 10 && duration > 120; // < 10 turns in > 2 mins
+                                  const isMonologue = agentPercent > 80 && diff < 5; // High talk time but balanced turns = long monologues
+
+                                  if (isMonologue) return <span className="font-medium text-slate-700">Monologue Detected: <span className="font-normal text-slate-500">The agent is speaking for long periods at a time without interruption. This indicates a "lecture" style rather than a conversation.</span></span>;
+
+                                  if (agentPercent > 75 && agentTurns > customerTurns * 1.5) return <span className="font-medium text-slate-700">Agent Dominant: <span className="font-normal text-slate-500">The agent is dominating the conversation and potentially interrupting or not allowing the prospect to speak.</span></span>;
+
+                                  if (isLowEngagement) return <span className="font-medium text-slate-700">Low Engagement: <span className="font-normal text-slate-500">Few turns taken despite call duration. This might indicate disinterest or a one-sided pitch.</span></span>;
+
+                                  return <span className="font-medium text-slate-700">Healthy Flow: <span className="font-normal text-slate-500">Good back-and-forth exchange indicates active listening and engagement.</span></span>;
+                                })()}
+                              </p>
+                            </div>
+                          </div>
+
+
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* Focus Areas Section - Training improvement areas */}
+              {call.focusAreas && call.focusAreas.length > 0 && (
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2 pl-2">
+                    <Target size={14} className="text-amber-500" />
+                    <h4 className="text-[11px] font-black text-[#8E8E93] uppercase tracking-widest">Focus Areas</h4>
+                    <span className="text-[10px] font-bold bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">{call.focusAreas.length}</span>
+                  </div>
+                  <div className="bg-amber-50/50 rounded-2xl border border-amber-100 p-4">
+                    <div className="space-y-2">
+                      {call.focusAreas.slice(0, 5).map((area: any, idx: number) => (
+                        <div key={idx} className="flex items-start gap-3 p-2 bg-white rounded-lg border border-amber-100">
+                          <div className="shrink-0 mt-0.5">
+                            <div className="w-5 h-5 rounded-full bg-amber-100 flex items-center justify-center">
+                              <span className="text-[10px] font-bold text-amber-700">{idx + 1}</span>
+                            </div>
+                          </div>
+                          <div className="min-w-0 flex-1">
+                            {area.time && (
+                              <span className="text-[10px] font-bold text-amber-600 bg-amber-100 px-1.5 py-0.5 rounded mr-2">{area.time}</span>
+                            )}
+                            <p className="text-sm text-slate-700">{area.reason || area.area || (typeof area === 'string' ? area : JSON.stringify(area))}</p>
+                          </div>
                         </div>
                       ))}
+                      {call.focusAreas.length > 5 && (
+                        <p className="text-xs text-amber-600 text-center font-medium pt-2">+{call.focusAreas.length - 5} more areas</p>
+                      )}
                     </div>
-                  )}
-
-                  {/* Action Buttons Grid */}
-                  <div className="relative z-10 grid grid-cols-2 gap-3">
-                    {DEEP_INSIGHT_PROMPTS.slice(0, 4).map((prompt, idx) => (
-                      <button
-                        key={idx}
-                        onClick={() => handleAskCoach(prompt.query)}
-                        disabled={isCoachThinking}
-                        className="flex items-center gap-2 px-4 py-3 rounded-xl bg-white/5 border border-white/10 hover:bg-purple-600/20 hover:border-purple-500/50 hover:text-white text-slate-400 text-xs font-semibold transition-all group disabled:opacity-50 disabled:cursor-not-allowed"
-                      >
-                        <prompt.icon size={14} className="group-hover:text-purple-300 transition-colors shrink-0" />
-                        <span className="truncate">{prompt.label}</span>
-                      </button>
-                    ))}
                   </div>
+                </div>
+              )}
 
-                  {/* Response Area */}
-                  {(coachMessages.length > 0 || isCoachThinking) && (
-                    <div className="relative z-10 bg-white/5 rounded-2xl border border-white/10 p-4 backdrop-blur-md">
-                      <div className="max-h-64 overflow-y-auto custom-scrollbar space-y-4" ref={chatContainerRef}>
-                        {isCoachThinking && (
-                          <div className="flex items-center gap-2 text-purple-300 text-xs font-bold">
-                            <Loader2 size={12} className="animate-spin" /> Analyzing...
+              {/* Critical Moments Section - Passes, Warnings, Auto-Fails */}
+              {call.criticalMoments && (
+                (call.criticalMoments.passes?.length > 0 ||
+                  call.criticalMoments.warnings?.length > 0 ||
+                  call.criticalMoments.auto_fails?.length > 0) && (
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-2 pl-2">
+                      <AlertCircle size={14} className="text-slate-500" />
+                      <h4 className="text-[11px] font-black text-[#8E8E93] uppercase tracking-widest">Critical Moments</h4>
+                    </div>
+                    <div className="bg-white rounded-2xl border border-slate-200 p-4 shadow-sm">
+                      <div className="space-y-4">
+                        {/* Auto-Fails - Most Critical */}
+                        {call.criticalMoments.auto_fails?.length > 0 && (
+                          <div>
+                            <div className="flex items-center gap-2 mb-2">
+                              <XCircle size={12} className="text-rose-500" />
+                              <span className="text-[10px] font-bold text-rose-600 uppercase tracking-wider">Auto-Fails ({call.criticalMoments.auto_fails.length})</span>
+                            </div>
+                            <div className="space-y-1.5">
+                              {call.criticalMoments.auto_fails.slice(0, 3).map((item: any, idx: number) => (
+                                <div key={idx} className="flex items-start gap-2 p-2 bg-rose-50 rounded-lg border border-rose-100">
+                                  <div className="w-1.5 h-1.5 rounded-full bg-rose-500 mt-1.5 shrink-0" />
+                                  <p className="text-xs text-rose-700">{item.reason || item.title || item.event || (typeof item === 'string' ? item : 'Critical failure')}</p>
+                                </div>
+                              ))}
+                            </div>
                           </div>
                         )}
-                        {coachMessages.length > 0 && !isCoachThinking && (
-                          <div className="space-y-3">
-                            {/* Show only the last response */}
-                            <div className="text-sm text-slate-200 leading-relaxed">
-                              <FormattedCoachResponse text={coachMessages[coachMessages.length - 1]?.text || ''} />
+
+                        {/* Warnings */}
+                        {call.criticalMoments.warnings?.length > 0 && (
+                          <div>
+                            <div className="flex items-center gap-2 mb-2">
+                              <AlertTriangle size={12} className="text-amber-500" />
+                              <span className="text-[10px] font-bold text-amber-600 uppercase tracking-wider">Warnings ({call.criticalMoments.warnings.length})</span>
                             </div>
-                            {/* Copy button */}
-                            <button
-                              onClick={() => {
-                                const lastMessage = coachMessages[coachMessages.length - 1]?.text || '';
-                                navigator.clipboard.writeText(lastMessage);
-                                setToast({ message: 'Copied to clipboard!', type: 'success' });
-                              }}
-                              className="flex items-center gap-2 px-3 py-2 text-xs font-medium text-slate-400 hover:text-white bg-white/5 hover:bg-purple-600/20 rounded-lg transition-all"
-                            >
-                              <Copy size={12} />
-                              Copy to Clipboard
-                            </button>
+                            <div className="space-y-1.5">
+                              {call.criticalMoments.warnings.slice(0, 3).map((item: any, idx: number) => (
+                                <div key={idx} className="flex items-start gap-2 p-2 bg-amber-50 rounded-lg border border-amber-100">
+                                  <div className="w-1.5 h-1.5 rounded-full bg-amber-500 mt-1.5 shrink-0" />
+                                  <p className="text-xs text-amber-700">{item.reason || item.title || item.event || (typeof item === 'string' ? item : 'Warning')}</p>
+                                </div>
+                              ))}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Key Passes - Collapsed by default */}
+                        {call.criticalMoments.passes?.length > 0 && (
+                          <div>
+                            <div className="flex items-center gap-2 mb-2">
+                              <CheckCircle2 size={12} className="text-emerald-500" />
+                              <span className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider">Key Passes ({call.criticalMoments.passes.length})</span>
+                            </div>
+                            <div className="flex flex-wrap gap-1.5">
+                              {call.criticalMoments.passes.slice(0, 5).map((item: any, idx: number) => (
+                                <span key={idx} className="text-[10px] font-medium text-emerald-700 bg-emerald-50 px-2 py-1 rounded-md border border-emerald-100">
+                                  {item.title || item.event || (typeof item === 'string' ? item : `Pass ${idx + 1}`)}
+                                </span>
+                              ))}
+                              {call.criticalMoments.passes.length > 5 && (
+                                <span className="text-[10px] font-medium text-slate-500 bg-slate-100 px-2 py-1 rounded-md">
+                                  +{call.criticalMoments.passes.length - 5}
+                                </span>
+                              )}
+                            </div>
                           </div>
                         )}
                       </div>
+                    </div>
+                  </div>
+                )
+              )}
+
+              {/* Auto-Fail Alert - Prominent if triggered */}
+              {call.autoFailTriggered && call.autoFailReasons && call.autoFailReasons.length > 0 && (
+                <div className="bg-rose-50 rounded-2xl border-2 border-rose-200 p-4">
+                  <div className="flex items-center gap-2 mb-3">
+                    <div className="p-1.5 bg-rose-100 rounded-lg">
+                      <AlertTriangle size={16} className="text-rose-600" />
+                    </div>
+                    <h4 className="text-sm font-black text-rose-700 uppercase tracking-wide">Auto-Fail Triggered</h4>
+                  </div>
+                  <div className="space-y-2">
+                    {call.autoFailReasons.map((reason: string, idx: number) => (
+                      <div key={idx} className="flex items-start gap-2 p-2 bg-white rounded-lg border border-rose-200">
+                        <XCircle size={14} className="text-rose-500 mt-0.5 shrink-0" />
+                        <p className="text-sm text-rose-700 font-medium">{reason}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Quick Stats Summary - Moved above Score Calculation */}
+              <div className="grid grid-cols-2 gap-3">
+                {/* Recording Duration - Original call length (before trimming) */}
+                <div className="bg-slate-50 rounded-2xl p-4 text-center border border-slate-100">
+                  <div className="flex items-center justify-center gap-2 text-slate-500 mb-1.5">
+                    <Play size={12} className="text-indigo-500" />
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Recording</span>
+                  </div>
+                  <p className="text-xl font-black text-slate-800 tracking-tight">
+                    {call.originalCallDuration || (duration > 0 ? formatTime(duration) : (call.duration || '—'))}
+                  </p>
+                </div>
+
+                {/* Analyzed Duration - Trimmed portion that was transcribed */}
+                <div className="bg-slate-50 rounded-2xl p-4 text-center border border-slate-100">
+                  <div className="flex items-center justify-center gap-2 text-slate-500 mb-1.5">
+                    <Clock size={12} className="text-indigo-500" />
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">Analyzed</span>
+                  </div>
+                  <p className="text-xl font-black text-slate-800 tracking-tight">{call.duration || '—'}</p>
+                </div>
+
+                {/* Pass/Fail Count */}
+                <div className="bg-emerald-50 rounded-2xl p-4 text-center border border-emerald-100">
+                  <div className="flex items-center justify-center gap-2 text-emerald-600 mb-1.5">
+                    <Check size={12} />
+                    <span className="text-[10px] font-bold uppercase tracking-widest text-emerald-600">Passed</span>
+                  </div>
+                  <p className="text-xl font-black text-emerald-600 tracking-tight">
+                    {fullAuditList.filter((item: any) => {
+                      const s = (item.status || '').toLowerCase();
+                      return ['met', 'pass', 'yes', 'true'].includes(s);
+                    }).length}
+                    <span className="text-sm font-bold text-emerald-400/60 ml-1">/{fullAuditList.filter((i: any) => (i.status || '').toLowerCase() !== 'n/a').length}</span>
+                  </p>
+                </div>
+
+                {/* Auto-Fails */}
+                <div className={`rounded-2xl p-4 text-center border ${call.autoFailTriggered ? 'bg-rose-50 border-rose-100' : 'bg-slate-50 border-slate-100'}`}>
+                  <div className={`flex items-center justify-center gap-2 mb-1.5 ${call.autoFailTriggered ? 'text-rose-600' : 'text-slate-500'}`}>
+                    <AlertTriangle size={12} />
+                    <span className={`text-[10px] font-bold uppercase tracking-widest ${call.autoFailTriggered ? 'text-rose-600/80' : 'text-slate-400'}`}>Auto-Fails</span>
+                  </div>
+                  <p className={`text-xl font-black tracking-tight ${call.autoFailTriggered ? 'text-rose-600' : 'text-slate-400'}`}>
+                    {call.autoFailReasons?.length || 0}
+                  </p>
+                  {/* Display actual auto-fail reasons */}
+                  {call.autoFailReasons && call.autoFailReasons.length > 0 && (
+                    <div className="mt-2 space-y-1 text-left">
+                      {call.autoFailReasons.map((reason, idx) => (
+                        <div key={idx} className="text-[10px] text-rose-700 bg-rose-100/80 px-2 py-1 rounded border border-rose-200 leading-tight">
+                          {reason}
+                        </div>
+                      ))}
                     </div>
                   )}
                 </div>
@@ -1388,7 +2290,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                     {totalEarned}/{totalPossible} pts
                   </span>
                 </div>
-                <div className="bg-white rounded-[2rem] border border-slate-200 p-8 shadow-sm">
+                <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm">
                   <div className="space-y-5 relative z-10">
                     {scoringBreakdown.map((item, idx) => {
                       const Icon = item.icon || Award;
@@ -1414,179 +2316,52 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                       );
                     })}
 
-                    {/* AI Confidence - Expandable with supporting evidence */}
+
+
+
+
+
+                    {/* Auto-Applied Tags - Based on Score */}
                     <div className="pt-4 mt-4 border-t border-slate-100">
-                      <div
-                        className="bg-indigo-50/50 rounded-xl overflow-hidden cursor-pointer hover:bg-indigo-50 transition-colors"
-                        onClick={() => setShowConfidenceDetails(!showConfidenceDetails)}
-                      >
-                        <div className="flex items-center justify-between p-4">
-                          <div className="flex items-center gap-3">
-                            <div className="h-9 w-9 rounded-xl flex items-center justify-center bg-indigo-100 text-indigo-600">
-                              <BrainCircuit size={16} />
-                            </div>
-                            <div>
-                              <p className="text-sm font-semibold text-slate-700">AI Analysis Confidence</p>
-                              <p className="text-[11px] text-slate-500">
-                                {showConfidenceDetails ? 'Click to collapse' : 'Click to see supporting evidence'}
-                              </p>
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            <span className={`text-xl font-bold ${avgConfidence >= 90 ? 'text-emerald-600' :
-                              avgConfidence >= 75 ? 'text-amber-500' : 'text-rose-500'
-                              }`}>
-                              {avgConfidence}%
-                            </span>
-                            <ChevronDown
-                              size={16}
-                              className={`text-slate-400 transition-transform ${showConfidenceDetails ? 'rotate-180' : ''}`}
-                            />
-                          </div>
-                        </div>
+                      <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-3">Auto-Tag</p>
+                      <div className="flex gap-2">
+                        {(() => {
+                          // Auto-tag logic: 90%+ = Training, <50% = Escalated
+                          const score = calculatedScore;
+                          const isTraining = score >= 90;
+                          const isEscalated = score < 50;
+                          const hasTag = isTraining || isEscalated;
 
-                        {/* Expandable evidence section */}
-                        {showConfidenceDetails && confidenceEvidence && (
-                          <div className="px-4 pb-4 pt-2 border-t border-indigo-100 animate-in slide-in-from-top-2 duration-200">
-                            {/* Summary guidance */}
-                            <div className="mb-3 p-2 bg-indigo-50 rounded-lg">
-                              <p className="text-[11px] text-indigo-700 leading-relaxed">
-                                <strong>What this means:</strong> {avgConfidence >= 90
-                                  ? "AI had strong evidence for most decisions. Minimal manual review needed."
-                                  : avgConfidence >= 75
-                                    ? "AI had moderate evidence. Review items without transcript quotes."
-                                    : "AI made some uncertain decisions. Manual review recommended."}
-                              </p>
-                            </div>
-
-                            <div className="grid grid-cols-2 gap-3 text-xs">
-                              {/* Transcript Evidence */}
-                              <div className="bg-white rounded-lg p-3 border border-slate-100">
-                                <div className="flex items-center gap-1.5 text-indigo-600 mb-1">
-                                  <FileSearch size={12} />
-                                  <span className="font-semibold">Transcript Evidence</span>
-                                </div>
-                                <p className="text-slate-600">
-                                  <span className="font-bold text-slate-800">{confidenceEvidence.strongEvidenceCount}/{confidenceEvidence.total}</span> items cite transcript quotes
-                                </p>
-                                <div className="mt-1.5 h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                                  <div
-                                    className="h-full bg-indigo-500 rounded-full"
-                                    style={{ width: `${confidenceEvidence.evidencePercent}%` }}
-                                  />
-                                </div>
-                                {confidenceEvidence.strongEvidenceCount === confidenceEvidence.total ? (
-                                  <p className="text-[10px] text-emerald-600 mt-2 flex items-center gap-1">
-                                    <Check size={12} strokeWidth={2.5} />
-                                    All decisions backed by transcript
-                                  </p>
-                                ) : (
-                                  <div className="mt-2 bg-amber-50 text-amber-700 px-2.5 py-1.5 rounded-md flex items-center gap-2 border border-amber-100 hover:bg-amber-100 transition-colors cursor-help"
-                                    title={`Items missing quotes:\n• ${confidenceEvidence.itemsMissingQuotes.join('\n• ')}`}>
-                                    <AlertTriangle size={12} strokeWidth={2.5} className="shrink-0" />
-                                    <span className="text-[10px] font-bold">
-                                      {confidenceEvidence.itemsMissingQuotes.length} items lack quotes — verify
-                                    </span>
-                                  </div>
-                                )}
+                          if (!hasTag) {
+                            return (
+                              <div className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-medium text-slate-400 bg-slate-50 border border-slate-200">
+                                No auto-tag (score 50-89%)
                               </div>
+                            );
+                          }
 
-                              {/* AI Reasoning */}
-                              <div className="bg-white rounded-lg p-3 border border-slate-100">
-                                <div className="flex items-center gap-1.5 text-purple-600 mb-1">
-                                  <FileText size={12} />
-                                  <span className="font-semibold">AI Reasoning</span>
-                                </div>
-                                <p className="text-slate-600">
-                                  <span className="font-bold text-slate-800">{confidenceEvidence.detailedNotesCount}/{confidenceEvidence.total}</span> items have reasoning notes
-                                </p>
-                                <div className="mt-1.5 h-1.5 bg-slate-100 rounded-full overflow-hidden">
-                                  <div
-                                    className="h-full bg-purple-500 rounded-full"
-                                    style={{ width: `${confidenceEvidence.notesPercent}%` }}
-                                  />
-                                </div>
-                                {confidenceEvidence.detailedNotesCount === confidenceEvidence.total ? (
-                                  <p className="text-[10px] text-purple-600 mt-2 flex items-center gap-1">
-                                    <Check size={12} strokeWidth={2.5} />
-                                    AI explained all decisions
-                                  </p>
-                                ) : (
-                                  <div className="mt-2 bg-amber-50 text-amber-700 px-2.5 py-1.5 rounded-md flex items-center gap-2 border border-amber-100 hover:bg-amber-100 transition-colors cursor-help"
-                                    title={`Items with brief notes:\n• ${confidenceEvidence.itemsWithBriefNotes.join('\n• ')}`}>
-                                    <AlertTriangle size={12} strokeWidth={2.5} className="shrink-0" />
-                                    <span className="text-[10px] font-bold">
-                                      {confidenceEvidence.itemsWithBriefNotes.length} items share brief notes
-                                    </span>
-                                  </div>
-                                )}
-                              </div>
-
-                              {/* Sub-check Consistency */}
-                              {(confidenceEvidence.consistentSubChecksCount > 0 || confidenceEvidence.mixedSubChecksCount > 0) && (
-                                <div className="bg-white rounded-lg p-3 border border-slate-100">
-                                  <div className="flex items-center gap-1.5 text-emerald-600 mb-1">
-                                    <CheckCircle2 size={12} />
-                                    <span className="font-semibold">Sub-check Consistency</span>
-                                  </div>
-                                  <p className="text-slate-600">
-                                    <span className="font-bold text-emerald-600">{confidenceEvidence.consistentSubChecksCount}</span> consistent,
-                                    <span className={`font-bold ml-1 ${confidenceEvidence.mixedSubChecksCount > 0 ? 'text-amber-600' : 'text-slate-600'}`}>
-                                      {confidenceEvidence.mixedSubChecksCount}
-                                    </span> mixed
-                                  </p>
-                                  {confidenceEvidence.mixedSubChecksCount > 0 ? (
-                                    <div className="mt-2 bg-amber-50 text-amber-700 px-2.5 py-1.5 rounded-md flex items-center gap-2 border border-amber-100 hover:bg-amber-100 transition-colors cursor-help" title="Mixed results in sub-checks">
-                                      <AlertTriangle size={12} strokeWidth={2.5} className="shrink-0" />
-                                      <span className="text-[10px] font-bold">
-                                        {confidenceEvidence.mixedSubChecksCount} mixed — expand to review
-                                      </span>
-                                    </div>
-                                  ) : (
-                                    <p className="text-[10px] text-emerald-600 mt-2 flex items-center gap-1">
-                                      <CheckCircle2 size={12} strokeWidth={2.5} />
-                                      Sub-checks are consistent
-                                    </p>
-                                  )}
+                          return (
+                            <>
+                              {isEscalated && (
+                                <div className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-semibold bg-rose-500 text-white border border-rose-600">
+                                  <Users size={12} />
+                                  Escalated
+                                  <span className="text-[10px] opacity-90 ml-1 font-bold">(Score 90%+)</span>
                                 </div>
                               )}
-
-                              {/* Special Markers */}
-                              <div className="bg-white rounded-lg p-3 border border-slate-100">
-                                <div className="flex items-center gap-1.5 text-slate-600 mb-1">
-                                  <AlertCircle size={12} />
-                                  <span className="font-semibold">Special Markers</span>
+                              {isTraining && (
+                                <div className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2.5 rounded-xl text-xs font-bold bg-emerald-600 text-white border border-emerald-700 shadow-sm">
+                                  <GraduationCap size={14} strokeWidth={2.5} />
+                                  Training Data
+                                  <span className="text-[10px] opacity-90 ml-1 font-bold">(Score 90%+)</span>
                                 </div>
-                                <div className="flex flex-wrap gap-1.5 mt-1">
-                                  {confidenceEvidence.hasAutoFail && (
-                                    <span className="px-2 py-0.5 bg-rose-100 text-rose-700 rounded-full text-[10px] font-semibold">
-                                      AUTO-FAIL detected
-                                    </span>
-                                  )}
-                                  {confidenceEvidence.hasPartialMatches && (
-                                    <span className="px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full text-[10px] font-semibold">
-                                      PARTIAL matches
-                                    </span>
-                                  )}
-                                  {!confidenceEvidence.hasAutoFail && !confidenceEvidence.hasPartialMatches && (
-                                    <span className="px-2 py-0.5 bg-slate-100 text-slate-500 rounded-full text-[10px] font-semibold">
-                                      None
-                                    </span>
-                                  )}
-                                </div>
-                                <p className="text-[10px] text-slate-400 mt-1.5 italic">
-                                  {confidenceEvidence.hasAutoFail
-                                    ? "Critical violation found — review required"
-                                    : confidenceEvidence.hasPartialMatches
-                                      ? "Some items had unclear evidence"
-                                      : "No special flags"}
-                                </p>
-                              </div>
-                            </div>
-                          </div>
-                        )}
+                              )}
+                            </>
+                          );
+                        })()}
                       </div>
                     </div>
+
 
                     {/* Final Score */}
                     <div className="pt-5 mt-5 border-t-2 border-slate-200 flex justify-between items-center">
@@ -1604,276 +2379,250 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                 </div>
               </div>
 
-              {/* COMPLETE VERIFICATION AUDIT (Expandable) */}
+
+              {/* Detailed Compliance Audit & Overrides */}
               <div className="space-y-4">
                 <div className="flex items-center gap-2 pl-2">
                   <ShieldCheck size={14} className="text-indigo-500" />
-                  <h4 className="text-[11px] font-black text-[#8E8E93] uppercase tracking-widest">Complete Verification Audit</h4>
-                  {/* Show count of items needing review - subtle */}
-                  {(() => {
-                    const needsReview = fullAuditList.filter((item: any) => {
-                      const conf = item.confidence;
-                      const key = (item.name || item.requirement || '').toLowerCase();
-                      return conf !== undefined && conf < CONFIDENCE_THRESHOLD && !reviewedItems.has(key);
-                    }).length;
-                    return needsReview > 0 ? (
-                      <span className="text-[10px] font-medium text-slate-500 bg-slate-100 px-2 py-0.5 rounded-md flex items-center gap-1">
-                        <Eye size={10} />
-                        {needsReview} to review
-                      </span>
-                    ) : null;
-                  })()}
+                  <h4 className="text-[11px] font-black text-[#8E8E93] uppercase tracking-widest">Detailed Compliance Audit</h4>
                 </div>
-                <div className="bg-white rounded-[2rem] border border-slate-100 divide-y divide-slate-100 shadow-sm overflow-hidden">
-                  {fullAuditList.length > 0 ? fullAuditList.map((item: any, idx: number) => {
-                    const itemKey = (item.name || item.requirement || '').toLowerCase();
 
-                    // Check if this item has been overridden locally (this session) or in QA Notes (database)
-                    let overrideStatus: string | null = localOverrides[itemKey] || null;
+                <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                  <div className="divide-y divide-slate-100">
+                    {fullAuditList.map((item: any, idx: number) => {
+                      const itemName = item.name || item.requirement || `Checklist Item ${idx + 1}`;
+                      const originalStatus = (item.status || '').toLowerCase();
 
-                    // If not in local state, check QA Notes from database
-                    if (!overrideStatus) {
-                      try {
-                        const qaNotes = (call as any).qaNotes || (call as any)['QA Notes'];
-                        console.log('QA Notes for override check:', {
-                          itemKey,
-                          qaNotes,
-                          callId: call.id
-                        });
-                        if (qaNotes) {
-                          const parsed = typeof qaNotes === 'string' ? JSON.parse(qaNotes) : qaNotes;
-                          const overrides = parsed.overrides || [];
-                          console.log('Parsed overrides:', overrides);
-                          const override = overrides.find((o: any) =>
-                            o.itemKey?.toLowerCase() === itemKey ||
-                            o.itemKey?.toLowerCase().includes(itemKey) ||
-                            itemKey.includes(o.itemKey?.toLowerCase() || '')
-                          );
-                          if (override) {
-                            overrideStatus = override.overrideStatus;
-                            console.log('Found override for', itemKey, ':', override);
-                          }
-                        }
-                      } catch (e) {
-                        console.error('Error parsing QA Notes:', e);
+                      // Skip N/A items in this view too? Or show them? 
+                      // User wants to review everything usually. Let's show N/A as gray.
+                      if (originalStatus === 'n/a') return null;
+
+                      // Get effective status (including overrides)
+                      const itemKey = itemName.toLowerCase();
+                      const isOverridden = localOverrides[itemKey] !== undefined;
+                      // Logic matches `getEffectiveStatus` but inline for rendering
+                      // We need to know if it's currently passing to render the correct toggle state
+                      // Let's re-use the status from the list item since we want to check the *item's* evaluation
+                      // BUT `fullAuditList` items don't have the override applied inside them yet?
+                      // Wait, `fullAuditList` calculation (lines 529-570) does NOT include localOverrides.
+                      // Matches `scoringBreakdown` logic.
+
+                      let effectiveStatus = originalStatus;
+                      if (localOverrides[itemKey]) {
+                        effectiveStatus = localOverrides[itemKey];
+                      } else {
+                        // Check DB overrides (we need to access them here or just rely on local)
+                        // For simplicity/consistency with `scoringBreakdown`, we check local first.
+                        // Ideally we should sync this logic, but for UI:
+                        // If local override exists, use it.
+                        // Else use original.
                       }
-                    }
 
-                    // Use override status if available, otherwise use original status
-                    const effectiveStatus = overrideStatus || item.status || '';
-                    const met = ['met', 'pass', 'yes', 'true'].includes(effectiveStatus.toLowerCase());
-                    const notMet = ['not_met', 'fail', 'no', 'false'].includes(effectiveStatus.toLowerCase());
-                    const isOverridden = overrideStatus !== null;
-                    const isExpanded = expandedAuditIdx === idx;
+                      const isPass = ['met', 'pass', 'yes', 'true'].includes(effectiveStatus.toLowerCase());
 
+                      return (
+                        <div key={idx} className="p-5 flex items-start gap-4 hover:bg-slate-50 transition-colors group">
+                          {/* Status Icon */}
+                          <div className={`mt-1 h-6 w-6 rounded-full flex items-center justify-center shrink-0 ${isPass ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'
+                            }`}>
+                            {isPass ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
+                          </div>
 
-                    return (
-                      <div key={idx} className="group transition-all duration-300">
-                        {/* Header Row */}
-                        <div
-                          onClick={() => setExpandedAuditIdx(isExpanded ? null : idx)}
-                          className="px-6 py-5 flex items-center justify-between cursor-pointer hover:bg-slate-50 relative z-10"
-                        >
-                          <div className="flex items-center gap-4">
-                            {/* Simple status icon */}
-                            <div className={`h-8 w-8 rounded-full flex items-center justify-center shrink-0 ${met ? 'bg-emerald-500 text-white' :
-                              notMet ? 'bg-rose-500 text-white' :
-                                'bg-slate-300 text-white'
-                              }`}>
-                              {met ? <Check size={16} strokeWidth={3} /> : notMet ? <X size={16} strokeWidth={3} /> : <Clock size={14} />}
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center justify-between gap-4 mb-1">
+                              <h5 className={`text-sm font-bold ${isPass ? 'text-slate-800' : 'text-slate-800'}`}>
+                                {itemName}
+                                {isOverridden && <span className="ml-2 text-[10px] uppercase font-bold text-amber-500 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">Manual Override</span>}
+                              </h5>
+
+                              {/* Override Toggle */}
+                              <button
+                                onClick={() => handleToggleOverride(itemName, effectiveStatus)}
+                                className={`
+                                   px-3 py-1.5 rounded-lg text-xs font-bold transition-all border flex items-center gap-1.5
+                                   ${isPass
+                                    ? 'bg-white border-slate-200 text-slate-500 hover:bg-rose-50 hover:text-rose-600 hover:border-rose-200'
+                                    : 'bg-white border-slate-200 text-slate-500 hover:bg-emerald-50 hover:text-emerald-600 hover:border-emerald-200'
+                                  }
+                                 `}
+                              >
+                                <Sliders size={12} />
+                                {isPass ? 'Mark Fail' : 'Mark Pass'}
+                              </button>
                             </div>
-                            <div>
-                              <div className="flex items-center gap-2 flex-wrap">
-                                <span className={`text-[15px] font-bold tracking-tight ${met ? 'text-slate-900' : 'text-slate-600'}`}>
-                                  {item.name || item.requirement || 'Requirement'}
-                                </span>
 
-                                {/* Confidence Badge */}
-                                {item.confidence !== undefined && (
-                                  <div
-                                    title={`Confidence Score: ${item.confidence}%\nBased on transcript accuracy and reasoning quality.`}
-                                    className={`flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider border cursor-help shadow-sm ${item.confidence >= 90 ? 'bg-emerald-50 text-emerald-600 border-emerald-100' :
-                                      item.confidence >= 75 ? 'bg-amber-50 text-amber-600 border-amber-100' :
-                                        'bg-slate-50 text-slate-500 border-slate-100'
-                                      }`}>
-                                    {item.confidence}% Conf.
-                                  </div>
-                                )}
+                            <div className="space-y-2">
+                              {/* Evidence / Quote - Click to Seek */}
+                              {item.evidence && (() => {
+                                // Extract timestamp if present [12:30]
+                                const timestampRegex = /\[(\d{1,2}:\d{2})\]/;
+                                const match = item.evidence.match(timestampRegex);
+                                const hasTimestamp = !!match || !!item.time;
 
-                                {/* Evidence Icons */}
-                                <div className="flex items-center gap-1 ml-1">
-                                  {item.quote && (
-                                    <div className="text-slate-400" title="Includes Transcript Quote">
-                                      <Quote size={10} strokeWidth={3} />
+                                return (
+                                  <>
+                                    <div
+                                      onClick={() => {
+                                        if (match) {
+                                          handleSeek(parseTimeToSeconds(match[1]));
+                                        } else if (item.time) {
+                                          handleSeek(parseTimeToSeconds(item.time));
+                                        }
+                                      }}
+                                      className={`
+                                      text-xs text-slate-600 bg-slate-50 p-2 rounded-lg border border-slate-100 italic transition-all
+                                      ${hasTimestamp ? 'cursor-pointer hover:bg-indigo-50 hover:border-indigo-100 hover:text-indigo-700' : ''}
+                                    `}
+                                    >
+                                      "{item.evidence}"
                                     </div>
-                                  )}
-                                  {(item.reasoning || item.notes) && (
-                                    <div className="text-slate-400" title="Includes AI Reasoning">
-                                      <FileText size={10} strokeWidth={3} />
-                                    </div>
-                                  )}
+
+                                    {/* Explicit Timestamp Button if present */}
+                                    {hasTimestamp && (
+                                      <div className="mt-2 flex justify-end">
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            if (match) handleSeek(parseTimeToSeconds(match[1]));
+                                            else if (item.time) handleSeek(parseTimeToSeconds(item.time));
+                                          }}
+                                          className="flex items-center gap-1.5 text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-1 rounded-md hover:bg-indigo-100 transition-colors border border-indigo-100"
+                                        >
+                                          <Play size={8} fill="currentColor" />
+                                          Jump to {match ? match[1] : item.time}
+                                        </button>
+                                      </div>
+                                    )}
+                                  </>
+                                );
+                              })()}
+
+                              {/* Reasoning / Notes */}
+                              {item.notes && (
+                                <p className="text-xs text-slate-500">
+                                  <span className="font-semibold text-slate-400 uppercase text-[10px] mr-1">AI Reasoning:</span>
+                                  {item.notes}
+                                </p>
+                              )}
+
+                              {/* Confidence Indicator */}
+                              <div className="flex items-center gap-2 mt-2">
+                                <div className="flex items-center gap-1">
+                                  <div className={`h-1.5 w-1.5 rounded-full ${item.confidence >= 90 ? 'bg-emerald-400' : item.confidence >= 70 ? 'bg-amber-400' : 'bg-rose-400'}`} />
+                                  <span className="text-[10px] font-medium text-slate-400">
+                                    AI Confidence: {item.confidence}%
+                                  </span>
                                 </div>
                               </div>
-                              {/* Play Button - Show with time or estimated time */}
-                              <div className="flex items-center gap-2 mt-1">
-                                <button
-                                  type="button"
-                                  className="inline-flex items-center gap-1 text-[10px] font-bold text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded hover:bg-purple-100 hover:text-purple-600 transition-colors cursor-pointer"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    // Use explicit time or estimate
-                                    const effectiveDur = duration || parseTimeToSeconds(call?.duration || "0:00") || 120;
-                                    const timeToSeek = item.time || (() => {
-                                      const est = Math.round((idx / Math.max(fullAuditList.length, 1)) * effectiveDur * 0.8);
-                                      return `${Math.floor(est / 60)}:${(est % 60).toString().padStart(2, '0')}`;
-                                    })();
-                                    handleSeek(timeToSeek);
-                                  }}
-                                >
-                                  <Play size={8} fill="currentColor" />
-                                  {item.time || (() => {
-                                    const effectiveDur = duration || parseTimeToSeconds(call?.duration || "0:00") || 120;
-                                    const est = Math.round((idx / Math.max(fullAuditList.length, 1)) * effectiveDur * 0.8);
-                                    return `${Math.floor(est / 60)}:${(est % 60).toString().padStart(2, '0')}`;
-                                  })()}
-                                </button>
-                              </div>
                             </div>
-                          </div>
-                          <div className="flex items-center gap-2">
-                            {/* Clean status badge - always shows true status */}
-                            {met && (
-                              <span className={`text-[11px] font-semibold px-3 py-1 rounded-lg ${isOverridden
-                                ? 'text-purple-600 bg-purple-50/80'
-                                : 'text-emerald-600 bg-emerald-50/80'
-                                }`}>
-                                {isOverridden ? 'Verified' : 'Pass'} ✓
-                              </span>
-                            )}
-                            {notMet && (
-                              <span className="text-[11px] font-semibold text-rose-600 bg-rose-50/80 px-3 py-1 rounded-lg">
-                                Fail ✗
-                              </span>
-                            )}
-                            {!met && !notMet && (
-                              <span className="text-[11px] font-semibold text-slate-400 bg-slate-50 px-3 py-1 rounded-lg">
-                                Pending
-                              </span>
-                            )}
-
-                            {/* Needs review indicator - subtle eye icon */}
-                            {item.confidence !== undefined && item.confidence < CONFIDENCE_THRESHOLD && !reviewedItems.has(itemKey) && (
-                              <button
-                                type="button"
-                                className="flex items-center gap-1 text-[10px] font-medium text-slate-500 hover:text-indigo-600 bg-slate-100 hover:bg-indigo-50 px-2 py-1 rounded-md transition-all"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  setReviewedItems(prev => new Set([...prev, itemKey]));
-                                  setToast({ message: 'Marked as reviewed', type: 'success' });
-                                  setTimeout(() => setToast(null), 1500);
-                                }}
-                                title={`AI confidence: ${item.confidence}% - Click after listening to confirm`}
-                              >
-                                <Eye size={12} />
-                                Review
-                              </button>
-                            )}
-
-                            {/* Verify button for failed items */}
-                            {!isOverridden && notMet && (
-                              <button
-                                type="button"
-                                className="text-[10px] font-medium text-emerald-600 hover:text-emerald-700 bg-emerald-50 hover:bg-emerald-100 px-2 py-1 rounded-md transition-all"
-                                onClick={async (e) => {
-                                  e.stopPropagation();
-                                  const itemKeyDisplay = item.name || item.requirement || `item_${idx}`;
-                                  const reviewerName = profile?.name || user?.displayName || 'QA Agent';
-                                  try {
-                                    const response = await fetch('/api/qa/override-item', {
-                                      method: 'POST',
-                                      headers: { 'Content-Type': 'application/json' },
-                                      body: JSON.stringify({
-                                        callId: String(call.id),
-                                        itemKey: itemKeyDisplay,
-                                        overrideStatus: 'PASS',
-                                        reviewedBy: reviewerName,
-                                        notes: `Verified by ${reviewerName}`
-                                      })
-                                    });
-                                    const data = await response.json();
-                                    if (data.success) {
-                                      setLocalOverrides(prev => ({ ...prev, [itemKeyDisplay.toLowerCase()]: 'PASS' }));
-                                      setToast({ message: 'Verified ✓', type: 'success' });
-                                      setTimeout(() => setToast(null), 2000);
-                                    }
-                                  } catch (err) {
-                                    setToast({ message: 'Failed', type: 'error' });
-                                    setTimeout(() => setToast(null), 2000);
-                                  }
-                                }}
-                                title="Mark as verified after listening"
-                              >
-                                Verify ✓
-                              </button>
-                            )}
-
-                            {/* Expand/collapse indicator */}
-                            <ChevronDown size={16} className={`text-slate-300 transition-transform ${isExpanded ? 'rotate-180' : ''}`} />
                           </div>
                         </div>
+                      );
+                    })}
 
-                        {/* Expanded Evidence Details */}
-                        {
-                          isExpanded && (
-                            <div className="px-6 pb-6 pt-2 bg-slate-50/50 border-t border-slate-100 animate-in slide-in-from-top-2">
-                              <div className="ml-14 space-y-4">
-                                {/* Evidence / Reasoning */}
-                                {(item.evidence || item.reasoning) && (
-                                  <div className="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
-                                    <h5 className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-2 flex items-center gap-1">
-                                      <FileText size={12} /> Verification Evidence
-                                    </h5>
-                                    <p className="text-sm text-slate-600 leading-relaxed font-medium">
-                                      {item.evidence || item.reasoning}
-                                    </p>
-                                  </div>
-                                )}
-
-                                {/* Specific Quote if available */}
-                                {item.quote && (
-                                  <div className="bg-purple-50 p-4 rounded-xl border border-purple-100">
-                                    <h5 className="text-[10px] font-black text-purple-400 uppercase tracking-widest mb-2 flex items-center gap-1">
-                                      <Quote size={12} /> Transcript Match
-                                    </h5>
-                                    <p className="text-sm text-purple-800 italic font-serif">
-                                      "{item.quote}"
-                                    </p>
-                                  </div>
-                                )}
-
-                                {/* Notes */}
-                                {item.notes && (
-                                  <div className="flex gap-2 items-start text-xs text-slate-500">
-                                    <span className="font-bold shrink-0">Auditor Notes:</span>
-                                    <span>{item.notes}</span>
-                                  </div>
-                                )}
-                              </div>
-                            </div>
-                          )
-                        }
+                    {fullAuditList.length === 0 && (
+                      <div className="p-8 text-center text-slate-400 text-sm italic">
+                        No detailed audit items available for this call.
                       </div>
-                    );
-                  }) : (
-                    <div className="px-8 py-10 text-center">
-                      <p className="text-slate-400 italic text-sm">No specific checklist data found.</p>
-                    </div>
-                  )}
+                    )}
+                  </div>
                 </div>
               </div>
+
+
+              {/* QA SUBMIT REVIEW SECTION */}
+              {onQASubmit && call.qaStatus !== 'approved' && (
+                <div className="space-y-4 mt-8">
+                  <div className="flex items-center gap-2 pl-2">
+                    <ClipboardCheck size={14} className="text-emerald-500" />
+                    <h4 className="text-[11px] font-black text-[#8E8E93] uppercase tracking-widest">Submit QA Review</h4>
+                  </div>
+                  <div className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm space-y-4">
+                    <div>
+                      <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">
+                        QA Notes (Optional)
+                      </label>
+                      <textarea
+                        value={qaReviewNotes}
+                        onChange={(e) => setQaReviewNotes(e.target.value)}
+                        placeholder="Add any notes about this review..."
+                        className="w-full px-4 py-3 rounded-xl border border-slate-200 text-sm text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-500/30 focus:border-emerald-500 resize-none"
+                        rows={3}
+                      />
+                    </div>
+                    <div className="flex items-center justify-between pt-2">
+                      <div className="text-xs text-slate-400">
+                        Reviewed by: <span className="font-bold text-slate-900">
+                          {profile?.first_name && profile?.last_name
+                            ? `${profile.first_name} ${profile.last_name}`
+                            : user?.displayName || user?.email?.split('@')[0] || 'QA Agent'}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        disabled={isSubmittingReview}
+                        onClick={async () => {
+                          if (!call) return;
+                          setIsSubmittingReview(true);
+                          try {
+                            const reviewerName = profile?.first_name && profile?.last_name
+                              ? `${profile.first_name} ${profile.last_name}`
+                              : user?.displayName || user?.email?.split('@')[0] || 'QA Agent';
+                            await onQASubmit(call.id, reviewerName, qaReviewNotes || undefined);
+                            setToast({ message: 'Review submitted successfully!', type: 'success' });
+                            setQaReviewNotes('');
+                            setTimeout(() => setToast(null), 3000);
+                          } catch (err) {
+                            setToast({ message: 'Failed to submit review', type: 'error' });
+                            setTimeout(() => setToast(null), 3000);
+                          } finally {
+                            setIsSubmittingReview(false);
+                          }
+                        }}
+                        className="flex items-center gap-2 px-6 py-3 rounded-xl bg-gradient-to-r from-emerald-500 to-emerald-600 text-white font-bold text-sm shadow-lg shadow-emerald-500/30 hover:shadow-emerald-500/50 hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        {isSubmittingReview ? (
+                          <>
+                            <Loader2 size={16} className="animate-spin" />
+                            Submitting...
+                          </>
+                        ) : (
+                          <>
+                            <ClipboardCheck size={16} />
+                            Submit Review
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Already reviewed indicator */}
+              {call.qaStatus === 'approved' && call.qaReviewedBy && (
+                <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-5 flex items-center gap-4 mt-8">
+                  <div className="h-12 w-12 rounded-xl bg-emerald-100 flex items-center justify-center">
+                    <ClipboardCheck size={24} className="text-emerald-600" />
+                  </div>
+                  <div>
+                    <p className="text-sm font-bold text-emerald-700">Review Completed</p>
+                    <p className="text-xs text-emerald-600 mt-0.5">
+                      Reviewed by <span className="font-bold">{call.qaReviewedBy}</span>
+                      {call.qaReviewedAt && (
+                        <> on {new Date(call.qaReviewedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</>
+                      )}
+                    </p>
+                    {call.qaNotes && (
+                      <p className="text-xs text-slate-600 mt-2 italic">"{call.qaNotes}"</p>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
-          )}
-        </div>
+          )
+          }
+        </div >
+
       </div>
 
       {/* Sleek Toast Notification */}

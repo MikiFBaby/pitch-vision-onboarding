@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@elevenlabs/react": "^0.13.0",
     "@fullcalendar/core": "^6.1.20",
     "@fullcalendar/daygrid": "^6.1.20",
     "@fullcalendar/interaction": "^6.1.20",
@@ -27,8 +28,10 @@
     "@supabase/supabase-js": "^2.89.0",
     "@tabler/icons-react": "^3.36.0",
     "@types/file-saver": "^2.0.7",
+    "@types/nodemailer": "^7.0.5",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "date-fns": "^4.1.0",
     "file-saver": "^2.0.5",
     "firebase": "^12.7.0",
     "framer-motion": "^12.23.26",
@@ -39,13 +42,14 @@
     "maath": "^0.10.8",
     "motion": "^12.23.26",
     "next": "16.1.0",
+    "nodemailer": "^7.0.12",
     "prop-types": "^15.8.1",
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "recharts": "^3.6.0",
-    "resend": "^6.7.0",
     "tailwind-merge": "^3.4.0",
-    "three": "^0.182.0"
+    "three": "^0.182.0",
+    "vercel": "^50.4.5"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

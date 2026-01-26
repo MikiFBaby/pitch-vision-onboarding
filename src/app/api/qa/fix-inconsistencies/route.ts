@@ -16,7 +16,7 @@ export async function POST(request: NextRequest) {
 
         // Fetch all calls
         const { data: calls, error: fetchError } = await supabaseAdmin
-            .from('Pitch Perfect')
+            .from('QA Results')
             .select('id, "Call Score", "Call Status", "Risk Level"')
             .order('id', { ascending: false });
 
@@ -78,7 +78,7 @@ export async function POST(request: NextRequest) {
 
                 // Fix the row
                 const { error: updateError } = await supabaseAdmin
-                    .from('Pitch Perfect')
+                    .from('QA Results')
                     .update({
                         'Call Status': correctStatus,
                         'Risk Level': correctRisk
@@ -129,7 +129,7 @@ export async function GET(request: NextRequest) {
 
         // Fetch all calls
         const { data: calls, error: fetchError } = await supabaseAdmin
-            .from('Pitch Perfect')
+            .from('QA Results')
             .select('id, "Call Score", "Call Status", "Risk Level", "Agent Name"')
             .order('id', { ascending: false });
 

@@ -1,8 +1,9 @@
 "use client";
 
-import React from "react";
+import React, { useState, useEffect, Suspense } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+
 import { cn } from "@/lib/utils";
 import {
     LayoutDashboard,
@@ -17,12 +18,16 @@ import {
     AlertCircle,
     Plus,
     Calendar,
-    Clock
+    Clock,
+    MessageSquare,
+    BrainCircuit,
+    TrendingUp
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { PitchVisionLogo } from "@/components/ui/pitch-vision-logo";
 import { useAuth } from "@/context/AuthContext";
 import { useQA } from "@/context/QAContext";
+import { supabase } from "@/lib/supabase-client";
 import Image from "next/image";
 import { useSearchParams } from "next/navigation";
 
@@ -32,9 +37,10 @@ interface SidebarItemProps {
     label: string;
     active?: boolean;
     badge?: number;
+    suffix?: React.ReactNode;
 }
 
-const SidebarItem = ({ href, icon, label, active, badge }: SidebarItemProps) => (
+const SidebarItem = ({ href, icon, label, active, badge, suffix }: SidebarItemProps) => (
     <Link
         href={href}
         className={cn(
@@ -55,7 +61,15 @@ const SidebarItem = ({ href, icon, label, active, badge }: SidebarItemProps) => 
         )}>
             {icon}
         </div>
-        <span className="relative z-10 font-bold tracking-tight text-xs uppercase letter-spacing-[0.05em]">{label}</span>
+
+        <div className="flex flex-col relative z-10">
+            <span className="font-bold tracking-tight text-xs uppercase letter-spacing-[0.05em]">{label}</span>
+            {suffix && (
+                <div className="mt-0.5">
+                    {suffix}
+                </div>
+            )}
+        </div>
 
         {badge !== undefined && badge > 0 && (
             <div className="relative z-10 ml-auto flex items-center justify-center w-5 h-5 rounded-full bg-rose-500 text-white text-[10px] font-bold shadow-[0_0_10px_rgba(244,63,94,0.5)] animate-pulse">
@@ -72,12 +86,105 @@ const SidebarItem = ({ href, icon, label, active, badge }: SidebarItemProps) => 
     </Link>
 );
 
-export function Sidebar() {
+export function SidebarInner() {
     const pathname = usePathname();
     const searchParams = useSearchParams();
     const currentView = searchParams.get('view') || 'dashboard';
 
     const { logout, user, profile } = useAuth();
+
+    // Custom avatar and name from user_settings table
+    const [customAvatar, setCustomAvatar] = useState<string | null>(null);
+    const [customName, setCustomName] = useState<string | null>(null);
+
+    // Fetch custom settings from user_settings table
+    // State for resolved Slack ID
+    const [slackId, setSlackId] = useState<string | null>(null);
+
+    // 1. Resolve Slack ID
+    useEffect(() => {
+        const resolveSlackId = async () => {
+            const userEmail = profile?.email || user?.email;
+            let resolvedId = 'dev-test-user'; // Default fallback
+
+            if (userEmail) {
+                try {
+                    const { data: empData } = await supabase
+                        .from('employee_directory')
+                        .select('slack_user_id')
+                        .eq('email', userEmail)
+                        .single();
+
+                    if (empData?.slack_user_id) {
+                        resolvedId = empData.slack_user_id;
+                    } else if (profile?.slack_user_id) {
+                        resolvedId = profile.slack_user_id;
+                    }
+                } catch (e) {
+                    // Use fallback
+                }
+            }
+            setSlackId(resolvedId);
+        };
+
+        resolveSlackId();
+    }, [profile, user]);
+
+    // 2. Fetch Initial Data & Subscribe to Realtime Updates
+    useEffect(() => {
+        if (!slackId) return;
+
+        let channel: any = null;
+
+        const fetchInitial = async () => {
+            try {
+                const { data: settings } = await supabase
+                    .from('user_settings')
+                    .select('custom_avatar_url, custom_name')
+                    .eq('slack_user_id', slackId)
+                    .single();
+
+                if (settings) {
+                    setCustomAvatar(settings.custom_avatar_url);
+                    setCustomName(settings.custom_name);
+                }
+            } catch (error) {
+                // Silently fail
+            }
+        };
+
+        const subscribeToRealtime = () => {
+            channel = supabase
+                .channel(`user-settings-${slackId}`)
+                .on(
+                    'postgres_changes',
+                    {
+                        event: '*',
+                        schema: 'public',
+                        table: 'user_settings',
+                        filter: `slack_user_id=eq.${slackId}`
+                    },
+                    (payload) => {
+                        console.log('Realtime update received:', payload);
+                        const newRecord = payload.new as any;
+                        if (newRecord) {
+                            setCustomAvatar(newRecord.custom_avatar_url);
+                            setCustomName(newRecord.custom_name);
+                        }
+                    }
+                )
+                .subscribe();
+        };
+
+        fetchInitial();
+        subscribeToRealtime();
+
+        return () => {
+            if (channel) {
+                supabase.removeChannel(channel);
+            }
+        };
+    }, [slackId]);
 
     // Safety check for QA context availability (in case used outside provider)
     let reviewCount = 0;
@@ -134,8 +241,8 @@ export function Sidebar() {
                 },
                 {
                     href: "/qa?view=agents",
-                    icon: <Users size={20} />,
-                    label: "Agents",
+                    icon: <TrendingUp size={20} />,
+                    label: "Performance",
                     active: isMainPage && currentView === 'agents'
                 },
                 {
@@ -144,7 +251,29 @@ export function Sidebar() {
                     label: "Reports",
                     active: isMainPage && currentView === 'reports'
                 },
-                { href: "/qa/settings", icon: <Settings size={20} />, label: "Settings", active: pathname === '/qa/settings' },
+                {
+                    href: "/qa?view=messages",
+                    icon: <MessageSquare size={20} />,
+                    label: "Messages",
+                    active: isMainPage && currentView === 'messages',
+                    suffix: (
+                        <span className="text-[7px] font-bold text-amber-300 bg-amber-500/10 border border-amber-500/20 px-1 py-px rounded ml-0 uppercase tracking-wider block w-fit">
+                            Coming Soon
+                        </span>
+                    )
+                },
+                {
+                    href: "/qa?view=aura",
+                    icon: <BrainCircuit size={20} />,
+                    label: "Aura AI",
+                    active: isMainPage && currentView === 'aura'
+                },
+                {
+                    href: "/qa?view=settings",
+                    icon: <Settings size={20} />,
+                    label: "Settings",
+                    active: isMainPage && currentView === 'settings'
+                },
             ];
         }
 
@@ -212,10 +341,10 @@ export function Sidebar() {
             <div className="mt-auto pt-8 border-t border-white/5 flex flex-col gap-6 relative z-10">
                 <div className="flex items-center gap-4 px-4 group cursor-default">
                     <div className="relative">
-                        {profile?.avatar_url ? (
+                        {(customAvatar || profile?.avatar_url) ? (
                             <div className="w-12 h-12 rounded-2xl overflow-hidden border border-white/10 shadow-[0_0_20px_rgba(79,70,229,0.3)] group-hover:shadow-[0_0_30px_rgba(79,70,229,0.5)] transition-all duration-500 rotate-3 group-hover:rotate-0">
                                 <Image
-                                    src={profile.avatar_url}
+                                    src={customAvatar || profile?.avatar_url || ''}
                                     alt="Profile"
                                     width={48}
                                     height={48}
@@ -225,29 +354,23 @@ export function Sidebar() {
                             </div>
                         ) : (
                             <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-indigo-600 to-purple-600 flex items-center justify-center text-white font-bold text-xl shadow-[0_0_20px_rgba(79,70,229,0.3)] group-hover:shadow-[0_0_30px_rgba(79,70,229,0.5)] transition-all duration-500 rotate-3 group-hover:rotate-0">
-                                {profile?.first_name?.[0] || user?.displayName?.[0] || user?.email?.[0] || "U"}
+                                {(customName || profile?.first_name)?.[0]?.toUpperCase() || user?.displayName?.[0] || user?.email?.[0] || "U"}
                             </div>
                         )}
                         <div className="absolute -bottom-1 -right-1 w-4 h-4 bg-green-500 border-2 border-black rounded-full" />
                     </div>
                     <div className="flex flex-col">
                         <span className="text-sm font-bold text-white tracking-tight truncate max-w-[140px]">
-                            {profile?.first_name ? `${profile.first_name} ${profile.last_name || ''}` : user?.displayName || (user?.email?.split('@')[0]) || "User"}
+                            {customName || (profile?.first_name ? `${profile.first_name} ${profile.last_name || ''}` : user?.displayName || (user?.email?.split('@')[0]) || "User")}
                         </span>
                         <div className="flex items-center gap-1.5">
                             <div className="w-1.5 h-1.5 rounded-full bg-indigo-500/50" />
-                            <span className="text-[9px] text-white/30 uppercase font-bold tracking-[0.2em]">
+                            <span className="text-[9px] text-white/60 uppercase font-bold tracking-[0.2em]">
                                 {profile?.role || role} Identity
                             </span>
                         </div>
                     </div>
-                    <Link
-                        href="/onboarding"
-                        className="ml-auto p-2 bg-white/5 hover:bg-white/10 rounded-lg text-white/40 hover:text-white transition-all border border-white/5"
-                        title="Edit Profile"
-                    >
-                        <Settings size={14} />
-                    </Link>
+
                 </div>
 
                 <div className="p-4 border-t border-white/5">
@@ -263,5 +386,21 @@ export function Sidebar() {
                 </div>
             </div>
         </aside>
+    );
+}
+
+// Wrap the Sidebar in Suspense for useSearchParams compatibility with Next.js 16+
+export function Sidebar() {
+    return (
+        <Suspense fallback={
+            <aside className="fixed left-0 top-0 h-screen w-72 bg-black/60 backdrop-blur-xl border-r border-white/5 z-50 flex flex-col p-8">
+                <div className="animate-pulse space-y-4">
+                    <div className="h-8 bg-white/10 rounded w-32"></div>
+                    <div className="h-4 bg-white/5 rounded w-24"></div>
+                </div>
+            </aside>
+        }>
+            <SidebarInner />
+        </Suspense>
     );
 }

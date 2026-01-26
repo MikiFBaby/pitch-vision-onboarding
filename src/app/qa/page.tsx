@@ -6,6 +6,8 @@ import { useQA, QAProvider } from "@/context/QAContext";
 import { useSearchParams, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabase-client";
 import { CallData, CallStatus, DatabaseCallRow, QAStatus } from "@/types/qa-types";
+import { isCallCompliant, transformRow } from "@/utils/qa-utils";
+import { useUserSettings } from "@/hooks/useUserSettings";
 
 // Layout
 import DashboardLayout from "@/components/layout/DashboardLayout";
@@ -18,138 +20,22 @@ import { RecentCallsTable } from "@/components/qa/QARecentCallsTable";
 import { TranscriptDrawer } from "@/components/qa/TranscriptDrawer";
 import { AgentScoreboard } from "@/components/qa/AgentScoreboard";
 import { ReportsView } from "@/components/qa/ReportsView";
+import { MessagesView } from "@/components/qa/MessagesView";
+import { SettingsView } from "@/components/qa/SettingsView";
+import { AuraChat } from "@/components/qa/AuraChat";
 import { VoiceCopilot } from "@/components/qa/VoiceCopilot";
 import { CallAnalyzer } from "@/components/qa/CallAnalyzer";
 
 // Icons
 import {
     LayoutDashboard, Zap, Users, FileBarChart, Settings,
-    Search, Bell, Plus, ChevronRight, AlertTriangle
+    Search, Bell, Plus, ChevronRight, AlertTriangle, Activity, ClipboardCheck
 } from "lucide-react";
 
 // Transform database row to CallData format
-function transformRow(row: DatabaseCallRow): CallData {
-    // Parse compliance score (e.g., "85" or "85%" -> 85)
-    const parseScore = (score: string | number | null): number => {
-        if (typeof score === 'number') return score;
-        if (!score) return 0;
-        const match = String(score).match(/(\d+)/);
-        return match ? parseInt(match[1], 10) : 0;
-    };
 
-    // Parse JSON fields that might be stored as strings OR are already objects
-    const parseJsonField = <T,>(field: T | string | null, fallback: T): T => {
-        if (!field) return fallback;
-        if (typeof field === 'object') return field as T; // Already JSONB
-        if (typeof field === 'string') {
-            try {
-                return JSON.parse(field) as T;
-            } catch {
-                return fallback;
-            }
-        }
-        return field as T;
-    };
 
-    // Determine QA status based on Call Status if not explicitly set
-    const determineQAStatus = (): 'pending' | 'approved' | 'rejected' | 'escalated' | 'training_flagged' => {
-        if (row.qa_status) {
-            return row.qa_status as 'pending' | 'approved' | 'rejected' | 'escalated' | 'training_flagged';
-        }
-        // Auto-set based on compliance status
-        const callStatus = row.call_status?.toUpperCase();
-        if (callStatus === 'COMPLIANT') return 'approved';
-        if (callStatus === 'COMPLIANCE_FAIL') return 'rejected';
-        return 'pending';
-    };
-
-    return {
-        id: String(row.id),
-        createdAt: row.created_at,
-        timestamp: row.created_at,
-        callId: row.call_id || `CALL-${row.id}`,
-        campaignType: row.campaign_type || "General",
-        agentName: row.agent_name || "Unknown Agent",
-        phoneNumber: row.phone_number || "",
-        duration: row.call_duration || "",
-        callDate: row.call_date || "",
-        callTime: row.call_time || "",
-        status: row.call_status || "",
-        // Prefer integer column, fallback to parsing text column
-        complianceScore: (() => {
-            const dbScore = parseScore(row.compliance_score ?? row.call_score);
-            if (dbScore > 0) return dbScore;
-
-            // Fallback: Calculate from checklist if DB score is 0/missing
-            const parsedChecklist = parseJsonField(row.checklist, []) as any[];
-            if (!parsedChecklist || parsedChecklist.length === 0) return 0;
-
-            const SCORING_WEIGHTS: { [key: string]: number } = {
-                'recorded line disclosure': 20,
-                'company identification': 15,
-                'geographic verification': 15,
-                'eligibility verification': 20,
-                'verbal consent': 15,
-                'handoff execution': 10,
-                'benefit mention': 5,
-            };
-
-            const getItemWeight = (name: string): number => {
-                const lowerName = (name || '').toLowerCase();
-                for (const [key, weight] of Object.entries(SCORING_WEIGHTS)) {
-                    if (lowerName.includes(key) || key.includes(lowerName.split(' ')[0])) {
-                        return weight;
-                    }
-                }
-                return 10; // Default weight
-            };
-
-            let earned = 0;
-            let possible = 0;
-
-            // Normalize checklist to array (Handle Object vs Array format)
-            const checklistItems = Array.isArray(parsedChecklist)
-                ? parsedChecklist
-                : Object.entries(parsedChecklist).map(([key, val]) => ({ ...(val as any), name: key }));
-
-            checklistItems.forEach(item => {
-                const name = item.name || item.requirement || 'Item';
-                const status = (item.status || '').toLowerCase();
-                if (status === 'n/a') return;
-
-                const weight = getItemWeight(name);
-                possible += weight;
-
-                if (['met', 'pass', 'yes', 'true'].includes(status)) {
-                    earned += weight;
-                }
-            });
-
-            return possible > 0 ? Math.round((earned / possible) * 100) : 0;
-        })(),
-        riskLevel: row.risk_level || "Low",
-
-        checklist: parseJsonField(row.checklist, []),
-        violations: parseJsonField(row.violations, []),
-        reviewFlags: parseJsonField(row.review_flags, []),
-        coachingNotes: parseJsonField(row.coaching_notes, []),
-        summary: row.summary || "",
-        keyQuotes: parseJsonField(row.key_quotes, []),
-        recordingUrl: row.recording_url || "",
-        analyzedAt: row.analyzed_at || row.created_at,
-        transcript: row.transcript || "",
-
-        // QA Workflow fields
-        qaStatus: determineQAStatus(),
-        qaReviewedBy: row.qa_reviewed_by || undefined,
-        qaReviewedAt: row.qa_reviewed_at || undefined,
-        qaNotes: row.qa_notes || undefined,
-        reviewPriority: (row.review_priority as 'urgent' | 'normal' | 'low') || 'normal',
-        uploadType: (row.upload_type as 'manual' | 'automated') || 'manual',
-    };
-}
-
-type ViewType = 'dashboard' | 'live' | 'review' | 'agents' | 'reports';
+type ViewType = 'dashboard' | 'live' | 'review' | 'agents' | 'reports' | 'messages' | 'settings' | 'aura';
 
 // ... (imports remain the same above)
 
@@ -158,6 +44,7 @@ function QADashboardContent() {
     const { user, profile } = useAuth();
     const searchParams = useSearchParams();
     const router = useRouter();
+    const { displayName: settingsName } = useUserSettings();
 
     // ... (rest of the component logic: state, effects, etc. - copy from lines 158-738)
     // Be careful to include EVERYTHING from the original component
@@ -168,17 +55,25 @@ function QADashboardContent() {
     // View state derives from URL, default to 'dashboard'
     const currentView = (searchParams.get('view') as ViewType) || 'dashboard';
 
+    // Time Range Selector State (Dashboard Metrics AND Live Feed)
+    type TimeRange = 'today' | '7d' | '14d' | '30d' | '90d' | 'all';
+    const [timeRange, setTimeRange] = useState<TimeRange>('today');
+
     const [selectedCall, setSelectedCall] = useState<CallData | null>(null);
     const { setReviewCount: setReviewCountFn, isAnalyzerOpen, setAnalyzerOpen } = useQA();
 
     // Filters
     const [selectedAgent, setSelectedAgent] = useState('');
     const [selectedCampaign, setSelectedCampaign] = useState('');
+    const [selectedProductType, setSelectedProductType] = useState('');
     const [searchQuery, setSearchQuery] = useState('');
     const [dateRange, setDateRange] = useState({ start: '', end: '' });
     const [minScore, setMinScore] = useState(0);
     const [selectedRiskLevel, setSelectedRiskLevel] = useState('');
+    const [selectedRiskyAgents, setSelectedRiskyAgents] = useState<string[]>([]);
     const [selectedStatus, setSelectedStatus] = useState('');
+    const [selectedTag, setSelectedTag] = useState('');
+    const [reviewQueueTab, setReviewQueueTab] = useState<'pending' | 'reviewed'>('pending');
 
     // Fetch calls from Supabase
     const fetchCalls = useCallback(async (silent = false) => {
@@ -196,7 +91,31 @@ function QADashboardContent() {
 
             if (data) {
                 const transformed = data.map((row: DatabaseCallRow) => transformRow(row));
-                setCalls(transformed);
+
+                // Preserve local QA review state if database hasn't caught up yet
+                // This prevents optimistic updates from being overwritten by stale data
+                setCalls(prev => {
+                    // Create a map of locally-approved calls for quick lookup
+                    const localApprovedCalls = new Map(
+                        prev.filter(c => c.qaStatus === 'approved' && c.qaReviewedBy)
+                            .map(c => [c.id, c])
+                    );
+
+                    return transformed.map(newCall => {
+                        const localVersion = localApprovedCalls.get(newCall.id);
+                        // If we have local approval data but database doesn't, preserve local data
+                        if (localVersion && localVersion.qaStatus === 'approved' && !newCall.qaReviewedBy) {
+                            return {
+                                ...newCall,
+                                qaStatus: localVersion.qaStatus,
+                                qaReviewedBy: localVersion.qaReviewedBy,
+                                qaReviewedAt: localVersion.qaReviewedAt,
+                                qaNotes: localVersion.qaNotes
+                            };
+                        }
+                        return newCall;
+                    });
+                });
             }
         } catch (e) {
             console.error('Fetch error:', e);
@@ -233,13 +152,9 @@ function QADashboardContent() {
         };
     }, [fetchCalls]);
 
-    // Calculate Review Queue Count and Sync to Context
-    useEffect(() => {
-        // Queue Logic:
-        // 1. Status explicitly "Needs Review" or "Requires Review"
-        // 2. Score between 70-89% (Medium Risk)
-        // 3. EXCLUDE items that have been manually reviewed (qaStatus is set to approved/rejected)
-        const count = calls.filter(c => {
+    // Calculate Review Queue Count
+    const reviewQueueCount = useMemo(() => {
+        return calls.filter(c => {
             // If manual QA status is set to final state, it's NOT in queue
             if (c.qaStatus === 'approved' || c.qaStatus === 'rejected') return false;
 
@@ -251,9 +166,12 @@ function QADashboardContent() {
 
             return isReviewStatus || isMidRangeScore;
         }).length;
+    }, [calls]);
 
-        setReviewCountFn(count);
-    }, [calls, setReviewCountFn]);
+    // Sync Review Count to Context
+    useEffect(() => {
+        setReviewCountFn(reviewQueueCount);
+    }, [reviewQueueCount, setReviewCountFn]);
 
 
     // Keyboard shortcuts for rapid QA review
@@ -343,14 +261,24 @@ function QADashboardContent() {
         }
     };
 
-    // Agent review handler
-    const handleAgentReview = (agentName: string) => {
-        setSelectedAgent(agentName);
+    // Agent review handler - can filter by specific agent or multiple risky agents
+    const handleAgentReview = (agentName: string, riskyAgentNames?: string[]) => {
+        if (riskyAgentNames && riskyAgentNames.length > 0) {
+            // Filter by multiple risky agents (for risky agent watch list)
+            setSelectedAgent('');
+            setSelectedRiskyAgents(riskyAgentNames);
+            setSelectedRiskLevel('');
+        } else {
+            // Filter by specific agent
+            setSelectedAgent(agentName);
+            setSelectedRiskyAgents([]);
+            setSelectedRiskLevel('');
+        }
         setSearchQuery('');
         setSelectedCampaign('');
-        setSelectedRiskLevel('');
         setMinScore(0);
-        // In a real implementation we would push to URL
+        // Navigate to live feed view to show filtered calls
+        router.push('/qa?view=live');
     };
 
     // QA Status change handler
@@ -365,7 +293,9 @@ function QADashboardContent() {
                     id,
                     status,
                     notes,
-                    reviewedBy: profile?.email || user?.email || 'Unknown'
+                    reviewedBy: profile?.first_name && profile?.last_name
+                        ? `${profile.first_name} ${profile.last_name}`
+                        : user?.displayName || user?.email || 'Unknown'
                 })
             });
 
@@ -379,7 +309,14 @@ function QADashboardContent() {
             // Update local state
             setCalls(prev => prev.map(c =>
                 c.id === id
-                    ? { ...c, qaStatus: status, qaReviewedBy: profile?.email, qaReviewedAt: new Date().toISOString() }
+                    ? {
+                        ...c,
+                        qaStatus: status,
+                        qaReviewedBy: profile?.first_name && profile?.last_name
+                            ? `${profile.first_name} ${profile.last_name}`
+                            : user?.displayName || user?.email || 'Unknown',
+                        qaReviewedAt: new Date().toISOString()
+                    }
                     : c
             ));
 
@@ -402,9 +339,87 @@ function QADashboardContent() {
         }
     };
 
-    // Computed stats with trends
+    // Handle QA review submission from TranscriptDrawer
+    const handleQASubmit = async (callId: string, reviewerName: string, notes?: string) => {
+        try {
+            console.log('Submitting QA review:', { callId, reviewerName, notes });
+
+            const response = await fetch('/api/qa/update-status', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    id: callId,
+                    status: 'approved',
+                    notes,
+                    reviewedBy: reviewerName
+                })
+            });
+
+            const result = await response.json();
+
+            if (!response.ok || !result.success) {
+                console.error('QA review submission failed:', result.error);
+                throw new Error(result.error || 'Failed to submit review');
+            }
+
+            // Update local state
+            setCalls(prev => prev.map(c =>
+                c.id === callId
+                    ? {
+                        ...c,
+                        qaStatus: 'approved',
+                        qaReviewedBy: reviewerName,
+                        qaReviewedAt: new Date().toISOString(),
+                        qaNotes: notes
+                    }
+                    : c
+            ));
+
+            // Also update selectedCall if it's the same call
+            if (selectedCall && selectedCall.id === callId) {
+                setSelectedCall(prev => prev ? {
+                    ...prev,
+                    qaStatus: 'approved',
+                    qaReviewedBy: reviewerName,
+                    qaReviewedAt: new Date().toISOString(),
+                    qaNotes: notes
+                } : null);
+            }
+
+        } catch (e: any) {
+            console.error('QA review submission error:', e);
+            throw e;
+        }
+    };
+
+    // --- Time Range Filtering Logic for Metrics AND Live Feed ---
+    const metricsCalls = useMemo(() => {
+        // 'all' means no time filter
+        if (timeRange === 'all') return calls;
+
+        const now = new Date();
+        const start = new Date();
+        start.setHours(0, 0, 0, 0); // Reset to beginning of today
+
+        if (timeRange === 'today') {
+            // Already set to start of today
+        } else if (timeRange === '7d') {
+            start.setDate(now.getDate() - 6); // 7 days including today
+        } else if (timeRange === '14d') {
+            start.setDate(now.getDate() - 13);
+        } else if (timeRange === '30d') {
+            start.setDate(now.getDate() - 29);
+        } else if (timeRange === '90d') {
+            start.setDate(now.getDate() - 89);
+        }
+
+        return calls.filter(c => new Date(c.timestamp) >= start);
+    }, [calls, timeRange]);
+
+
+    // Computed stats with trends (Using metricsCalls)
     const stats = useMemo(() => {
-        const total = calls.length;
+        const total = metricsCalls.length;
         if (total === 0) return {
             avgScore: 0,
             complianceRate: 0,
@@ -413,13 +428,14 @@ function QADashboardContent() {
             trend: 0
         };
 
-        const totalScore = calls.reduce((acc, curr) => acc + (curr.complianceScore || 0), 0);
+        const totalScore = metricsCalls.reduce((acc, curr) => acc + (curr.complianceScore || 0), 0);
 
-        // Overall Compliance: 90%+ score (matches Compliant status)
-        const complianceCount = calls.filter(c => c.complianceScore >= 90).length;
+
+        // Overall Compliance: 85%+ score (matches System Prompt)
+        const complianceCount = metricsCalls.filter(c => isCallCompliant(c)).length;
 
         // Risk Detection: Align with High Risk labels in feed
-        const riskCount = calls.filter(c => {
+        const riskCount = metricsCalls.filter(c => {
             const riskLower = (c.riskLevel || '').toLowerCase();
             const statusLower = (c.status || '').toLowerCase();
             return (
@@ -433,20 +449,34 @@ function QADashboardContent() {
             );
         }).length;
 
-        // Trend Calculation: Compare today vs yesterday
+        // Trend Calculation: Compare selected period vs previous period of same length
+        // e.g. if 7d is selected, compare last 7 days vs previous 7 days
         const now = new Date();
-        const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-        const yesterday = new Date(today.getTime() - 24 * 60 * 60 * 1000);
+        const periodDays = timeRange === 'today' ? 1
+            : timeRange === '7d' ? 7
+                : timeRange === '14d' ? 14
+                    : timeRange === '30d' ? 30
+                        : 90;
 
-        const todayCalls = calls.filter(c => new Date(c.timestamp) >= today).length;
-        const yesterdayCalls = calls.filter(c => {
+        const periodStart = new Date();
+        periodStart.setHours(0, 0, 0, 0);
+        if (timeRange !== 'today') periodStart.setDate(periodStart.getDate() - (periodDays - 1));
+
+        const prevPeriodStart = new Date(periodStart);
+        prevPeriodStart.setDate(prevPeriodStart.getDate() - periodDays);
+
+        const prevPeriodEnd = new Date(periodStart);
+        // End of previous period is start of current period (exclusive in filter, inclusive logic)
+
+        const currentPeriodCount = metricsCalls.length;
+        const prevPeriodCount = calls.filter(c => {
             const d = new Date(c.timestamp);
-            return d >= yesterday && d < today;
+            return d >= prevPeriodStart && d < periodStart;
         }).length;
 
-        const trend = yesterdayCalls > 0
-            ? Math.round(((todayCalls - yesterdayCalls) / yesterdayCalls) * 100)
-            : (todayCalls > 0 ? 100 : 0);
+        const trend = prevPeriodCount > 0
+            ? Math.round(((currentPeriodCount - prevPeriodCount) / prevPeriodCount) * 100)
+            : (currentPeriodCount > 0 ? 100 : 0);
 
         return {
             avgScore: Math.round(totalScore / total),
@@ -455,15 +485,70 @@ function QADashboardContent() {
             complianceCount,
             trend
         };
-    }, [calls]);
+    }, [metricsCalls, calls, timeRange]);
+
+    // QA Validation Stats - Track validations per agent
+    const validationStats = useMemo(() => {
+        // Get current user's display name for matching
+        const currentUserName = profile?.first_name && profile?.last_name
+            ? `${profile.first_name} ${profile.last_name}`
+            : user?.displayName || '';
+
+        // Total team validations (all approved/rejected calls)
+        const teamValidations = calls.filter(c => c.qaStatus === 'approved' || c.qaStatus === 'rejected').length;
+
+        // Current user's validations
+        const myValidations = calls.filter(c =>
+            (c.qaStatus === 'approved' || c.qaStatus === 'rejected') &&
+            c.qaReviewedBy &&
+            c.qaReviewedBy.toLowerCase() === currentUserName.toLowerCase()
+        ).length;
+
+        // Validations within the selected time range
+        const periodTeamValidations = metricsCalls.filter(c => c.qaStatus === 'approved' || c.qaStatus === 'rejected').length;
+        const periodMyValidations = metricsCalls.filter(c =>
+            (c.qaStatus === 'approved' || c.qaStatus === 'rejected') &&
+            c.qaReviewedBy &&
+            c.qaReviewedBy.toLowerCase() === currentUserName.toLowerCase()
+        ).length;
+
+        return {
+            myValidations,
+            teamValidations,
+            periodMyValidations,
+            periodTeamValidations
+        };
+    }, [calls, metricsCalls, profile, user]);
 
     const uniqueAgents = useMemo(() => Array.from(new Set(calls.map(c => c.agentName))), [calls]);
     const uniqueCampaigns = useMemo(() => Array.from(new Set(calls.map(c => c.campaignType))), [calls]);
+    const uniqueProductTypes = useMemo(() => Array.from(new Set(calls.map(c => c.productType).filter(Boolean))), [calls]);
+    const uniqueTags = useMemo(() => Array.from(new Set(calls.map(c => c.tag).filter(Boolean))), [calls]);
 
     const filteredCalls = useMemo(() => {
-        return calls.filter(c => {
+        // Apply additional filters on top of the time-filtered metricsCalls
+        return metricsCalls.filter(c => {
+            // If filtering by risky agents, match any agent in the list
+            // Aggressive normalization matching AgentScoreboard logic
+            const normalizeForMatch = (name: string): string => {
+                return name
+                    .trim()
+                    .replace(/\s+/g, ' ')
+                    .replace(/[\u200B-\u200D\uFEFF]/g, '')
+                    .normalize('NFKC')
+                    .toLowerCase();
+            };
+            const matchesRiskyAgents = selectedRiskyAgents.length > 0
+                ? selectedRiskyAgents.some(name => {
+                    const normalizedCallAgent = normalizeForMatch(c.agentName || '');
+                    const normalizedFilterName = normalizeForMatch(name);
+                    return normalizedCallAgent === normalizedFilterName;
+                })
+                : true;
+
             const matchesAgent = selectedAgent ? c.agentName === selectedAgent : true;
             const matchesCampaign = selectedCampaign ? c.campaignType === selectedCampaign : true;
+            const matchesProductType = selectedProductType ? c.productType === selectedProductType : true;
             const matchesSearch = searchQuery
                 ? c.agentName.toLowerCase().includes(searchQuery.toLowerCase()) ||
                 c.phoneNumber.includes(searchQuery)
@@ -477,10 +562,11 @@ function QADashboardContent() {
             const matchesRisk = selectedRiskLevel
                 ? (c.riskLevel || '').toLowerCase() === selectedRiskLevel.toLowerCase()
                 : true;
+            const matchesTag = selectedTag ? c.tag === selectedTag : true;
 
-            return matchesAgent && matchesCampaign && matchesSearch && matchesDate && matchesScore && matchesRisk;
+            return matchesRiskyAgents && matchesAgent && matchesCampaign && matchesProductType && matchesTag && matchesSearch && matchesDate && matchesScore && matchesRisk;
         });
-    }, [calls, selectedAgent, selectedCampaign, searchQuery, dateRange, minScore, selectedRiskLevel]);
+    }, [metricsCalls, selectedAgent, selectedCampaign, selectedProductType, selectedTag, searchQuery, dateRange, minScore, selectedRiskLevel, selectedRiskyAgents]);
 
     // Get greeting
     const getGreeting = () => {
@@ -490,7 +576,7 @@ function QADashboardContent() {
         return "Good evening";
     };
 
-    const userName = profile?.first_name || user?.displayName?.split(" ")[0] || "QA Specialist";
+    const userName = settingsName?.split(' ')[0] || profile?.first_name || user?.displayName?.split(" ")[0] || "QA Specialist";
 
     // Render content based on current view
     const renderContent = () => {
@@ -498,42 +584,61 @@ function QADashboardContent() {
             case 'dashboard':
                 return (
                     <div className="space-y-8 animate-in fade-in slide-in-from-bottom-4 duration-500 pb-20">
-                        {/* Greeting */}
-                        <div className="flex justify-between items-start">
-                            <div className="flex flex-col gap-2">
-                                <h2 className="text-4xl font-bold tracking-tight text-white group cursor-default">
-                                    Compliance Dashboard
-                                    <span className="inline-block ml-3 w-3 h-3 rounded-full bg-indigo-500 animate-pulse shadow-[0_0_15px_rgba(99,102,241,0.5)]" />
-                                </h2>
-                                <div className="flex items-center gap-3 text-lg text-white/60 font-medium mt-1">
-                                    <span className="text-indigo-200/80">{getGreeting()}, <span className="text-white font-bold">{userName}</span></span>
-                                    <div className="h-1 w-1 rounded-full bg-white/20" />
-                                    <span>You have <span className="text-indigo-400 font-bold">{filteredCalls.length} calls</span> in your view.</span>
-                                </div>
-                            </div>
+                        {/* Greeting & Header Controls */}
+                        <div className="flex flex-col gap-6">
+                            <div className="flex justify-between items-start">
+                                <div className="flex flex-col gap-2">
+                                    <h2 className="text-4xl font-bold tracking-tight text-white group cursor-default">
+                                        Compliance Dashboard
+                                        <span className="inline-block ml-3 w-3 h-3 rounded-full bg-indigo-500 animate-pulse shadow-[0_0_15px_rgba(99,102,241,0.5)]" />
+                                    </h2>
+                                    <div className="flex items-center gap-3 text-lg text-white/60 font-medium mt-1">
+                                        <span className="text-indigo-200/80">{getGreeting()}, <span className="text-white font-bold">{userName}</span></span>
+                                        <div className="h-1 w-1 rounded-full bg-white/20" />
+                                        <span>You have <span className="text-indigo-400 font-bold">{filteredCalls.length} calls</span> in your view.</span>
+                                    </div>
 
-                            <button
-                                onClick={() => setAnalyzerOpen(true)}
-                                className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-purple-600 to-indigo-600 text-white font-bold text-sm uppercase tracking-widest rounded-xl shadow-lg shadow-purple-900/30 hover:shadow-purple-700/50 hover:scale-[1.02] active:scale-[0.98] transition-all"
-                            >
-                                <Zap size={18} fill="currentColor" />
-                                New Analysis
-                            </button>
+                                    {/* Time Range Selector */}
+                                    <div className="flex items-center gap-1 mt-2 bg-black/40 border border-white/5 rounded-lg p-1 w-fit">
+                                        {(['today', '7d', '14d', '30d', '90d', 'all'] as TimeRange[]).map((range) => (
+                                            <button
+                                                key={range}
+                                                onClick={() => setTimeRange(range)}
+                                                className={`px-3 py-1.5 text-xs font-bold uppercase tracking-wider rounded-md transition-all duration-200
+                                                    ${timeRange === range
+                                                        ? 'bg-indigo-600 text-white shadow-lg shadow-indigo-900/50'
+                                                        : 'text-white/40 hover:text-white hover:bg-white/5'
+                                                    }`}
+                                            >
+                                                {range === 'today' ? 'Today' : range === 'all' ? 'All' : range.toUpperCase()}
+                                            </button>
+                                        ))}
+                                    </div>
+                                </div>
+
+                                <button
+                                    onClick={() => setAnalyzerOpen(true)}
+                                    className="flex items-center gap-2 px-6 py-3 bg-gradient-to-r from-purple-600 to-indigo-600 text-white font-bold text-sm uppercase tracking-widest rounded-xl shadow-lg shadow-purple-900/30 hover:shadow-purple-700/50 hover:scale-[1.02] active:scale-[0.98] transition-all"
+                                >
+                                    <Zap size={18} fill="currentColor" />
+                                    New Analysis
+                                </button>
+                            </div>
                         </div>
 
-                        {/* Metric Cards - Count focused */}
-                        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        {/* Metric Cards - Uses metricsCalls via stats */}
+                        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-6">
                             <DashboardMetricCard
                                 title="Total Analyzed"
-                                value={calls.length}
+                                value={metricsCalls.length}
                                 subLabel="Calls Processed"
                                 color="#8b5cf6"
-                                trend={{ label: "vs yesterday", value: stats.trend }}
+                                trend={{ label: "vs prev period", value: stats.trend }}
                             />
                             <DashboardMetricCard
                                 title="Met Compliance"
                                 value={stats.complianceCount}
-                                subLabel="Perfect Score (100%)"
+                                subLabel="Score 85%+"
                                 color="#10b981"
                             />
                             <DashboardMetricCard
@@ -542,19 +647,39 @@ function QADashboardContent() {
                                 subLabel="High Risk Interactions"
                                 color="#f43f5e"
                             />
+                            <DashboardMetricCard
+                                title="Review Queue"
+                                value={reviewQueueCount}
+                                subLabel="Pending QA Agent Review"
+                                color="#ec4899"
+                            />
+                            <DashboardMetricCard
+                                title="Your Validations"
+                                value={validationStats.periodMyValidations}
+                                subLabel="Calls You Reviewed"
+                                color="#06b6d4"
+                            />
+                            <DashboardMetricCard
+                                title="Team Validations"
+                                value={validationStats.periodTeamValidations}
+                                subLabel="Total Team Reviews"
+                                color="#f59e0b"
+                            />
                         </div>
 
-                        {/* Gauge Cluster - Percentage visualizations */}
+                        {/* Gauge Cluster - Uses metricsCalls via stats */}
                         <GaugeCluster gauges={[
                             { label: "Avg. Quality", value: stats.avgScore, color: "#8b5cf6", description: "Mean score across all analyzed calls" },
-                            { label: "Compliance Rate", value: stats.complianceRate, color: "#10b981", description: "% of calls achieving 90%+ (Compliant)" },
-                            { label: "Risk Factor", value: calls.length > 0 ? Math.round((stats.riskCount / calls.length) * 100) : 0, color: "#f43f5e", description: "% of calls flagged as high risk" }
+                            { label: "Compliance Rate", value: stats.complianceRate, color: "#10b981", description: "% of calls achieving 85%+ (Compliant)" },
+                            { label: "Risk Factor", value: metricsCalls.length > 0 ? Math.round((stats.riskCount / metricsCalls.length) * 100) : 0, color: "#f43f5e", description: "% of calls flagged as high risk" },
+                            { label: "Manual Source", value: metricsCalls.length > 0 ? Math.round((metricsCalls.filter(c => c.uploadType === 'manual').length / metricsCalls.length) * 100) : 0, color: "#d946ef", description: "Manually uploaded recordings" },
+                            { label: "Dialer Source", value: metricsCalls.length > 0 ? Math.round((metricsCalls.filter(c => c.uploadType === 'automated').length / metricsCalls.length) * 100) : 0, color: "#06b6d4", description: "Ingested via Dialer/API" }
                         ]} />
 
-                        {/* Trend Chart */}
-                        <ComplianceTrendChart calls={calls} />
+                        {/* Trend Chart - Uses metricsCalls */}
+                        <ComplianceTrendChart calls={metricsCalls} />
 
-                        {/* Recent Calls Table */}
+                        {/* Recent Calls Table - Uses filteredCalls (View Independent) */}
                         <div className="min-h-[500px]">
                             <RecentCallsTable
                                 calls={filteredCalls}
@@ -565,6 +690,9 @@ function QADashboardContent() {
                                 selectedCampaign={selectedCampaign}
                                 onCampaignChange={setSelectedCampaign}
                                 availableCampaigns={uniqueCampaigns}
+                                selectedProductType={selectedProductType}
+                                onProductTypeChange={setSelectedProductType}
+                                availableProductTypes={uniqueProductTypes}
                                 searchQuery={searchQuery}
                                 onSearchChange={setSearchQuery}
                                 startDate={dateRange.start}
@@ -586,14 +714,52 @@ function QADashboardContent() {
             case 'live':
                 return (
                     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500 pb-20">
-                        <div className="flex justify-between items-center glass-card p-6 rounded-2xl border border-white/10">
-                            <div>
-                                <h2 className="text-2xl font-bold text-white tracking-tight">Live Operations Center</h2>
-                                <p className="text-white/40 text-sm mt-1">Real-time stream management</p>
+                        <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-[#0F0720]/80 backdrop-blur-xl shadow-2xl">
+                            {/* Gradient glow effect */}
+                            <div className="absolute inset-x-0 top-0 h-32 bg-gradient-to-b from-purple-500/10 via-blue-500/5 to-transparent pointer-events-none" />
+                            <div className="absolute -top-24 -right-24 w-48 h-48 bg-purple-500/20 rounded-full blur-3xl pointer-events-none" />
+
+                            <div className="relative p-8 flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+                                <div className="flex items-center gap-5">
+                                    <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-purple-500/20 to-blue-500/20 flex items-center justify-center border border-purple-500/30 shadow-lg shadow-purple-900/20">
+                                        <Activity className="text-purple-400" size={28} />
+                                    </div>
+                                    <div>
+                                        <h2 className="text-3xl font-black text-white tracking-tight">Live Operations Center</h2>
+                                        <p className="text-white/50 text-sm mt-1 font-medium">Real-time call monitoring & quality analysis</p>
+                                    </div>
+                                </div>
+
+                                <div className="flex items-center gap-4">
+                                    {selectedRiskyAgents.length > 0 && (
+                                        <div className="flex items-center gap-2 text-xs font-bold text-rose-400 bg-rose-950/40 border border-rose-500/30 px-4 py-2.5 rounded-xl">
+                                            <AlertTriangle size={14} />
+                                            Viewing {selectedRiskyAgents.length} Risky Agents
+                                        </div>
+                                    )}
+                                    <div className="flex items-center gap-2 text-xs font-bold text-emerald-400 bg-emerald-950/30 border border-emerald-500/30 px-4 py-2.5 rounded-xl shadow-[0_0_15px_rgba(16,185,129,0.15)]">
+                                        <div className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse shadow-[0_0_10px_#34d399]" />
+                                        SYSTEM ONLINE
+                                    </div>
+                                </div>
                             </div>
-                            <div className="flex items-center gap-2 text-xs font-bold text-emerald-400 bg-emerald-950/30 border border-emerald-500/30 px-4 py-2 rounded-full shadow-[0_0_15px_rgba(16,185,129,0.2)]">
-                                <div className="w-2 h-2 bg-emerald-400 rounded-full animate-pulse shadow-[0_0_10px_#34d399]" />
-                                SYSTEM ONLINE
+
+                            {/* Stats bar */}
+                            <div className="relative border-t border-white/5 bg-black/30 px-8 py-5 flex items-center gap-10">
+                                <div className="flex flex-col">
+                                    <span className="text-white/70 text-sm font-bold uppercase tracking-wider">Total Calls</span>
+                                    <span className="text-white text-lg font-medium">{filteredCalls.length}</span>
+                                </div>
+                                <div className="w-px h-8 bg-white/10" />
+                                <div className="flex flex-col">
+                                    <span className="text-rose-300/90 text-sm font-bold uppercase tracking-wider">High Risk</span>
+                                    <span className="text-rose-400 text-lg font-medium">{filteredCalls.filter(c => (c.riskLevel || '').toLowerCase() === 'high' || (c.riskLevel || '').toLowerCase() === 'critical').length}</span>
+                                </div>
+                                <div className="w-px h-8 bg-white/10" />
+                                <div className="flex flex-col">
+                                    <span className="text-purple-300/90 text-sm font-bold uppercase tracking-wider">Avg Score</span>
+                                    <span className="text-purple-400 text-lg font-medium">{filteredCalls.length > 0 ? Math.round(filteredCalls.reduce((acc, c) => acc + c.complianceScore, 0) / filteredCalls.length) : 0}%</span>
+                                </div>
                             </div>
                         </div>
                         <div className="min-h-[600px]">
@@ -606,6 +772,9 @@ function QADashboardContent() {
                                 selectedCampaign={selectedCampaign}
                                 onCampaignChange={setSelectedCampaign}
                                 availableCampaigns={uniqueCampaigns}
+                                selectedProductType={selectedProductType}
+                                onProductTypeChange={setSelectedProductType}
+                                availableProductTypes={uniqueProductTypes}
                                 searchQuery={searchQuery}
                                 onSearchChange={setSearchQuery}
                                 startDate={dateRange.start}
@@ -628,34 +797,115 @@ function QADashboardContent() {
                 // Include: status contains 'review' (Needs Review, Requires Review) OR score 70-89%
                 // MUST filter out already processed items (approved/rejected)
                 const reviewCalls = calls.filter(c => {
-                    // 1. Exclude finalized items
+                    const isFinalized = c.qaStatus === 'approved' || c.qaStatus === 'rejected';
+
+                    // Tab 1: PENDING (Queue)
+                    if (reviewQueueTab === 'pending') {
+                        // 1. Exclude finalized items
+                        if (isFinalized) return false;
+
+                        // 2. EXPLICIT EXCLUSION: High Compliance (90-100%) should NOT be in review queue
+                        if (c.complianceScore >= 90) return false;
+
+                        // 3. Include review-needed status
+                        const statusLower = (c.status || '').toLowerCase();
+                        const isReviewStatus = statusLower.includes('review') || statusLower.includes('requires');
+
+                        // 4. Include medium risk score (70-89%)
+                        const isMidRangeScore = c.complianceScore >= 70 && c.complianceScore < 90;
+
+                        return isReviewStatus || isMidRangeScore;
+                    }
+
+                    // Tab 2: REVIEWED (History)
+                    else {
+                        return isFinalized;
+                    }
+                });
+                // Calculate global stats for the view
+                const totalReviewedCount = calls.filter(c => c.qaStatus === 'approved' || c.qaStatus === 'rejected').length;
+
+                const totalPendingCount = calls.filter(c => {
                     if (c.qaStatus === 'approved' || c.qaStatus === 'rejected') return false;
-
-                    // 2. EXPLICIT EXCLUSION: High Compliance (90-100%) should NOT be in review queue
-                    // unless specifically marked as failed/rejected (handled by finalized check above)
                     if (c.complianceScore >= 90) return false;
-
-                    // 3. Include review-needed status
                     const statusLower = (c.status || '').toLowerCase();
                     const isReviewStatus = statusLower.includes('review') || statusLower.includes('requires');
-
-                    // 4. Include medium risk score (70-89%)
                     const isMidRangeScore = c.complianceScore >= 70 && c.complianceScore < 90;
-
                     return isReviewStatus || isMidRangeScore;
-                });
+                }).length;
+
                 return (
                     <div className="space-y-6 animate-in fade-in slide-in-from-bottom-4 duration-500 pb-20">
-                        <div className="flex justify-between items-center glass-card p-6 rounded-2xl border border-white/10">
-                            <div>
-                                <h2 className="text-2xl font-bold text-white tracking-tight">Review Queue</h2>
-                                <p className="text-indigo-200/70 text-xs font-bold uppercase tracking-widest mt-1">
-                                    {reviewCalls.length} call{reviewCalls.length !== 1 ? 's' : ''} requiring human review
-                                </p>
+                        <div className="relative overflow-hidden rounded-3xl border border-white/10 bg-[#0F0720]/80 backdrop-blur-xl shadow-2xl">
+                            {/* Gradient glow effect - rose/pink for modern review feel */}
+                            <div className="absolute inset-x-0 top-0 h-32 bg-gradient-to-b from-rose-500/10 via-pink-500/5 to-transparent pointer-events-none" />
+                            <div className="absolute -top-24 -right-24 w-48 h-48 bg-rose-500/20 rounded-full blur-3xl pointer-events-none" />
+
+                            <div className="relative p-8 flex flex-col md:flex-row justify-between items-start md:items-center gap-6">
+                                <div className="flex items-center gap-5">
+                                    <div className="h-14 w-14 rounded-2xl bg-gradient-to-br from-rose-500/20 to-pink-500/20 flex items-center justify-center border border-rose-500/30 shadow-lg shadow-rose-900/20">
+                                        <ClipboardCheck className="text-rose-400" size={28} />
+                                    </div>
+                                    <div>
+                                        <h2 className="text-3xl font-black text-white tracking-tight">Review Queue</h2>
+                                        <p className="text-white/60 text-sm mt-1 font-medium">Manual QA validation required</p>
+                                    </div>
+                                </div>
+
+                                <div className="flex items-center gap-3">
+                                    {/* Queue Toggle Switch */}
+                                    <div className="flex bg-black/40 p-1 rounded-xl border border-white/10">
+                                        <button
+                                            onClick={() => setReviewQueueTab('pending')}
+                                            className={`px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all duration-300 ${reviewQueueTab === 'pending'
+                                                ? 'bg-rose-500 text-white shadow-lg shadow-rose-500/25'
+                                                : 'text-white/70 hover:text-white hover:bg-white/10'
+                                                }`}
+                                        >
+                                            Pending
+                                        </button>
+                                        <button
+                                            onClick={() => setReviewQueueTab('reviewed')}
+                                            className={`px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all duration-300 ${reviewQueueTab === 'reviewed'
+                                                ? 'bg-rose-500 text-white shadow-lg shadow-rose-500/25'
+                                                : 'text-white/70 hover:text-white hover:bg-white/10'
+                                                }`}
+                                        >
+                                            Reviewed
+                                        </button>
+                                    </div>
+                                </div>
                             </div>
-                            <div className="flex items-center gap-2 text-xs font-bold text-amber-400 bg-amber-950/30 border border-amber-500/30 px-4 py-2 rounded-full shadow-[0_0_15px_rgba(245,158,11,0.2)]">
-                                <AlertTriangle size={14} />
-                                {reviewCalls.length} PENDING
+
+                            {/* Stats bar */}
+                            <div className="relative border-t border-white/5 bg-black/20 px-8 py-5 flex items-center gap-10 text-sm">
+                                <div className="flex flex-col gap-1.5">
+                                    <span className="text-white/70 font-bold uppercase tracking-widest text-[10px]">Pending Reviews</span>
+                                    <span className="self-start px-3 py-0.5 rounded-md bg-rose-500/10 text-rose-400 font-extrabold text-lg border border-rose-500/10 shadow-[0_0_10px_rgba(244,63,94,0.1)]">
+                                        {totalPendingCount}
+                                    </span>
+                                </div>
+                                <div className="w-px h-10 bg-white/5" />
+                                <div className="flex flex-col gap-1.5">
+                                    <span className="text-white/70 font-bold uppercase tracking-widest text-[10px]">Reviewed</span>
+                                    <span className="self-start px-3 py-0.5 rounded-md bg-emerald-500/10 text-emerald-400 font-extrabold text-lg border border-emerald-500/10 shadow-[0_0_10px_rgba(16,185,129,0.1)]">
+                                        {totalReviewedCount}
+                                    </span>
+                                </div>
+                                <div className="w-px h-10 bg-white/5" />
+                                <div className="flex flex-col gap-1.5">
+                                    <span className="text-white/70 font-bold uppercase tracking-widest text-[10px]">Critical (Below 50%)</span>
+                                    <span className="self-start px-3 py-0.5 rounded-md bg-rose-500/10 text-rose-400 font-extrabold text-lg border border-rose-500/10">
+                                        {calls.filter(c => c.complianceScore < 50).length}
+                                    </span>
+                                </div>
+                                <div className="w-px h-10 bg-white/5" />
+                                <div className="flex flex-col gap-1.5">
+                                    <span className="text-white/70 font-bold uppercase tracking-widest text-[10px]">Avg Score</span>
+                                    <span className="self-start px-3 py-0.5 rounded-md bg-purple-500/10 text-purple-300 font-extrabold text-lg border border-purple-500/10">
+                                        {calls.length > 0 ? Math.round(calls.reduce((acc, c) => acc + c.complianceScore, 0) / calls.length) : 0}%
+                                    </span>
+                                </div>
                             </div>
                         </div>
                         <div className="min-h-[600px]">
@@ -668,6 +918,9 @@ function QADashboardContent() {
                                 selectedCampaign={selectedCampaign}
                                 onCampaignChange={setSelectedCampaign}
                                 availableCampaigns={uniqueCampaigns}
+                                selectedProductType={selectedProductType}
+                                onProductTypeChange={setSelectedProductType}
+                                availableProductTypes={uniqueProductTypes}
                                 searchQuery={searchQuery}
                                 onSearchChange={setSearchQuery}
                                 startDate={dateRange.start}
@@ -682,6 +935,7 @@ function QADashboardContent() {
                                 onStatusFilterChange={setSelectedStatus}
                                 onDelete={handleDeleteCalls}
                                 onStatusChange={handleStatusChange}
+                                showQAColumn={true}
                             />
                         </div>
                     </div>
@@ -690,6 +944,12 @@ function QADashboardContent() {
                 return <AgentScoreboard calls={calls} onReviewAgent={handleAgentReview} />;
             case 'reports':
                 return <ReportsView calls={filteredCalls} />;
+            case 'messages':
+                return <MessagesView />;
+            case 'settings':
+                return <SettingsView />;
+            case 'aura':
+                return <AuraChat />;
             default:
                 return null;
         }
@@ -699,7 +959,7 @@ function QADashboardContent() {
         <DashboardLayout>
             <div className="flex flex-col h-full">
                 {/* Main content */}
-                <div className="flex-1 overflow-y-auto">
+                <div className={`flex-1 ${currentView === 'aura' ? 'overflow-hidden' : 'overflow-y-auto'}`}>
                     {isLoading ? (
                         <div className="flex items-center justify-center h-64">
                             <div className="flex flex-col items-center gap-6 animate-pulse">
@@ -727,8 +987,12 @@ function QADashboardContent() {
                     setAnalyzerOpen(false);
                 }}
                 onUploadSuccess={() => {
+                    // Immediate refresh
                     fetchCalls(true);
+                    // Follow-up refreshes to catch any database propagation delays
+                    setTimeout(() => fetchCalls(true), 2000);
                     setTimeout(() => fetchCalls(true), 5000);
+                    setTimeout(() => fetchCalls(true), 10000);
                 }}
             />
 
@@ -737,6 +1001,7 @@ function QADashboardContent() {
                     call={selectedCall}
                     onClose={() => setSelectedCall(null)}
                     onScoreUpdate={handleScoreUpdate}
+                    onQASubmit={handleQASubmit}
                 />
             )}
         </DashboardLayout>

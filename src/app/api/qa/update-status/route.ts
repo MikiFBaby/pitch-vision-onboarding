@@ -24,16 +24,16 @@ export async function POST(request: NextRequest) {
         console.log('Updating QA status:', { id, status, reviewedBy });
 
         const updateData: Record<string, unknown> = {
-            'QA Status': status,
-            'QA Reviewed At': new Date().toISOString(),
+            'qa_status': status,
+            'qa_reviewed_at': new Date().toISOString(),
         };
 
         if (reviewedBy) {
-            updateData['QA Reviewed By'] = reviewedBy;
+            updateData['qa_reviewed_by'] = reviewedBy;
         }
 
         if (notes) {
-            updateData['QA Notes'] = notes;
+            updateData['qa_notes'] = notes;
         }
 
         const { error } = await supabaseAdmin

@@ -2,16 +2,22 @@
 
 
 import React, { useState, useMemo, useRef } from 'react';
+import { jsPDF } from "jspdf"; // Type only, dynamic import used in utility
+import { generateQAComplianceReport } from "@/utils/report-generator";
 import { Card } from './ui/Card';
 import { CallData, CallStatus } from '@/types/qa-types';
+import { isCallCompliant } from "@/utils/qa-utils";
+import { format } from 'date-fns';
 import {
     Calendar, Download, Mail, Tag, FileText, CheckCircle2, AlertTriangle,
     Filter, Search, Loader2, FileSpreadsheet, BarChart3,
-    XCircle, RotateCcw, ShieldAlert, AlertCircle, ShieldCheck, Award
+    XCircle, RotateCcw, ShieldAlert, AlertCircle, ShieldCheck, Award, Send
 } from 'lucide-react';
 import { StatMetric } from './StatMetric';
 import { saveAs } from 'file-saver';
-// jsPDF and autoTable are dynamically imported in generatePDF()
+import { useAuth } from '@/context/AuthContext';
+import { motion, AnimatePresence } from 'framer-motion';
+// jsPDF and autoTable are dynamically imported in generatePDF() - This comment is now outdated
 
 interface ReportsViewProps {
     calls: CallData[];
@@ -21,12 +27,21 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
     // Report Configuration State
     const [startDate, setStartDate] = useState('');
     const [endDate, setEndDate] = useState('');
+    const [dateRange, setDateRange] = useState<{ start?: Date; end?: Date }>({});
     const [selectedTag, setSelectedTag] = useState('');
     const [minScore, setMinScore] = useState(0);
     const [reportTitle, setReportTitle] = useState('Compliance Summary Report');
 
     const [isExporting, setIsExporting] = useState(false);
     const [exportMessage, setExportMessage] = useState<string | null>(null);
+
+    // Email Modal State
+    const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
+    const [emailRecipient, setEmailRecipient] = useState('');
+    const [emailSubjectSuffix, setEmailSubjectSuffix] = useState('');
+    const [isSendingEmail, setIsSendingEmail] = useState(false);
+
+    const { user, profile } = useAuth();
 
     // Refs for Date Inputs
     const startDateRef = useRef<HTMLInputElement>(null);
@@ -49,9 +64,9 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
             const callDate = new Date(call.timestamp);
 
             // Date Filter
-            if (startDate && callDate < new Date(startDate)) return false;
-            if (endDate) {
-                const end = new Date(endDate);
+            if (dateRange.start && callDate < dateRange.start) return false;
+            if (dateRange.end) {
+                const end = new Date(dateRange.end);
                 end.setHours(23, 59, 59); // Include the full end day
                 if (callDate > end) return false;
             }
@@ -68,7 +83,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
 
             return true;
         });
-    }, [calls, startDate, endDate, selectedTag, minScore]);
+    }, [calls, dateRange, selectedTag, minScore]);
 
     // Calculate Report Stats
     const stats = useMemo(() => {
@@ -76,7 +91,7 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
         if (total === 0) return { avgScore: 0, complianceRate: 0, riskCount: 0 };
 
         const totalScore = reportData.reduce((acc, curr) => acc + (curr.complianceScore || 0), 0);
-        const compliantCount = reportData.filter(c => c.status === CallStatus.CONSENT).length;
+        const compliantCount = reportData.filter(c => isCallCompliant(c)).length;
         const riskCount = reportData.filter(c => (c.riskLevel || '').toLowerCase() === 'high' || (c.riskLevel || '').toLowerCase() === 'critical').length;
 
         return {
@@ -189,19 +204,176 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
 
     // Actions
     const handleExport = (type: 'pdf' | 'email' | 'csv') => {
-        setIsExporting(true);
-
         if (type === 'pdf') {
+            setIsExporting(true);
             generatePDF();
         } else if (type === 'csv') {
+            setIsExporting(true);
             generateCSV();
         } else {
-            // Mock email
-            setTimeout(() => {
-                setIsExporting(false);
-                setExportMessage('Report sent to admin@pitchvision.com');
-                setTimeout(() => setExportMessage(null), 3000);
-            }, 1500);
+            // Open Email Modal
+            setIsEmailModalOpen(true);
+        }
+    };
+
+    const handleSendEmail = async () => {
+        if (!emailRecipient || !emailSubjectSuffix) return;
+
+        setIsSendingEmail(true);
+        try {
+            // Generate PDF Document
+            const doc = await generateQAComplianceReport(reportData, {
+                title: reportTitle,
+                userName: profile?.display_name || user?.email || 'User',
+                dateRange: {
+                    start: dateRange.start ? format(dateRange.start, 'yyyy-MM-dd') : undefined,
+                    end: dateRange.end ? format(dateRange.end, 'yyyy-MM-dd') : undefined
+                },
+                filters: {
+                    minScore: minScore > 0 ? minScore : undefined,
+                    riskLevel: 'All' // ReportsView doesn't seem to have specific risk filter state that differs from page.tsx passing it
+                }
+            });
+
+            // Convert to Base64
+            const pdfDataUri = doc.output('datauristring');
+            const base64Data = pdfDataUri.split(',')[1];
+
+            // Extract first name from email if possible
+            const recipientFirstName = emailRecipient.split('@')[0].split('.')[0];
+            const capitalizedName = recipientFirstName.charAt(0).toUpperCase() + recipientFirstName.slice(1).toLowerCase();
+
+            // Send via API - from Aura with her signature
+            const response = await fetch('/api/email/send', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    to: emailRecipient,
+                    subject: `${reportTitle} - ${format(new Date(), 'MMM dd, yyyy')}`,
+                    text: `Hey ${capitalizedName}, here is the ${reportTitle} that was just generated. I put together all the key metrics and insights for you. If you want me to look into anything specific or need anything else, just let me know. Aura`,
+                    html: `
+                        <div style="font-family: Verdana, Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px;">
+                            <p style="font-size: 14px; color: #212121; line-height: 1.6;">
+                                Hey ${capitalizedName},
+                            </p>
+                            <p style="font-size: 14px; color: #212121; line-height: 1.6;">
+                                Here is the <strong>${reportTitle}</strong> that was just generated. I put together all the key metrics and insights for you, ${reportData.length} records covering the data you requested.
+                            </p>
+                            <p style="font-size: 14px; color: #212121; line-height: 1.6; margin-bottom: 8px;">
+                                <strong>Attachment:</strong> ${reportTitle.replace(/[^a-z0-9]/gi, '_')}.pdf
+                            </p>
+                            <p style="font-size: 14px; color: #212121; line-height: 1.6;">
+                                If you want me to look into anything specific or need anything else, just let me know.
+                            </p>
+                            
+                            <!-- Aura AI Signature -->
+                            <div dir="ltr" style="margin-top: 40px;">
+                                <table style="direction:ltr;border-collapse:collapse;">
+                                    <tr><td style="font-size:0;height:40px;line-height:0;"></td></tr>
+                                    <tr><td>
+                                        <table cellpadding="0" cellspacing="0" border="0" style="width:100%;" width="100%">
+                                            <tr><td>
+                                                <table cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;width:100%;line-height:normal;">
+                                                    <tr><td height="0" style="height:0;font-family:Verdana;text-align:left">
+                                                        <p style="margin:1px;"><img style="height:57px" src="https://d36urhup7zbd7q.cloudfront.net/5566372452040704/no_sig_176896621427/signoff.gif?ck=1768966214.27" alt="Kind regards," height="57"></p>
+                                                    </td></tr>
+                                                </table>
+                                            </td></tr>
+                                            <tr><td height="0" style="height:0;line-height:1%;padding-top:16px;font-size:1px;"></td></tr>
+                                            <tr><td>
+                                                <table cellpadding="0" cellspacing="0" style="border-collapse:collapse;line-height:1.15;">
+                                                    <tr>
+                                                        <td style="height:1px;width:110px;vertical-align:middle;padding:.01px 1px;">
+                                                            <table cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+                                                                <tr><td style="vertical-align:middle;padding:.01px 1px 18px 0.01px;width:96px;text-align:center;">
+                                                                    <img border="0" src="https://gifo.srv.wisestamp.com/im/sh/dS9Rb2VKUW5lcFliRS84NzllOTYzNS04YjNmLTQ1MmQtOWZiYy01YjdjMjA5ODA2MzVfXzQwMHg0MDBfXy5qcGVnI2xvZ28=/circle.png" height="96" width="96" alt="photo" style="width:96px;vertical-align:middle;border-radius:50%;height:96px;border:0;display:block;">
+                                                                </td></tr>
+                                                                <tr><td style="vertical-align:bottom;padding:.01px;width:110px;text-align:center;">
+                                                                    <img border="0" src="https://d36urhup7zbd7q.cloudfront.net/u/QoeJQnepYbE/4ff815de-d8f2-4c40-a393-59ba331d1f95__400x200__.jpeg" height="55" width="110" alt="photo" style="width:110px;vertical-align:middle;border-radius:0;height:55px;border:0;display:block;">
+                                                                </td></tr>
+                                                            </table>
+                                                        </td>
+                                                        <td valign="top" style="padding:.01px 0.01px 0.01px 18px;vertical-align:top;">
+                                                            <table cellpadding="0" cellspacing="0" style="border-collapse:collapse;">
+                                                                <tr><td style="line-height:132.0%;font-size:18px;padding-bottom:18px;">
+                                                                    <p style="margin:.1px;line-height:132.0%;font-size:18px;">
+                                                                        <span style="font-family:Verdana;font-size:18px;font-weight:bold;color:#953DB8;letter-spacing:0;white-space:nowrap;">Aura AI</span><br>
+                                                                        <span style="font-family:Verdana;font-size:14px;font-weight:bold;color:#212121;white-space:nowrap;">Support Specialist,&nbsp;</span>
+                                                                        <span style="font-family:Verdana;font-size:14px;font-weight:bold;color:#212121;white-space:nowrap;">Pitch Perfect Solutions</span>
+                                                                    </p>
+                                                                </td></tr>
+                                                                <tr><td style="padding:.01px 0.01px 18px 0.01px;border-bottom:solid 5px #953DB8;border-top:solid 5px #953DB8;">
+                                                                    <table cellpadding="0" cellspacing="0" style="border-collapse:collapse;width:100%;">
+                                                                        <tr><td nowrap width="235" height="0" style="height:0;padding-top:18px;white-space:nowrap;width:235px;font-family:Verdana;">
+                                                                            <p style="margin:1px;line-height:99%;font-size:12px;">
+                                                                                <span style="white-space:nowrap;">
+                                                                                    <img src="https://gifo.srv.wisestamp.com/s/rfw1/953DB8/26/trans.png" style="line-height:120%;width:12px;" width="12" alt="icon">&nbsp;
+                                                                                    <a href="https://pitchperfectsolutions.com/" target="_blank" style="font-family:Verdana;text-decoration:unset;" rel="nofollow noreferrer">
+                                                                                        <span style="line-height:120%;font-family:Verdana;font-size:12px;color:#212121;white-space:nowrap;">pitchperfectsolutions.com/</span>
+                                                                                    </a>
+                                                                                </span>
+                                                                            </p>
+                                                                        </td></tr>
+                                                                        <tr><td nowrap width="295" height="0" style="height:0;padding-top:10px;white-space:nowrap;width:295px;font-family:Verdana;">
+                                                                            <p style="margin:1px;line-height:99%;font-size:12px;">
+                                                                                <span style="white-space:nowrap;">
+                                                                                    <img src="https://gifo.srv.wisestamp.com/s/rfem1/953DB8/26/trans.png" style="line-height:120%;width:12px;" width="12" alt="icon">&nbsp;
+                                                                                    <a href="mailto:reports@pitchperfectsolutions.net" target="_blank" style="font-family:Verdana;text-decoration:unset;" rel="nofollow noreferrer">
+                                                                                        <span style="line-height:120%;font-family:Verdana;font-size:12px;color:#212121;white-space:nowrap;">reports@pitchperfectsolutions.net</span>
+                                                                                    </a>
+                                                                                </span>
+                                                                            </p>
+                                                                        </td></tr>
+                                                                    </table>
+                                                                </td></tr>
+                                                            </table>
+                                                        </td>
+                                                    </tr>
+                                                </table>
+                                            </td></tr>
+                                            <tr><td height="0" style="height:0;line-height:1%;padding-top:16px;font-size:1px;"></td></tr>
+                                            <tr><td>
+                                                <table cellpadding="0" cellspacing="0" width="100%" style="border-collapse:collapse;width:100%;color:gray;border-top:1px solid gray;line-height:normal;">
+                                                    <tr><td height="0" style="height:0;padding:9px 8px 0 0;">
+                                                        <p style="color:#888888;text-align:left;font-size:10px;margin:1px;line-height:120%;font-family:Verdana">IMPORTANT: The contents of this email and any attachments are confidential. They are intended for the named recipient(s) only. If you have received this email by mistake, please notify the sender immediately and do not disclose the contents to anyone or make copies thereof.</p>
+                                                    </td></tr>
+                                                </table>
+                                            </td></tr>
+                                        </table>
+                                    </td></tr>
+                                </table>
+                            </div>
+                        </div>
+                    `,
+                    attachments: [
+                        {
+                            filename: `${reportTitle.replace(/[^a-z0-9]/gi, '_')}.pdf`,
+                            content: base64Data,
+                            encoding: 'base64'
+                        }
+                    ]
+                })
+            });
+
+            const result = await response.json();
+
+            if (!response.ok || !result.success) {
+                throw new Error(result.error || 'Failed to send email');
+            }
+
+            // Success
+            setIsEmailModalOpen(false);
+            setEmailRecipient('');
+            setEmailSubjectSuffix('');
+            setExportMessage("Email Sent Successfully!");
+            setTimeout(() => setExportMessage(null), 3000);
+
+        } catch (error: any) {
+            console.error('Email Error:', error);
+            setExportMessage(`Email failed: ${error.message}`); // Show on main screen too
+            setTimeout(() => setExportMessage(null), 4000); // And clear
+        } finally {
+            setIsSendingEmail(false);
         }
     };
 
@@ -289,298 +461,34 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
         }
     };
 
+    // Generate PDF using shared utility
     const generatePDF = async () => {
+        setIsExporting(true);
         try {
-            const { jsPDF } = await import('jspdf');
-            const autoTableModule = await import('jspdf-autotable');
-
-            // 1. Landscape Orientation for Data Density
-            const doc = new jsPDF({ orientation: 'landscape' });
-            const pageWidth = doc.internal.pageSize.width; // ~297mm
-            const pageHeight = doc.internal.pageSize.height; // ~210mm
-
-            // --- Helper: Load Image ---
-            const loadImage = (url: string): Promise<HTMLImageElement> => {
-                return new Promise((resolve, reject) => {
-                    const img = new Image();
-                    img.src = url;
-                    img.onload = () => resolve(img);
-                    img.onerror = reject;
-                });
-            };
-
-            // --- Colors (Deep Corporate Style) ---
-            const THEME_COLOR: [number, number, number] = [30, 41, 59];    // Classic Dark Slate
-            const ACCENT_COLOR: [number, number, number] = [147, 51, 234]; // Brand Purple
-            const TEXT_MAIN: [number, number, number] = [30, 30, 30];
-            const TEXT_LIGHT: [number, number, number] = [100, 100, 100];
-
-            // 2. Header Integration
-            // Top thick brand line
-            doc.setFillColor(...ACCENT_COLOR);
-            doc.rect(0, 0, pageWidth, 3, 'F');
-
-            // Logo & Title Block
-            try {
-                // Correct Logo: 'logo-header.png' (Pitch Perfect)
-                const logoImg = await loadImage('/images/logo-header.png');
-                const logoHeight = 12;
-                const logoWidth = (logoImg.width / logoImg.height) * logoHeight;
-                doc.addImage(logoImg, 'PNG', 14, 10, logoWidth, logoHeight);
-            } catch (e) {
-                // Fallback text
-                doc.setFont('helvetica', 'bold');
-                doc.setFontSize(16);
-                doc.setTextColor(...THEME_COLOR);
-                doc.text("Pitch Vision", 14, 18);
-            }
-
-            // Report Title (Right Aligned)
-            doc.setFont('helvetica', 'bold');
-            doc.setFontSize(14);
-            doc.setTextColor(...THEME_COLOR);
-            doc.text("COMPLIANCE AUDIT REPORT", pageWidth - 14, 16, { align: 'right' });
-
-            // Meta Data (Under Title)
-            doc.setFont('helvetica', 'normal');
-            doc.setFontSize(9);
-            doc.setTextColor(...TEXT_LIGHT);
-            const dateStr = new Date().toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' });
-            doc.text(`Generated: ${dateStr}`, pageWidth - 14, 21, { align: 'right' });
-            doc.text(`Period: ${startDate || 'All Time'} - ${endDate || 'Present'}`, pageWidth - 14, 25, { align: 'right' });
-
-            // Divider Line
-            doc.setDrawColor(200, 200, 200);
-            doc.setLineWidth(0.1);
-            doc.line(14, 30, pageWidth - 14, 30);
-
-            // --- Table Section ---
-            const tableBody = reportData.map(call => {
-                const dateObj = new Date(call.timestamp);
-                const date = dateObj.toLocaleDateString('en-US');
-                const time = dateObj.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
-
-                // Construct Violation Text
-                let violationText = '';
-                if (Array.isArray(call.violations) && call.violations.length > 0) {
-                    violationText = call.violations.join('\n• ');
-                    if (violationText) violationText = '• ' + violationText;
-                } else if (call.checklist && Array.isArray(call.checklist)) {
-                    const failed = call.checklist.filter(i =>
-                        i.status === 'not_met' || i.status === 'FAIL'
-                    );
-                    violationText = failed.map(i => {
-                        return i.evidence ? `• "${i.evidence}"` : `• ${i.name}`;
-                    }).join('\n');
-                }
-
-                if (!violationText && call.complianceScore < 100 && call.summary) {
-                    violationText = call.summary.substring(0, 120) + '...';
-                }
-
-                return [
-                    date,
-                    time,
-                    call.agentName || '-',
-                    formatPhoneNumber(call.phoneNumber),
-                    violationText || '-',
-                    `${call.complianceScore}%`,
-                    call.riskLevel || 'Low'
-                ];
-            });
-
-            // AutoTable (Landscape Config)
-            autoTableModule.default(doc, {
-                startY: 35,
-                head: [['DATE', 'TIME', 'AGENT NAME', 'PHONE', 'VIOLATIONS', 'SCORE', 'RISK']],
-                body: tableBody,
-                theme: 'plain',
-                styles: {
-                    font: 'helvetica',
-                    fontSize: 8,
-                    textColor: TEXT_MAIN,
-                    cellPadding: 3,
-                    lineColor: [230, 230, 230],
-                    lineWidth: 0,
-                    overflow: 'linebreak',
-                    valign: 'middle', // Better vertical alignment
+            const doc = await generateQAComplianceReport(reportData, {
+                title: reportTitle,
+                userName: profile?.display_name || user?.email || 'User',
+                dateRange: {
+                    start: dateRange.start ? format(dateRange.start, 'yyyy-MM-dd') : undefined,
+                    end: dateRange.end ? format(dateRange.end, 'yyyy-MM-dd') : undefined
                 },
-                headStyles: {
-                    fillColor: [248, 250, 252],
-                    textColor: THEME_COLOR,
-                    fontSize: 8,
-                    fontStyle: 'bold',
-                    halign: 'left',
-                    cellPadding: 3,
-                },
-                // Precise Column Widths for Landscape (Total ~270mm usable)
-                columnStyles: {
-                    0: { cellWidth: 20 }, // Date
-                    1: { cellWidth: 15 }, // Time (Fixed, no wrap)
-                    2: { cellWidth: 50, fontStyle: 'bold' }, // Agent Name (Generous)
-                    3: { cellWidth: 35 }, // Phone
-                    4: { cellWidth: 'auto' }, // Violations (Fills rest)
-                    5: { cellWidth: 15, halign: 'right' }, // Score (Fixed, no wrap)
-                    6: { cellWidth: 25, fontStyle: 'bold' }  // Risk
-                },
-                didDrawPage: function (data) {
-                    // Header line
-                    if (data.cursor) {
-                        doc.setDrawColor(30, 41, 59);
-                        doc.setLineWidth(0.5);
-                        doc.line(14, data.cursor.y, pageWidth - 14, data.cursor.y);
-                    }
-                },
-                didParseCell: (data) => {
-                    if (data.section === 'body') {
-                        // Risk Color
-                        if (data.column.index === 6) {
-                            const risk = (data.cell.raw as string).toLowerCase();
-                            if (risk === 'high' || risk === 'critical') {
-                                data.cell.styles.textColor = [220, 38, 38];
-                            } else if (risk === 'medium' || risk === 'warning') {
-                                data.cell.styles.textColor = [217, 119, 6];
-                            } else {
-                                data.cell.styles.textColor = [5, 150, 105];
-                            }
-                        }
-                        // Score Color
-                        if (data.column.index === 5) {
-                            const score = parseInt((data.cell.raw as string).replace('%', ''));
-                            if (score < 70) {
-                                data.cell.styles.textColor = [220, 38, 38];
-                            } else if (score < 90) {
-                                data.cell.styles.textColor = [217, 119, 6];
-                            } else {
-                                data.cell.styles.textColor = [5, 150, 105];
-                            }
-                        }
-                    }
-                },
-                didDrawCell: (data) => {
-                    if (data.section === 'head' && data.row.index === 0) {
-                        doc.setDrawColor(200, 200, 200);
-                        doc.setLineWidth(0.1);
-                        doc.line(data.cell.x, data.cell.y + data.cell.height, data.cell.x + data.cell.width, data.cell.y + data.cell.height);
-                    }
-                    if (data.section === 'body') {
-                        doc.setDrawColor(245, 245, 245);
-                        doc.setLineWidth(0.1);
-                        doc.line(data.cell.x, data.cell.y + data.cell.height, data.cell.x + data.cell.width, data.cell.y + data.cell.height);
-                    }
+                filters: {
+                    minScore: minScore > 0 ? minScore : undefined,
+                    riskLevel: 'All' // ReportsView doesn't seem to have specific risk filter state that differs from page.tsx passing it
                 }
             });
 
-            // --- Trends & Observations Section ---
-            const finalY = (doc as any).lastAutoTable?.finalY || 40;
-
-            // Allow for page break if near bottom
-            let currentY = finalY + 15;
-            if (currentY > pageHeight - 30) {
-                doc.addPage();
-                currentY = 20;
-            }
-
-            // Section Title
-            doc.setFont('helvetica', 'bold');
-            doc.setFontSize(10);
-            doc.setTextColor(...ACCENT_COLOR);
-            doc.text("TRENDS & OBSERVATIONS", 14, currentY);
-
-            doc.setDrawColor(...ACCENT_COLOR);
-            doc.setLineWidth(0.5);
-            doc.line(14, currentY + 2, pageWidth - 14, currentY + 2);
-
-            currentY += 10;
-
-            // Trend Analysis Calculation
-            // ... (Metrics logic remains same, just ensuring landscape width text)
-            const allViolations: string[] = [];
-            reportData.forEach(c => {
-                if (c.checklist && Array.isArray(c.checklist)) {
-                    c.checklist.forEach(i => {
-                        if (i.status === 'not_met' || i.status === 'FAIL') allViolations.push(i.name);
-                    });
-                }
-            });
-            const violationCounts = allViolations.reduce((acc, curr) => {
-                acc[curr] = (acc[curr] || 0) + 1;
-                return acc;
-            }, {} as Record<string, number>);
-            const topViolations = Object.entries(violationCounts).sort((a, b) => b[1] - a[1]).slice(0, 3);
-
-            const agentRisk = reportData.reduce((acc, curr) => {
-                const name = curr.agentName || 'Unknown';
-                if (!acc[name]) acc[name] = { total: 0, fail: 0 };
-                acc[name].total++;
-                if (curr.complianceScore < 70 || (curr.riskLevel === 'High' || curr.riskLevel === 'Critical')) acc[name].fail++;
-                return acc;
-            }, {} as Record<string, { total: number, fail: number }>);
-            const riskyAgents = Object.entries(agentRisk)
-                .filter(([_, stats]) => stats.fail > 0)
-                .map(([name, stats]) => ({ name, rate: (stats.fail / stats.total) * 100 }))
-                .sort((a, b) => b.rate - a.rate)
-                .slice(0, 3);
-
-            // Draw Observations (Landscape Width)
-            doc.setFont('helvetica', 'normal');
-            doc.setFontSize(9);
-            doc.setTextColor(...THEME_COLOR);
-
-            // Helper to safely add text
-            const addTextWithPageCheck = (text: string) => {
-                // Use Landscape width: pageWidth - 28
-                const splitText = doc.splitTextToSize(text, pageWidth - 28);
-                if (currentY + (splitText.length * 5) > pageHeight - 20) {
-                    doc.addPage();
-                    currentY = 20;
-                }
-                doc.text(splitText, 14, currentY);
-                currentY += (splitText.length * 5) + 3;
-            };
-
-            // Observation 1: Violations
-            let obsText1 = "Top Recurring Violations: ";
-            if (topViolations.length > 0) {
-                obsText1 += topViolations.map(([name, count]) => `${name} (${count} occurrences)`).join(', ') + '.';
-            } else {
-                obsText1 += "No significant violation trends detected in this batch.";
-            }
-            addTextWithPageCheck(obsText1);
-
-            // Observation 2: Agents
-            if (riskyAgents.length > 0) {
-                let obsText2 = "Agent Focus Areas: ";
-                obsText2 += riskyAgents.map(a => `${a.name} (${Math.round(a.rate)}% failure rate)`).join(', ') + '.';
-                addTextWithPageCheck(obsText2);
-            }
-
-            // Observation 3: Summary
-            const obsText3 = `Summary: Analyzed ${reportData.length} calls with an average compliance score of ${stats.avgScore}%. ${stats.riskCount} calls were flagged as high risk.`;
-            addTextWithPageCheck(obsText3);
-
-            // Footer
-            const pageCount = doc.getNumberOfPages();
-            for (let i = 1; i <= pageCount; i++) {
-                doc.setPage(i);
-                doc.setFontSize(8);
-                doc.setTextColor(...TEXT_LIGHT);
-                doc.text("Pitch Vision Solutions - Internal Confidential", 14, pageHeight - 10);
-                doc.text(`Page ${i} of ${pageCount}`, pageWidth - 14, pageHeight - 10, { align: 'right' });
-            }
-
-            // Output
+            // Save PDF
             const filename = `${reportTitle.replace(/[^a-z0-9]/gi, '_')}.pdf`;
             doc.save(filename);
 
             setIsExporting(false);
-            setExportMessage("PDF downloaded successfully!");
+            setExportMessage("PDF Report Generated Successfully!");
             setTimeout(() => setExportMessage(null), 3000);
         } catch (error: any) {
             console.error('PDF Export Error:', error);
             setIsExporting(false);
             setExportMessage(`Error: ${error?.message || 'Unknown PDF error'}`);
-            setTimeout(() => setExportMessage(null), 5000);
         }
     };
 
@@ -728,14 +636,14 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
                     <button
                         onClick={() => handleExport('email')}
                         disabled={isExporting || reportData.length === 0}
-                        className="flex items-center gap-2 px-5 py-2.5 rounded-lg border border-slate-200 text-slate-600 text-sm font-semibold hover:bg-slate-50 hover:text-purple-600 transition-all disabled:opacity-50"
+                        className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-purple-600 text-white text-sm font-semibold hover:bg-purple-500 shadow-md transition-all hover:shadow-lg disabled:opacity-50"
                     >
                         <Mail size={16} /> Email Report
                     </button>
                     <button
                         onClick={() => handleExport('csv')}
                         disabled={isExporting || reportData.length === 0}
-                        className="flex items-center gap-2 px-5 py-2.5 rounded-lg border border-slate-200 text-slate-600 text-sm font-semibold hover:bg-slate-50 hover:text-emerald-600 transition-all disabled:opacity-50"
+                        className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-emerald-600 text-white text-sm font-semibold hover:bg-emerald-500 shadow-md transition-all hover:shadow-lg disabled:opacity-50"
                     >
                         <FileSpreadsheet size={16} /> Export CSV
                     </button>
@@ -746,14 +654,6 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
                     >
                         {isExporting ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
                         Download PDF
-                    </button>
-                    <button
-                        onClick={exportToAnalytics}
-                        disabled={isExporting}
-                        className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-purple-600 text-white text-sm font-semibold hover:bg-purple-500 shadow-md transition-all hover:shadow-lg disabled:opacity-50"
-                    >
-                        {isExporting ? <Loader2 size={16} className="animate-spin" /> : <BarChart3 size={16} />}
-                        Export Analytics
                     </button>
                 </div>
             </Card>
@@ -887,6 +787,91 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
                     <p className="text-slate-500 text-sm">Try adjusting your date range, score, or tags to generate a report.</p>
                 </div>
             )}
+            {/* Email Modal */}
+            <AnimatePresence>
+                {isEmailModalOpen && (
+                    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+                        <motion.div
+                            initial={{ opacity: 0 }}
+                            animate={{ opacity: 1 }}
+                            exit={{ opacity: 0 }}
+                            className="absolute inset-0 bg-black/60 backdrop-blur-sm"
+                            onClick={() => setIsEmailModalOpen(false)}
+                        />
+                        <motion.div
+                            initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                            animate={{ opacity: 1, scale: 1, y: 0 }}
+                            exit={{ opacity: 0, scale: 0.95, y: 20 }}
+                            className="relative bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md border border-slate-200"
+                        >
+                            <h3 className="text-xl font-bold text-slate-800 mb-1 flex items-center gap-2">
+                                <Mail className="text-purple-600" />
+                                Email Report
+                            </h3>
+                            <p className="text-slate-500 text-sm mb-6">
+                                Send this report directly to stakeholders via email.
+                            </p>
+
+                            <div className="space-y-4">
+                                <div className="space-y-1.5">
+                                    <label className="text-xs font-bold text-slate-600 uppercase">Recipient</label>
+                                    <input
+                                        type="email"
+                                        value={emailRecipient}
+                                        onChange={(e) => setEmailRecipient(e.target.value)}
+                                        className="w-full px-4 py-2.5 bg-slate-50 border border-slate-300 rounded-lg text-sm focus:ring-2 focus:ring-purple-500 outline-none"
+                                        placeholder="client@example.com"
+                                        autoFocus
+                                    />
+                                </div>
+
+                                <div className="space-y-1.5">
+                                    <label className="text-xs font-bold text-slate-600 uppercase">Subject Suffix</label>
+                                    <div className="flex items-center gap-2 group relative">
+                                        <span className="text-sm text-slate-400 font-medium whitespace-nowrap bg-slate-100 px-3 py-2.5 rounded-l-lg border-y border-l border-slate-300">
+                                            From QA ({profile?.display_name || 'User'}) -
+                                        </span>
+                                        <input
+                                            type="text"
+                                            value={emailSubjectSuffix}
+                                            onChange={(e) => setEmailSubjectSuffix(e.target.value)}
+                                            className="w-full pl-3 pr-4 py-2.5 bg-slate-50 border border-slate-300 rounded-r-lg text-sm focus:ring-2 focus:ring-purple-500 outline-none -ml-px"
+                                            placeholder="Weekly Summary"
+                                        />
+                                    </div>
+                                    <p className="text-[10px] text-slate-400">
+                                        Subject will be: From QA ({profile?.display_name || 'User'}) - {emailSubjectSuffix || '...'}
+                                    </p>
+                                </div>
+                            </div>
+
+                            <div className="flex gap-3 justify-end mt-8">
+                                <button
+                                    onClick={() => setIsEmailModalOpen(false)}
+                                    className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg text-sm font-semibold transition-colors"
+                                >
+                                    Cancel
+                                </button>
+                                <button
+                                    onClick={handleSendEmail}
+                                    disabled={!emailRecipient || !emailSubjectSuffix || isSendingEmail}
+                                    className="px-6 py-2 bg-slate-900 text-white rounded-lg text-sm font-semibold hover:bg-slate-800 disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2 shadow-lg hover:shadow-xl transition-all"
+                                >
+                                    {isSendingEmail ? (
+                                        <>
+                                            <Loader2 size={16} className="animate-spin" /> Sending...
+                                        </>
+                                    ) : (
+                                        <>
+                                            <Send size={16} /> Send Email
+                                        </>
+                                    )}
+                                </button>
+                            </div>
+                        </motion.div>
+                    </div>
+                )}
+            </AnimatePresence>
         </div>
     );
 };

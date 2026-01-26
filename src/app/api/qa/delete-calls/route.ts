@@ -15,10 +15,23 @@ export async function DELETE(request: NextRequest) {
         // Convert string IDs to integers
         const numericIds = ids.map((id: string) => parseInt(id, 10));
 
-        console.log('Deleting from QA Results, IDs:', numericIds); // Updated console log
+        console.log('Deleting from QA Results, IDs:', numericIds);
 
-        const { error, count } = await supabaseAdmin // Kept supabaseAdmin as per original, only table name changed
-            .from('QA Results') // Changed 'Pitch Perfect' to 'QA Results'
+        // Step 1: Clear foreign key references in processing_jobs
+        // This prevents the constraint violation error
+        const { error: clearFkError } = await supabaseAdmin
+            .from('processing_jobs')
+            .update({ qa_result_id: null })
+            .in('qa_result_id', numericIds);
+
+        if (clearFkError) {
+            console.warn('Could not clear FK references (may not exist):', clearFkError.message);
+            // Continue anyway - the rows might not exist in processing_jobs
+        }
+
+        // Step 2: Delete from QA Results
+        const { error, count } = await supabaseAdmin
+            .from('QA Results')
             .delete()
             .in('id', numericIds);
 

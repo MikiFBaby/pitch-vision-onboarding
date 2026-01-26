@@ -3,7 +3,6 @@
 import React from "react";
 import { Sidebar } from "./Sidebar";
 import { motion } from "framer-motion";
-import { ChatWidget } from "@/components/chat/ChatWidget";
 
 export default function DashboardLayout({
     children,
@@ -21,8 +20,6 @@ export default function DashboardLayout({
 
             {/* Sidebar */}
             <Sidebar />
-
-            <ChatWidget />
 
             {/* Main Content */}
             <main className="flex-1 ml-72 relative z-10 overflow-y-auto">

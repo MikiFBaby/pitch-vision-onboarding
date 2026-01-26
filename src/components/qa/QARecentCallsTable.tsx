@@ -9,7 +9,7 @@ import {
   Award, CheckCircle2, XCircle, AlertCircle,
   ShieldAlert, ShieldCheck, Quote, Check, X,
   RotateCcw, Info, Download, FileSpreadsheet, Mail, Trash2, AlertTriangle, MoreHorizontal, Lightbulb,
-  Target, Zap, ClipboardCopy, GraduationCap, Volume2, Bot, UploadCloud
+  Target, Zap, ClipboardCopy, GraduationCap, Volume2, Bot, UploadCloud, ClipboardCheck, Clock
 } from 'lucide-react';
 
 interface RecentCallsTableProps {
@@ -23,6 +23,11 @@ interface RecentCallsTableProps {
   selectedCampaign: string;
   onCampaignChange: (campaign: string) => void;
   availableCampaigns: string[];
+
+  // Product Type Filter
+  selectedProductType?: string;
+  onProductTypeChange?: (productType: string) => void;
+  availableProductTypes?: string[];
 
   searchQuery: string;
   onSearchChange: (query: string) => void;
@@ -44,6 +49,9 @@ interface RecentCallsTableProps {
 
   // QA Workflow - status change handler
   onStatusChange?: (id: string, status: QAStatus, notes?: string) => void;
+
+  // Show QA Status column (for Review Queue)
+  showQAColumn?: boolean;
 }
 
 export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
@@ -55,6 +63,9 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
   selectedCampaign,
   onCampaignChange,
   availableCampaigns,
+  selectedProductType = '',
+  onProductTypeChange,
+  availableProductTypes = [],
   searchQuery,
   onSearchChange,
   startDate,
@@ -68,7 +79,8 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
   selectedStatus,
   onStatusFilterChange,
   onDelete,
-  onStatusChange
+  onStatusChange,
+  showQAColumn = false
 }) => {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
@@ -211,85 +223,74 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
       };
     }
 
-    // Priority 2: Score-based logic (Overrides generic 'fail' status)
+    // Priority 2: Score-based logic (Primary determinant)
     if (score !== undefined) {
-      if (score >= 90) {
+      // 85%+ = Auto-approved/Pass
+      if (score >= 85) {
         return {
-          bg: 'bg-emerald-50',
-          border: 'border-emerald-200',
-          text: 'text-emerald-700',
-          iconColor: 'text-emerald-600',
+          bg: 'bg-green-50',
+          border: 'border-green-300',
+          text: 'text-green-700',
+          iconColor: 'text-green-600',
           Icon: CheckCircle2,
-          label: 'COMPLIANT'
+          label: 'PASS'
         };
       }
 
-      // Expanded Range: 70-89% = REQUIRES REVIEW
-      if (score >= 70) {
+      // 50-84% = Needs Review (QA manual review required)
+      if (score >= 50) {
         return {
           bg: 'bg-amber-50',
-          border: 'border-amber-200',
-          text: 'text-amber-800',
+          border: 'border-amber-300',
+          text: 'text-amber-700',
           iconColor: 'text-amber-600',
-          Icon: RotateCcw, // Review icon
-          label: 'REQUIRES REVIEW'
+          Icon: RotateCcw,
+          label: 'REVIEW'
         };
       }
 
-      // < 70% or explicit low score
+      // 0-49% = Compliance Fail (AI judgment - may need human override)
       return {
-        bg: 'bg-rose-50',
-        border: 'border-rose-200',
-        text: 'text-rose-700',
-        iconColor: 'text-rose-600',
-        Icon: XCircle,
-        label: 'COMPLIANCE FAIL'
+        bg: 'bg-red-50',
+        border: 'border-red-300',
+        text: 'text-red-700',
+        iconColor: 'text-red-600',
+        Icon: Bot,
+        label: 'AI: FAIL'
       };
     }
 
     // Priority 3: Fallback for strings without score
-    if (s.includes('compliant') || s.includes('consent')) {
-      return {
-        bg: 'bg-emerald-50',
-        border: 'border-emerald-200',
-        text: 'text-emerald-700',
-        Icon: CheckCircle2,
-        label: 'COMPLIANT'
-      };
-    }
-
-    // Generic fail catch-all (only if no score provided)
-    if (s.includes('fail') || s.includes('non-compliant')) {
-      return {
-        bg: 'bg-rose-50',
-        border: 'border-rose-200',
-        text: 'text-rose-700',
-        Icon: XCircle,
-        label: 'COMPLIANCE FAIL'
-      };
-    }
-
-    // Priority 3: Explicit compliant keyword (for cases without score)
-    if (s.includes('compliant') || s.includes('consent')) {
+    if (s.includes('compliant') || s.includes('consent') || s.includes('pass')) {
       return {
         bg: 'bg-emerald-50',
         border: 'border-emerald-200',
         text: 'text-emerald-700',
         iconColor: 'text-emerald-600',
         Icon: CheckCircle2,
-        label: 'COMPLIANT'
+        label: 'PASS'
       };
     }
 
-    // Priority 4: Explicit review or minor issues
     if (s.includes('review') || s.includes('minor') || s.includes('unclear')) {
       return {
-        bg: 'bg-yellow-50',
-        border: 'border-yellow-400',
-        text: 'text-yellow-800',
-        iconColor: 'text-yellow-600',
+        bg: 'bg-amber-50',
+        border: 'border-amber-200',
+        text: 'text-amber-800',
+        iconColor: 'text-amber-600',
         Icon: RotateCcw,
-        label: 'NEEDS REVIEW'
+        label: 'REVIEW'
+      };
+    }
+
+    if (s.includes('fail') || s.includes('non-compliant')) {
+      return {
+        bg: 'bg-rose-50',
+        border: 'border-rose-200',
+        text: 'text-rose-700',
+        iconColor: 'text-rose-600',
+        Icon: XCircle,
+        label: 'FAIL'
       };
     }
 
@@ -306,34 +307,47 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
 
   const getRiskConfig = (risk: string, status?: string, score?: number) => {
     // SCORE-BASED RISK: Use score as primary determinant
-    // Thresholds: ≥90% = Low, 75-89% = Medium, <75% = High
+    // Thresholds: ≥95% = No Risk, 85-94% = Low, 50-84% = Medium, <50% = High
     if (score !== undefined) {
-      if (score >= 90) {
+      // 95%+ = Virtually No Risk
+      if (score >= 95) {
         return {
-          bg: 'bg-emerald-50',
-          border: 'border-emerald-200',
-          text: 'text-emerald-700',
-          iconColor: 'text-emerald-600',
+          bg: 'bg-green-50',
+          border: 'border-green-300',
+          text: 'text-green-700',
+          iconColor: 'text-green-600',
+          Icon: ShieldCheck,
+          label: 'NO RISK'
+        };
+      }
+      // 85-94% = Low Risk
+      if (score >= 85) {
+        return {
+          bg: 'bg-green-50',
+          border: 'border-green-200',
+          text: 'text-green-700',
+          iconColor: 'text-green-600',
           Icon: ShieldCheck,
           label: 'LOW RISK'
         };
       }
-      if (score >= 75) {
+      // 50-84% = Medium Risk (needs review)
+      if (score >= 50) {
         return {
-          bg: 'bg-yellow-50',
-          border: 'border-yellow-400',
-          text: 'text-yellow-800',
-          iconColor: 'text-yellow-600',
+          bg: 'bg-amber-50',
+          border: 'border-amber-300',
+          text: 'text-amber-700',
+          iconColor: 'text-amber-600',
           Icon: ShieldAlert,
           label: 'MEDIUM RISK'
         };
       }
-      // <75% = High Risk
+      // <50% = High Risk
       return {
-        bg: 'bg-rose-50',
-        border: 'border-rose-200',
-        text: 'text-rose-700',
-        iconColor: 'text-rose-600',
+        bg: 'bg-red-50',
+        border: 'border-red-300',
+        text: 'text-red-700',
+        iconColor: 'text-red-600',
         Icon: ShieldAlert,
         label: 'HIGH RISK'
       };
@@ -383,9 +397,9 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
   };
 
   const getScoreStyle = (score: number) => {
-    // Match thresholds: ≥90% = emerald, 75-89% = yellow, <75% = rose
-    if (score >= 90) return 'text-emerald-600';
-    if (score >= 75) return 'text-yellow-600';
+    // Match thresholds: ≥85% = emerald, 50-84% = amber, <50% = rose
+    if (score >= 85) return 'text-emerald-600';
+    if (score >= 50) return 'text-amber-600';
     return 'text-rose-600';
   };
 
@@ -405,6 +419,26 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
     }
     // Return original if doesn't match expected formats
     return phone;
+  };
+
+  // Get analyzed duration from speaker metrics (actual transcribed time)
+  // Falls back to 5:00 if no speaker metrics available
+  const getAnalyzedDuration = (call: CallData): string => {
+    // Use speaker metrics total speaking time if available
+    if (call.speakerMetrics?.total?.speakingTimeFormatted) {
+      return call.speakerMetrics.total.speakingTimeFormatted;
+    }
+    // Fallback: calculate from agent + customer speaking time
+    const agentTime = call.agentSpeakingTime || 0;
+    const customerTime = call.customerSpeakingTime || 0;
+    const totalSeconds = agentTime + customerTime;
+    if (totalSeconds > 0) {
+      const mins = Math.floor(totalSeconds / 60);
+      const secs = totalSeconds % 60;
+      return `${mins}:${secs.toString().padStart(2, '0')}`;
+    }
+    // Default fallback (5 min transfer window)
+    return '5:00';
   };
 
   return (
@@ -521,6 +555,23 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
                 </select>
               </div>
 
+              {/* Product Type Filter */}
+              {onProductTypeChange && (
+                <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-xl px-3 py-2.5 shadow-sm hover:border-slate-300 transition-colors">
+                  <Target size={16} className="text-slate-400" />
+                  <select
+                    className="bg-transparent text-xs font-bold text-slate-700 outline-none cursor-pointer w-28"
+                    value={selectedProductType}
+                    onChange={(e) => onProductTypeChange(e.target.value)}
+                  >
+                    <option value="">All Products</option>
+                    <option value="ACA">ACA</option>
+                    <option value="MEDICARE">Medicare</option>
+                    <option value="WHATIF">WhatIF</option>
+                  </select>
+                </div>
+              )}
+
               {/* Risk Filter */}
               <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-xl px-3 py-2.5 shadow-sm hover:border-slate-300 transition-colors">
                 <ShieldAlert size={16} className="text-slate-400" />
@@ -615,14 +666,12 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
                   <input
                     type="checkbox"
                     checked={finalFilteredCalls.length > 0 && selectedIds.size === finalFilteredCalls.length}
-                    onChange={() => { }} // Handled by th click
+                    onChange={() => { }}
                     className="rounded border-slate-300 text-purple-600 focus:ring-purple-500 cursor-pointer pointer-events-none h-4 w-4"
                   />
                 </th>
-                {/* NEW: Trash Column Header */}
                 <th className="px-2 py-4 w-10"></th>
-
-                <th className="px-6 py-4 w-10"></th> {/* Arrow Column */}
+                <th className="px-6 py-4 w-10"></th>
                 <th className="px-4 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Call Date</th>
                 <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Analyzed At</th>
                 <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest text-center">Source</th>
@@ -630,16 +679,25 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
                 <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Campaign</th>
                 <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Contact</th>
                 <th className="px-4 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest text-center">Score</th>
-                <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Duration</th>
                 <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Status</th>
                 <th className="px-4 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Risk</th>
+                <th className="px-4 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest text-center">Tag</th>
+                {showQAColumn && (
+                  <th className="px-4 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">QA Review</th>
+                )}
+                {showQAColumn && (
+                  <th className="px-4 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Reviewed By</th>
+                )}
+                {showQAColumn && (
+                  <th className="px-4 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Review Date</th>
+                )}
                 <th className="px-8 py-4 text-right"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 bg-white">
               {finalFilteredCalls.length === 0 ? (
                 <tr>
-                  <td colSpan={13} className="px-6 py-12 text-center text-slate-400 text-sm font-medium">
+                  <td colSpan={showQAColumn ? 17 : 14} className="px-6 py-12 text-center text-slate-400 text-sm font-medium">
                     No calls match the current active filters.
                   </td>
                 </tr>
@@ -668,7 +726,6 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
                             className="rounded border-slate-300 text-purple-600 focus:ring-purple-500 cursor-pointer pointer-events-none h-4 w-4"
                           />
                         </td>
-
                         {/* NEW: Explicit Delete Icon Next to Checkbox */}
                         <td className="px-2 py-5 text-center w-10" onClick={(e) => e.stopPropagation()}>
                           {onDelete && (
@@ -682,7 +739,6 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
                             </button>
                           )}
                         </td>
-
                         <td className="px-6 py-5 text-center">
                           <div className="text-slate-400">
                             {expandedId === call.id ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
@@ -703,14 +759,14 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
                         </td>
                         <td className="px-6 py-5 text-center">
                           {call.uploadType === 'automated' ? (
-                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-100 border border-slate-200 text-slate-600" title="Automated Processing">
-                              <Bot size={12} className="text-purple-500" />
-                              <span className="text-[10px] font-bold uppercase tracking-wider">Auto</span>
+                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-cyan-50 border border-cyan-100 text-slate-600" title="Automated Processing">
+                              <Bot size={12} className="text-cyan-500" />
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-cyan-700">Dialer</span>
                             </div>
                           ) : (
-                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-slate-100 border border-slate-200 text-slate-600" title="Manual Upload">
-                              <UploadCloud size={12} className="text-blue-500" />
-                              <span className="text-[10px] font-bold uppercase tracking-wider">Manual</span>
+                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-fuchsia-50 border border-fuchsia-100 text-slate-600" title="Manual Upload">
+                              <UploadCloud size={12} className="text-fuchsia-500" />
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-fuchsia-700">Manual</span>
                             </div>
                           )}
                         </td>
@@ -725,7 +781,6 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
                             {formatPhoneNumber(call.phoneNumber)}
                           </div>
                         </td>
-
                         {/* Score Column */}
                         <td className="px-4 py-5 text-center">
                           <div className={`flex items-center justify-center gap-1.5 text-sm font-black ${scoreColor}`}>
@@ -733,11 +788,6 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
                             {call.complianceScore}%
                           </div>
                         </td>
-
-                        <td className="px-6 py-5">
-                          <span className="text-sm font-semibold text-slate-600">{call.duration}</span>
-                        </td>
-
                         {/* Status Column */}
                         <td className="px-6 py-5">
                           <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full border ${statusConfig.bg} ${statusConfig.border}`}>
@@ -747,7 +797,6 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
                             </span>
                           </div>
                         </td>
-
                         {/* Risk Column */}
                         <td className="px-4 py-5 text-center">
                           <div className={`inline-flex items-center gap-2 px-3 py-1.5 rounded-full border ${riskConfig.bg} ${riskConfig.border}`}>
@@ -757,7 +806,121 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
                             </span>
                           </div>
                         </td>
+                        {/* Tag Column */}
+                        <td className="px-4 py-5 text-center">
+                          {(() => {
+                            const isEscalated = call.tag === 'escalated';
+                            const isTraining = call.tag === 'training_review' && call.complianceScore >= 90;
 
+                            if (!isEscalated && !isTraining) {
+                              return <span className="text-slate-300 text-xs">—</span>;
+                            }
+
+                            return (
+                              <div className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full border ${isEscalated
+                                ? 'bg-red-50 border-red-300 text-red-700'
+                                : 'bg-green-50 border-green-300 text-green-700'
+                                }`}>
+                                {isEscalated && <AlertTriangle size={12} />}
+                                {isTraining && <GraduationCap size={12} />}
+                                <span className="text-[9px] font-black uppercase tracking-wider">
+                                  {isEscalated ? 'Escalated' : 'Training'}
+                                </span>
+                              </div>
+                            );
+                          })()}
+                        </td>
+                        {showQAColumn && (
+                          <td className="px-4 py-5 text-center" onClick={(e) => e.stopPropagation()}>
+                            {call.qaStatus === 'approved' ? (
+                              <div className="group relative">
+                                <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border bg-emerald-50 border-emerald-200 cursor-pointer">
+                                  <ClipboardCheck size={14} strokeWidth={2.5} className="text-emerald-600" />
+                                  <span className="text-[10px] font-black uppercase tracking-widest text-emerald-700">
+                                    Reviewed
+                                  </span>
+                                </div>
+                                {/* Hover tooltip with reviewer info */}
+                                <div className="absolute z-30 bottom-full left-1/2 -translate-x-1/2 mb-2 px-4 py-3 bg-slate-900 text-white text-xs rounded-xl opacity-0 group-hover:opacity-100 transition-opacity shadow-xl pointer-events-none min-w-[180px]">
+                                  <div className="font-bold text-emerald-300">{call.qaReviewedBy || 'Unknown'}</div>
+                                  {call.qaReviewedAt && (
+                                    <div className="text-slate-400 text-[10px] flex items-center gap-1 mt-1">
+                                      <Clock size={10} />
+                                      {new Date(call.qaReviewedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}
+                                    </div>
+                                  )}
+                                  {call.qaOverrides && Object.keys(call.qaOverrides).length > 0 && (
+                                    <div className="mt-2 pt-2 border-t border-white/10">
+                                      <div className="text-[10px] text-amber-300 font-bold uppercase">Overrides: {Object.keys(call.qaOverrides).length}</div>
+                                    </div>
+                                  )}
+                                  {call.qaNotes && (
+                                    <div className="mt-2 pt-2 border-t border-white/10">
+                                      <div className="text-[10px] text-slate-400 uppercase mb-1">Notes:</div>
+                                      <div className="text-slate-200 italic text-[11px] line-clamp-2">"{call.qaNotes}"</div>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            ) : call.qaStatus === 'rejected' ? (
+                              <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border bg-rose-50 border-rose-200">
+                                <XCircle size={14} strokeWidth={2.5} className="text-rose-600" />
+                                <span className="text-[10px] font-black uppercase tracking-widest text-rose-700">
+                                  Rejected
+                                </span>
+                              </div>
+                            ) : onStatusChange ? (
+                              /* Actionable Dropdown for pending items */
+                              <div className="relative inline-block">
+                                <select
+                                  className="appearance-none bg-amber-50 border border-amber-200 text-amber-700 text-[10px] font-black uppercase tracking-wider px-3 py-1.5 pr-7 rounded-full cursor-pointer hover:bg-amber-100 transition-colors focus:outline-none focus:ring-2 focus:ring-amber-300"
+                                  value=""
+                                  onChange={(e) => {
+                                    const action = e.target.value;
+                                    if (action === 'approve') {
+                                      onStatusChange(call.id, 'approved');
+                                    } else if (action === 'reject') {
+                                      onStatusChange(call.id, 'rejected');
+                                    } else if (action === 'escalate') {
+                                      onStatusChange(call.id, 'escalated');
+                                    }
+                                  }}
+                                >
+                                  <option value="" disabled>⏳ Review</option>
+                                  <option value="approve">✓ Approve</option>
+                                  <option value="reject">✕ Reject</option>
+                                  <option value="escalate">⚠ Escalate</option>
+                                </select>
+                                <ChevronDown size={12} className="absolute right-2 top-1/2 -translate-y-1/2 text-amber-500 pointer-events-none" />
+                              </div>
+                            ) : (
+                              <div className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border bg-amber-50 border-amber-200">
+                                <Clock size={14} strokeWidth={2.5} className="text-amber-600" />
+                                <span className="text-[10px] font-black uppercase tracking-widest text-amber-700">
+                                  Pending
+                                </span>
+                              </div>
+                            )}
+                          </td>
+                        )}
+                        {/* Reviewed By Column */}
+                        {showQAColumn && (
+                          <td className="px-4 py-5 text-center">
+                            <span className="text-sm font-semibold text-slate-700">
+                              {call.qaReviewedBy || '--'}
+                            </span>
+                          </td>
+                        )}
+                        {/* Review Date Column */}
+                        {showQAColumn && (
+                          <td className="px-4 py-5 text-center">
+                            <span className="text-xs font-medium text-slate-500">
+                              {call.qaReviewedAt
+                                ? new Date(call.qaReviewedAt).toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })
+                                : '--'}
+                            </span>
+                          </td>
+                        )}
                         {/* Row Actions */}
                         <td className="px-4 py-5 text-right">
                           <div className="flex items-center justify-end gap-3 mr-2">
@@ -775,10 +938,9 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
                           </div>
                         </td>
                       </tr>
-
                       {expandedId === call.id && (
                         <tr className="bg-slate-50/80 animate-in fade-in zoom-in-95">
-                          <td colSpan={13} className="px-12 py-10 border-t border-slate-200 shadow-inner">
+                          <td colSpan={showQAColumn ? 17 : 14} className="px-12 py-10 border-t border-slate-200 shadow-inner">
                             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                               {/* Summary Section */}
                               <div className="bg-white p-7 rounded-2xl border border-slate-200 shadow-sm flex flex-col h-full">

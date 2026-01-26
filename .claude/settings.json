@@ -4,11 +4,18 @@
       "command": "npx",
       "args": ["n8n-mcp"],
       "env": {
-        "N8N_API_URL": "https://n8n.pitchvision.io/api/v1",
+        "N8N_API_URL": "https://n8n.pitchvision.io",
         "N8N_API_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI3ZjQyNjlhNy02OWJkLTQzNDUtYjExMC1lY2NjNmEzZmUwODMiLCJpc3MiOiJuOG4iLCJhdWQiOiJwdWJsaWMtYXBpIiwiaWF0IjoxNzY4NjI3NjA2fQ.0JYG8zIRv_lHP9zFIqaylyEn0k7QlCxkCOjD82YI9k0",
         "MCP_MODE": "stdio",
         "LOG_LEVEL": "error",
         "N8N_MCP_TELEMETRY_DISABLED": "true"
+      }
+    },
+    "supabase": {
+      "command": "npx",
+      "args": ["-y", "@supabase/mcp-server-supabase@latest", "--project-ref", "eyrxkirpubylgkkvcrlh"],
+      "env": {
+        "SUPABASE_ACCESS_TOKEN": "sbp_01214494179f202f6e0b7bf959453ddf3c27a04e"
       }
     }
   }
