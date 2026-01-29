@@ -27,6 +27,8 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
     // Report Configuration State
     const [startDate, setStartDate] = useState('');
     const [endDate, setEndDate] = useState('');
+    const [startHour, setStartHour] = useState('00:00');
+    const [endHour, setEndHour] = useState('23:59');
     const [dateRange, setDateRange] = useState<{ start?: Date; end?: Date }>({});
     const [selectedTag, setSelectedTag] = useState('');
     const [minScore, setMinScore] = useState(0);
@@ -47,6 +49,31 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
     const startDateRef = useRef<HTMLInputElement>(null);
     const endDateRef = useRef<HTMLInputElement>(null);
 
+    // Sync date/time inputs with dateRange state
+    React.useEffect(() => {
+        const newRange: { start?: Date; end?: Date } = {};
+
+        if (startDate) {
+            const [hours, minutes] = startHour.split(':').map(Number);
+            // Parse date as LOCAL time by appending T00:00 (otherwise "YYYY-MM-DD" is parsed as UTC)
+            const start = new Date(startDate + 'T00:00:00');
+            start.setHours(hours || 0, minutes || 0, 0, 0);
+            newRange.start = start;
+            console.log('[ReportsView] Start filter:', start.toISOString(), 'local:', start.toLocaleString());
+        }
+
+        if (endDate) {
+            const [hours, minutes] = endHour.split(':').map(Number);
+            // Parse date as LOCAL time
+            const end = new Date(endDate + 'T00:00:00');
+            end.setHours(hours || 23, minutes || 59, 59, 999);
+            newRange.end = end;
+            console.log('[ReportsView] End filter:', end.toISOString(), 'local:', end.toLocaleString());
+        }
+
+        setDateRange(newRange);
+    }, [startDate, endDate, startHour, endHour]);
+
     // Extract all unique tags from calls
     const availableTags = useMemo(() => {
         const tags = new Set<string>();
@@ -61,15 +88,43 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
     // Filter Data Logic
     const reportData = useMemo(() => {
         return calls.filter(call => {
-            const callDate = new Date(call.timestamp);
+            // Try multiple date sources: timestamp, createdAt, or callDate+callTime
+            let callDateTime: Date | null = null;
 
-            // Date Filter
-            if (dateRange.start && callDate < dateRange.start) return false;
-            if (dateRange.end) {
-                const end = new Date(dateRange.end);
-                end.setHours(23, 59, 59); // Include the full end day
-                if (callDate > end) return false;
+            // First try timestamp (which is createdAt from DB)
+            if (call.timestamp) {
+                callDateTime = new Date(call.timestamp);
             }
+            // Fallback to createdAt
+            else if (call.createdAt) {
+                callDateTime = new Date(call.createdAt);
+            }
+            // Fallback to callDate + callTime combination
+            else if (call.callDate) {
+                const dateStr = call.callDate;
+                const timeStr = call.callTime || '00:00';
+                // Try parsing YYYY-MM-DD format first, then other formats
+                const dateMatch = dateStr.match(/(\d{4})-(\d{2})-(\d{2})/);
+                if (dateMatch) {
+                    const [, year, month, day] = dateMatch;
+                    const timeParts = timeStr.match(/(\d{1,2}):(\d{2})/);
+                    const hours = timeParts ? parseInt(timeParts[1]) : 0;
+                    const minutes = timeParts ? parseInt(timeParts[2]) : 0;
+                    callDateTime = new Date(parseInt(year), parseInt(month) - 1, parseInt(day), hours, minutes);
+                } else {
+                    callDateTime = new Date(dateStr);
+                }
+            }
+
+            // If no valid date found, skip filtering (include the call)
+            if (!callDateTime || isNaN(callDateTime.getTime())) {
+                console.warn('[ReportsView] Could not parse date for call:', call.id, { timestamp: call.timestamp, createdAt: call.createdAt, callDate: call.callDate });
+                return true; // Include calls with unparseable dates
+            }
+
+            // Date Filter - dateRange already has hours set correctly from useEffect
+            if (dateRange.start && callDateTime < dateRange.start) return false;
+            if (dateRange.end && callDateTime > dateRange.end) return false;
 
             // Tag Filter
             if (selectedTag) {
@@ -566,28 +621,44 @@ export const ReportsView: React.FC<ReportsViewProps> = ({ calls }) => {
 
                     <div className="space-y-1.5">
                         <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">From Date</label>
-                        <div className="relative group">
-                            <Calendar className="absolute left-3 top-2.5 text-slate-500 pointer-events-none group-hover:text-purple-500 transition-colors z-10" size={16} />
+                        <div className="flex gap-2">
+                            <div className="relative group flex-1">
+                                <Calendar className="absolute left-3 top-2.5 text-slate-500 pointer-events-none group-hover:text-purple-500 transition-colors z-10" size={16} />
+                                <input
+                                    ref={startDateRef}
+                                    type="date"
+                                    value={startDate}
+                                    onChange={(e) => setStartDate(e.target.value)}
+                                    className="calendar-trigger w-full pl-10 pr-4 py-2.5 bg-slate-100 border border-slate-300 rounded-lg text-sm text-slate-900 font-medium focus:bg-white focus:ring-2 focus:ring-purple-500 outline-none transition-all cursor-pointer relative"
+                                />
+                            </div>
                             <input
-                                ref={startDateRef}
-                                type="date"
-                                value={startDate}
-                                onChange={(e) => setStartDate(e.target.value)}
-                                className="calendar-trigger w-full pl-10 pr-4 py-2.5 bg-slate-100 border border-slate-300 rounded-lg text-sm text-slate-900 font-medium focus:bg-white focus:ring-2 focus:ring-purple-500 outline-none transition-all cursor-pointer relative"
+                                type="time"
+                                value={startHour}
+                                onChange={(e) => setStartHour(e.target.value)}
+                                className="w-24 px-3 py-2.5 bg-slate-100 border border-slate-300 rounded-lg text-sm text-slate-900 font-medium focus:bg-white focus:ring-2 focus:ring-purple-500 outline-none transition-all"
                             />
                         </div>
                     </div>
 
                     <div className="space-y-1.5">
                         <label className="text-xs font-bold text-slate-600 uppercase tracking-wider">To Date</label>
-                        <div className="relative group">
-                            <Calendar className="absolute left-3 top-2.5 text-slate-500 pointer-events-none group-hover:text-purple-500 transition-colors z-10" size={16} />
+                        <div className="flex gap-2">
+                            <div className="relative group flex-1">
+                                <Calendar className="absolute left-3 top-2.5 text-slate-500 pointer-events-none group-hover:text-purple-500 transition-colors z-10" size={16} />
+                                <input
+                                    ref={endDateRef}
+                                    type="date"
+                                    value={endDate}
+                                    onChange={(e) => setEndDate(e.target.value)}
+                                    className="calendar-trigger w-full pl-10 pr-4 py-2.5 bg-slate-100 border border-slate-300 rounded-lg text-sm text-slate-900 font-medium focus:bg-white focus:ring-2 focus:ring-purple-500 outline-none transition-all cursor-pointer relative"
+                                />
+                            </div>
                             <input
-                                ref={endDateRef}
-                                type="date"
-                                value={endDate}
-                                onChange={(e) => setEndDate(e.target.value)}
-                                className="calendar-trigger w-full pl-10 pr-4 py-2.5 bg-slate-100 border border-slate-300 rounded-lg text-sm text-slate-900 font-medium focus:bg-white focus:ring-2 focus:ring-purple-500 outline-none transition-all cursor-pointer relative"
+                                type="time"
+                                value={endHour}
+                                onChange={(e) => setEndHour(e.target.value)}
+                                className="w-24 px-3 py-2.5 bg-slate-100 border border-slate-300 rounded-lg text-sm text-slate-900 font-medium focus:bg-white focus:ring-2 focus:ring-purple-500 outline-none transition-all"
                             />
                         </div>
                     </div>

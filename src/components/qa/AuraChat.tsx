@@ -531,9 +531,10 @@ export function AuraChat() {
                 }
 
             } else {
+                console.error('Aura chat API error:', result.error || 'Unknown error');
                 setMessages(prev => prev.map(m =>
                     m.id === assistantId
-                        ? { ...m, content: 'Sorry, I encountered an error. Please try again.', isStreaming: false }
+                        ? { ...m, content: result.error || 'Sorry, I encountered an error. Please try again.', isStreaming: false }
                         : m
                 ));
             }
@@ -1075,14 +1076,14 @@ export function AuraChat() {
                                                         <TypingBubble />
                                                     </div>
                                                 ) : (
-                                                    <div className="flex flex-col">
+                                                    <div className="flex flex-col max-w-[75%]">
                                                         <div
-                                                            className={`max-w-[75%] px-5 py-3.5 text-[15px] shadow-sm transition-all duration-300 ${message.role === 'user'
-                                                                ? 'bg-[#007AFF] text-white rounded-[20px] rounded-br-[2px] shadow-blue-900/20'
-                                                                : 'bg-[#262628] border border-white/10 text-white rounded-[20px] rounded-bl-[2px] shadow-black/20'
+                                                            className={`px-4 py-2.5 text-[15px] shadow-sm transition-all duration-300 ${message.role === 'user'
+                                                                ? 'bg-[#007AFF] text-white rounded-[18px] rounded-br-[4px] shadow-blue-900/20'
+                                                                : 'bg-[#262628] border border-white/10 text-white rounded-[18px] rounded-bl-[4px] shadow-black/20'
                                                                 }`}
                                                         >
-                                                            <div className="whitespace-pre-wrap leading-relaxed">
+                                                            <div className="whitespace-pre-wrap leading-relaxed break-words">
                                                                 {message.content}
                                                             </div>
                                                         </div>
@@ -1299,7 +1300,7 @@ export function AuraChat() {
                                 transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
                             />
 
-                            <div className="relative rounded-lg overflow-hidden bg-[#0d0e12] border border-white/10">
+                            <div className="relative rounded-xl overflow-hidden bg-[#0d0e12] border border-white/10">
                                 <input
                                     ref={inputRef}
                                     type="text"
@@ -1307,7 +1308,8 @@ export function AuraChat() {
                                     onChange={(e) => setInput(e.target.value)}
                                     placeholder="Ask Aura about your QA data..."
                                     disabled={isLoading}
-                                    className="w-full px-4 py-2 bg-transparent border-none text-white text-sm placeholder-white/40 focus:outline-none transition-all disabled:opacity-50"
+                                    className="w-full px-4 py-3 bg-transparent border-none text-white text-sm placeholder-white/40 focus:outline-none transition-all disabled:opacity-50"
+                                    style={{ minHeight: '44px' }}
                                 />
                             </div>
                         </div>

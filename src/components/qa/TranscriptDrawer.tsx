@@ -8,7 +8,7 @@ import {
   Volume2, VolumeX, ShieldCheck, Zap, Check, Search, ExternalLink,
   Settings2, ChevronRight, Activity, MousePointer2, Calendar, Copy, Quote, AlertTriangle, MoreHorizontal,
   FileText, Lightbulb, Flag, User, Headphones, Award, CheckCircle, Sliders, Hash, Bookmark, ArrowRight, Minus, Plus, ChevronDown, ChevronUp,
-  Brain, BrainCircuit, Eye, FileSearch, AlertCircle, ClipboardCheck, Send, GraduationCap, ClipboardList, Users, Layers, Maximize2, Minimize2, Target
+  Brain, BrainCircuit, Eye, FileSearch, AlertCircle, ClipboardCheck, Send, GraduationCap, ClipboardList, Users, Layers, Maximize2, Minimize2, Target, Phone
 } from 'lucide-react';
 import { NeonButton } from './ui/NeonButton';
 import { useAuth } from '@/context/AuthContext';
@@ -1284,8 +1284,8 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
       <div
         className="relative bg-[#F2F2F7] h-full shadow-2xl flex flex-col animate-slide-in-right ring-1 ring-black/5 transition-all duration-300 ease-out"
         style={{
-          width: isExpanded ? '720px' : '480px',
-          maxWidth: isExpanded ? '720px' : '480px'
+          width: isExpanded ? '1080px' : '720px',
+          maxWidth: isExpanded ? '1080px' : '720px'
         }}
       >
         {/* Left Edge Expand/Collapse Toggle */}
@@ -1363,7 +1363,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
               </div>
 
               {/* Agent */}
-              <div className="flex-1 py-2 px-2 text-center border-r border-slate-100 min-w-0">
+              <div className="shrink-0 py-2 px-2 text-center border-r border-slate-100 max-w-[120px]">
                 <div className="flex items-center justify-center gap-1 text-slate-500 mb-0.5">
                   <User size={10} />
                   <span className="text-[8px] font-bold uppercase tracking-wider">Agent</span>
@@ -1381,12 +1381,23 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
               </div>
 
               {/* Call Date */}
-              <div className="shrink-0 py-2 px-2 text-center min-w-[80px]">
+              <div className="shrink-0 py-2 px-2 text-center border-r border-slate-100 min-w-[80px]">
                 <div className="flex items-center justify-center gap-1 text-slate-500 mb-0.5">
                   <Calendar size={10} />
                   <span className="text-[8px] font-bold uppercase tracking-wider whitespace-nowrap">Call Date</span>
                 </div>
-                <p className="text-xs font-bold text-slate-800 whitespace-nowrap">{new Date(call.callDate || call.createdAt || new Date()).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</p>
+                <p className="text-xs font-bold text-slate-800 whitespace-nowrap">{new Date(call.callDate || call.createdAt || new Date()).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}</p>
+              </div>
+
+              {/* Phone Number */}
+              <div className="shrink-0 py-2 px-2 text-center min-w-[100px]">
+                <div className="flex items-center justify-center gap-1 text-slate-500 mb-0.5">
+                  <Phone size={10} />
+                  <span className="text-[8px] font-bold uppercase tracking-wider whitespace-nowrap">Phone</span>
+                </div>
+                <p className="text-xs font-bold text-slate-800 whitespace-nowrap">
+                  {call.phoneNumber ? call.phoneNumber.replace(/\D/g, '').replace(/(\d{3})(\d{3})(\d{4})/, '$1 $2 $3') : 'N/A'}
+                </p>
               </div>
             </div>
           </div>
@@ -2470,7 +2481,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                                         }
                                       }}
                                       className={`
-                                      text-xs text-slate-600 bg-slate-50 p-2 rounded-lg border border-slate-100 italic transition-all
+                                      text-sm text-slate-600 bg-slate-50 p-2.5 rounded-lg border border-slate-100 italic transition-all leading-relaxed
                                       ${hasTimestamp ? 'cursor-pointer hover:bg-indigo-50 hover:border-indigo-100 hover:text-indigo-700' : ''}
                                     `}
                                     >

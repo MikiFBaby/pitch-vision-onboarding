@@ -21,7 +21,9 @@ import {
     Clock,
     MessageSquare,
     BrainCircuit,
-    TrendingUp
+    TrendingUp,
+    FolderOpen,
+    GraduationCap
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { PitchVisionLogo } from "@/components/ui/pitch-vision-logo";
@@ -298,6 +300,8 @@ export function SidebarInner() {
         return [
             ...commonItems.slice(0, 1),
             { href: "/agent/calls", icon: <FileText size={20} />, label: "My Calls" },
+            { href: "/agent/resources", icon: <FolderOpen size={20} />, label: "Resource Hub" },
+            { href: "/agent/education", icon: <GraduationCap size={20} />, label: "Education" },
             ...commonItems.slice(1)
         ];
     };

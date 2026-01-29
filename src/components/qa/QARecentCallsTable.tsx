@@ -691,13 +691,16 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
                 {showQAColumn && (
                   <th className="px-4 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Review Date</th>
                 )}
+                {showQAColumn && (
+                  <th className="px-4 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Validation Notes</th>
+                )}
                 <th className="px-8 py-4 text-right"></th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 bg-white">
               {finalFilteredCalls.length === 0 ? (
                 <tr>
-                  <td colSpan={showQAColumn ? 17 : 14} className="px-6 py-12 text-center text-slate-400 text-sm font-medium">
+                  <td colSpan={showQAColumn ? 18 : 14} className="px-6 py-12 text-center text-slate-400 text-sm font-medium">
                     No calls match the current active filters.
                   </td>
                 </tr>
@@ -921,6 +924,20 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
                             </span>
                           </td>
                         )}
+                        {/* Validation Notes Column */}
+                        {showQAColumn && (
+                          <td className="px-4 py-5">
+                            {call.qaNotes ? (
+                              <div className="min-w-[180px] max-w-[300px]">
+                                <p className="text-xs text-slate-600 font-medium italic leading-relaxed">
+                                  "{call.qaNotes}"
+                                </p>
+                              </div>
+                            ) : (
+                              <span className="text-slate-300 text-xs">—</span>
+                            )}
+                          </td>
+                        )}
                         {/* Row Actions */}
                         <td className="px-4 py-5 text-right">
                           <div className="flex items-center justify-end gap-3 mr-2">
@@ -940,7 +957,7 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
                       </tr>
                       {expandedId === call.id && (
                         <tr className="bg-slate-50/80 animate-in fade-in zoom-in-95">
-                          <td colSpan={showQAColumn ? 17 : 14} className="px-12 py-10 border-t border-slate-200 shadow-inner">
+                          <td colSpan={showQAColumn ? 18 : 14} className="px-12 py-10 border-t border-slate-200 shadow-inner">
                             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                               {/* Summary Section */}
                               <div className="bg-white p-7 rounded-2xl border border-slate-200 shadow-sm flex flex-col h-full">
