@@ -1,7 +1,8 @@
 "use client";
 import React, { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase-client';
-import { TrendingUp, TrendingDown, Users, UserMinus } from 'lucide-react';
+import { motion } from 'framer-motion';
+import { TrendingUp, TrendingDown, Users, UserMinus, Calendar, AlertTriangle, Globe, Briefcase } from 'lucide-react';
 
 interface GaugeData {
     hires: number;
@@ -20,12 +21,193 @@ interface HRGaugeClusterProps {
     dateRange: 'daily' | 'weekly' | '30d' | '90d';
 }
 
+// Sleek metric card component
+const MetricCard = ({
+    icon: Icon,
+    label,
+    sublabel,
+    value,
+    trend,
+    trendLabel,
+    accentColor,
+    delay = 0
+}: {
+    icon: React.ElementType;
+    label: string;
+    sublabel: string;
+    value: number | string;
+    trend?: 'up' | 'down' | null;
+    trendLabel?: string;
+    accentColor: string;
+    delay?: number;
+}) => {
+    const colorMap: Record<string, { bg: string; text: string; glow: string }> = {
+        emerald: { bg: 'bg-emerald-500/20', text: 'text-emerald-400', glow: 'shadow-emerald-500/20' },
+        rose: { bg: 'bg-rose-500/20', text: 'text-rose-400', glow: 'shadow-rose-500/20' },
+        blue: { bg: 'bg-blue-500/20', text: 'text-blue-400', glow: 'shadow-blue-500/20' },
+        indigo: { bg: 'bg-indigo-500/20', text: 'text-indigo-400', glow: 'shadow-indigo-500/20' },
+        amber: { bg: 'bg-amber-500/20', text: 'text-amber-400', glow: 'shadow-amber-500/20' },
+        violet: { bg: 'bg-violet-500/20', text: 'text-violet-400', glow: 'shadow-violet-500/20' },
+    };
+
+    const colors = colorMap[accentColor] || colorMap.blue;
+
+    return (
+        <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.5, delay }}
+            className="group relative bg-gradient-to-br from-slate-900/80 via-slate-800/60 to-slate-900/80 backdrop-blur-xl rounded-2xl border border-white/10 p-5 overflow-hidden hover:border-white/20 transition-all duration-300"
+        >
+            {/* Subtle glow effect on hover */}
+            <div className={`absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-500 ${colors.glow} shadow-2xl`} />
+
+            {/* Glassmorphism overlay */}
+            <div className="absolute inset-0 bg-gradient-to-tr from-white/[0.02] via-white/[0.05] to-transparent pointer-events-none" />
+
+            <div className="relative">
+                {/* Header */}
+                <div className="flex items-center gap-3 mb-4">
+                    <div className={`p-2.5 rounded-xl ${colors.bg}`}>
+                        <Icon className={`w-4 h-4 ${colors.text}`} />
+                    </div>
+                    <div>
+                        <h3 className="text-xs font-semibold text-white/80 uppercase tracking-wider">{label}</h3>
+                        <p className="text-[10px] text-white/40">{sublabel}</p>
+                    </div>
+                </div>
+
+                {/* Value */}
+                <div className="flex items-baseline gap-2">
+                    <span className="text-4xl font-bold text-white tracking-tight">{value}</span>
+                </div>
+
+                {/* Trend indicator */}
+                {trend && trendLabel && (
+                    <div className={`mt-3 flex items-center gap-1 text-xs font-medium ${trend === 'up' ? 'text-emerald-400' : 'text-rose-400'
+                        }`}>
+                        {trend === 'up' ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
+                        <span>{trendLabel}</span>
+                    </div>
+                )}
+            </div>
+        </motion.div>
+    );
+};
+
+// Geographic distribution mini-chart
+const GeoDistributionCard = ({ usHires, cadHires, total, delay }: { usHires: number; cadHires: number; total: number; delay: number }) => (
+    <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5, delay }}
+        className="relative bg-gradient-to-br from-slate-900/80 via-slate-800/60 to-slate-900/80 backdrop-blur-xl rounded-2xl border border-white/10 p-5 overflow-hidden"
+    >
+        <div className="absolute inset-0 bg-gradient-to-tr from-white/[0.02] via-white/[0.05] to-transparent pointer-events-none" />
+
+        <div className="relative">
+            <div className="flex items-center gap-3 mb-4">
+                <div className="p-2.5 rounded-xl bg-violet-500/20">
+                    <Globe className="w-4 h-4 text-violet-400" />
+                </div>
+                <div>
+                    <h3 className="text-xs font-semibold text-white/80 uppercase tracking-wider">Hiring Region</h3>
+                    <p className="text-[10px] text-white/40">Geographic Split</p>
+                </div>
+            </div>
+
+            <div className="space-y-4">
+                {/* USA */}
+                <div>
+                    <div className="flex justify-between text-xs mb-1.5">
+                        <span className="font-medium text-white/80">USA</span>
+                        <span className="text-white/50">{usHires}</span>
+                    </div>
+                    <div className="h-2 w-full bg-white/5 rounded-full overflow-hidden">
+                        <motion.div
+                            className="h-full bg-gradient-to-r from-blue-500 to-blue-400 rounded-full"
+                            initial={{ width: 0 }}
+                            animate={{ width: `${total ? (usHires / total) * 100 : 0}%` }}
+                            transition={{ duration: 1, delay: delay + 0.2 }}
+                        />
+                    </div>
+                </div>
+
+                {/* Canada */}
+                <div>
+                    <div className="flex justify-between text-xs mb-1.5">
+                        <span className="font-medium text-white/80">Canada</span>
+                        <span className="text-white/50">{cadHires}</span>
+                    </div>
+                    <div className="h-2 w-full bg-white/5 rounded-full overflow-hidden">
+                        <motion.div
+                            className="h-full bg-gradient-to-r from-rose-500 to-rose-400 rounded-full"
+                            initial={{ width: 0 }}
+                            animate={{ width: `${total ? (cadHires / total) * 100 : 0}%` }}
+                            transition={{ duration: 1, delay: delay + 0.3 }}
+                        />
+                    </div>
+                </div>
+            </div>
+        </div>
+    </motion.div>
+);
+
+// Campaign distribution mini-chart
+const CampaignMixCard = ({ campaigns, total, delay }: { campaigns: { name: string; count: number }[]; total: number; delay: number }) => (
+    <motion.div
+        initial={{ opacity: 0, y: 20 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.5, delay }}
+        className="relative bg-gradient-to-br from-slate-900/80 via-slate-800/60 to-slate-900/80 backdrop-blur-xl rounded-2xl border border-white/10 p-5 overflow-hidden"
+    >
+        <div className="absolute inset-0 bg-gradient-to-tr from-white/[0.02] via-white/[0.05] to-transparent pointer-events-none" />
+
+        <div className="relative">
+            <div className="flex items-center gap-3 mb-4">
+                <div className="p-2.5 rounded-xl bg-indigo-500/20">
+                    <Briefcase className="w-4 h-4 text-indigo-400" />
+                </div>
+                <div>
+                    <h3 className="text-xs font-semibold text-white/80 uppercase tracking-wider">Top Campaigns</h3>
+                    <p className="text-[10px] text-white/40">By Volume</p>
+                </div>
+            </div>
+
+            <div className="space-y-3">
+                {campaigns.length === 0 ? (
+                    <div className="text-xs text-white/30 italic">No data available</div>
+                ) : (
+                    campaigns.map((c, i) => (
+                        <div key={c.name} className="flex items-center justify-between">
+                            <span className="text-xs font-medium text-white/70 truncate max-w-[100px]" title={c.name}>
+                                {c.name}
+                            </span>
+                            <div className="flex items-center gap-2">
+                                <div className="w-16 h-1.5 bg-white/5 rounded-full overflow-hidden">
+                                    <motion.div
+                                        className="h-full bg-gradient-to-r from-indigo-500 to-indigo-400 rounded-full"
+                                        initial={{ width: 0 }}
+                                        animate={{ width: `${total ? (c.count / total) * 100 : 0}%` }}
+                                        transition={{ duration: 0.8, delay: delay + 0.1 * i }}
+                                    />
+                                </div>
+                                <span className="text-xs text-white/50 w-4 text-right">{c.count}</span>
+                            </div>
+                        </div>
+                    ))
+                )}
+            </div>
+        </div>
+    </motion.div>
+);
+
 export default function HRGaugeCluster({ dateRange }: HRGaugeClusterProps) {
     const getStartDate = () => {
         const now = new Date();
         const start = new Date(now);
         switch (dateRange) {
-            case 'daily': start.setHours(0, 0, 0, 0); break; // Start of TODAY
+            case 'daily': start.setHours(0, 0, 0, 0); break;
             case 'weekly': start.setDate(now.getDate() - 7); break;
             case '30d': start.setDate(now.getDate() - 30); break;
             case '90d': start.setDate(now.getDate() - 90); break;
@@ -48,44 +230,36 @@ export default function HRGaugeCluster({ dateRange }: HRGaugeClusterProps) {
 
     const fetchData = async () => {
         const startDate = getStartDate();
-        const startIso = startDate.toISOString();
         const startDateOnly = startDate.toISOString().split('T')[0];
 
-        // Fetch total hires count (all time)
         const { count: totalHires } = await supabase
             .from('HR Hired')
             .select('*', { count: 'exact', head: true });
 
-        // Fetch total fires count (all time)
         const { count: totalFires } = await supabase
             .from('HR Fired')
             .select('*', { count: 'exact', head: true });
 
-        // --- 1. Hires for the selected date range ---
         const { data: hires } = await supabase
             .from('HR Hired')
-            .select('created_at, "Canadian/American", Campaign')
-            .gte('created_at', startIso);
+            .select('"Hire Date", "Canadian/American", Campaign')
+            .gte('"Hire Date"', startDateOnly);
 
-        // --- 2. Fires for the selected date range ---
         const { data: fires } = await supabase
             .from('HR Fired')
-            .select('created_at')
-            .gte('created_at', startIso);
+            .select('"Termination Date"')
+            .gte('"Termination Date"', startDateOnly);
 
-        // --- 3. Booked Days Off for the selected date range ---
         const { data: booked } = await supabase
             .from('Booked Days Off')
             .select('Date')
             .gte('Date', startDateOnly);
 
-        // --- 4. Non Booked Days Off for the selected date range ---
         const { data: nonBooked } = await supabase
             .from('Non Booked Days Off')
             .select('Date')
             .gte('Date', startDateOnly);
 
-        // Analyze Hires
         let us = 0;
         let cad = 0;
         const campaigns: Record<string, number> = {};
@@ -99,7 +273,6 @@ export default function HRGaugeCluster({ dateRange }: HRGaugeClusterProps) {
             campaigns[camp] = (campaigns[camp] || 0) + 1;
         });
 
-        // Top 3 Campaigns
         const sortedCampaigns = Object.entries(campaigns)
             .map(([name, count]) => ({ name, count }))
             .sort((a, b) => b.count - a.count)
@@ -108,7 +281,7 @@ export default function HRGaugeCluster({ dateRange }: HRGaugeClusterProps) {
         setData({
             hires: totalHires || 0,
             fires: totalFires || 0,
-            netChange: (totalHires || 0) - (totalFires || 0),
+            netChange: (hires?.length || 0) - (fires?.length || 0),
             hiresThisMonth: hires?.length || 0,
             firesThisMonth: fires?.length || 0,
             usHires: us,
@@ -134,192 +307,71 @@ export default function HRGaugeCluster({ dateRange }: HRGaugeClusterProps) {
         };
     }, [dateRange]);
 
-    const getNetChangeIcon = () => {
-        if (data.netChange > 0) return <TrendingUp size={20} className="text-white" />;
-        if (data.netChange < 0) return <TrendingDown size={20} className="text-white" />;
-        return <Users size={20} className="text-white" />;
-    };
-
     return (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-6">
-            {/* Hires Gauge */}
-            <div className="bg-gradient-to-br from-green-50 to-white p-6 rounded-2xl border-2 border-green-100 shadow-sm">
-                <div className="flex items-center gap-3 mb-4">
-                    <div className="p-2 bg-green-500 rounded-lg shadow-sm">
-                        <Users className="w-5 h-5 text-white" />
-                    </div>
-                    <div>
-                        <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">New Hires</h3>
-                        <p className="text-[10px] text-gray-400">Selected Period</p>
-                    </div>
-                </div>
-                <div className="flex items-baseline gap-2">
-                    <span className="text-4xl font-bold text-gray-900">{data.hiresThisMonth}</span>
-                </div>
-                {data.hiresThisMonth > 0 && (
-                    <div className="mt-3 text-xs text-green-600 font-medium flex items-center gap-1">
-                        <TrendingUp size={12} />
-                        <span>Active hiring</span>
-                    </div>
-                )}
-            </div>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-4">
+            <MetricCard
+                icon={Users}
+                label="New Hires"
+                sublabel="Selected Period"
+                value={data.hiresThisMonth}
+                trend={data.hiresThisMonth > 0 ? 'up' : null}
+                trendLabel={data.hiresThisMonth > 0 ? 'Active hiring' : undefined}
+                accentColor="emerald"
+                delay={0}
+            />
 
-            {/* Fires Gauge */}
-            <div className="bg-gradient-to-br from-red-50 to-white p-6 rounded-2xl border-2 border-red-100 shadow-sm">
-                <div className="flex items-center gap-3 mb-4">
-                    <div className="p-2 bg-red-500 rounded-lg shadow-sm">
-                        <UserMinus className="w-5 h-5 text-white" />
-                    </div>
-                    <div>
-                        <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">Departures</h3>
-                        <p className="text-[10px] text-gray-400">Selected Period</p>
-                    </div>
-                </div>
-                <div className="flex items-baseline gap-2">
-                    <span className="text-4xl font-bold text-gray-900">{data.firesThisMonth}</span>
-                </div>
-                {data.firesThisMonth > 0 && (
-                    <div className="mt-3 text-xs text-red-600 font-medium flex items-center gap-1">
-                        <TrendingDown size={12} />
-                        <span>attrition detected</span>
-                    </div>
-                )}
-            </div>
+            <MetricCard
+                icon={UserMinus}
+                label="Departures"
+                sublabel="Selected Period"
+                value={data.firesThisMonth}
+                trend={data.firesThisMonth > 0 ? 'down' : null}
+                trendLabel={data.firesThisMonth > 0 ? 'attrition detected' : undefined}
+                accentColor="rose"
+                delay={0.1}
+            />
 
-            {/* Net Change Gauge */}
-            <div className="bg-gradient-to-br from-blue-50 to-white p-6 rounded-2xl border-2 border-blue-100 shadow-sm">
-                <div className="flex items-center gap-3 mb-4">
-                    <div className={`p-2 rounded-lg shadow-sm ${data.netChange >= 0 ? 'bg-blue-500' : 'bg-orange-500'}`}>
-                        {getNetChangeIcon()}
-                    </div>
-                    <div>
-                        <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">Net Growth</h3>
-                        <p className="text-[10px] text-gray-400">Total Headcount Change</p>
-                    </div>
-                </div>
-                <div className="flex items-baseline gap-2">
-                    <span className={`text-4xl font-bold ${data.netChange >= 0 ? 'text-blue-600' : 'text-orange-600'}`}>
-                        {data.netChange > 0 ? '+' : ''}{data.netChange}
-                    </span>
-                </div>
-                <div className="mt-3 flex gap-2 text-[10px] font-medium text-gray-500">
-                    <span>Total: {data.hires} In</span>
-                    <span>•</span>
-                    <span>{data.fires} Out</span>
-                </div>
-            </div>
+            <MetricCard
+                icon={data.netChange >= 0 ? TrendingUp : TrendingDown}
+                label="Net Growth"
+                sublabel={`${data.hires} In • ${data.fires} Out`}
+                value={`${data.netChange > 0 ? '+' : ''}${data.netChange}`}
+                accentColor={data.netChange >= 0 ? 'blue' : 'amber'}
+                delay={0.2}
+            />
 
-            {/* Geographic Mix Gauge */}
-            <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm xl:col-span-1">
-                <div className="mb-4">
-                    <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">Hiring Region</h3>
-                    <p className="text-[10px] text-gray-400">US vs CAD Split</p>
-                </div>
+            <GeoDistributionCard
+                usHires={data.usHires}
+                cadHires={data.cadHires}
+                total={data.hiresThisMonth}
+                delay={0.3}
+            />
 
-                <div className="space-y-4">
-                    {/* US Bar */}
-                    <div>
-                        <div className="flex justify-between text-xs mb-1">
-                            <span className="font-semibold text-gray-700">USA</span>
-                            <span className="text-gray-500">{data.usHires}</span>
-                        </div>
-                        <div className="h-2 w-full bg-gray-100 rounded-full overflow-hidden">
-                            <div
-                                className="h-full bg-blue-500 rounded-full"
-                                style={{ width: `${data.hiresThisMonth ? (data.usHires / data.hiresThisMonth) * 100 : 0}%` }}
-                            />
-                        </div>
-                    </div>
+            <CampaignMixCard
+                campaigns={data.campaignMix}
+                total={data.hiresThisMonth}
+                delay={0.4}
+            />
 
-                    {/* CAD Bar */}
-                    <div>
-                        <div className="flex justify-between text-xs mb-1">
-                            <span className="font-semibold text-gray-700">Canada</span>
-                            <span className="text-gray-500">{data.cadHires}</span>
-                        </div>
-                        <div className="h-2 w-full bg-gray-100 rounded-full overflow-hidden">
-                            <div
-                                className="h-full bg-red-500 rounded-full"
-                                style={{ width: `${data.hiresThisMonth ? (data.cadHires / data.hiresThisMonth) * 100 : 0}%` }}
-                            />
-                        </div>
-                    </div>
-                </div>
-            </div>
+            <MetricCard
+                icon={Calendar}
+                label="Booked Time Off"
+                sublabel="Planned Absences"
+                value={data.bookedDaysOff}
+                accentColor="indigo"
+                delay={0.5}
+            />
 
-            {/* Campaign Mix Gauge */}
-            <div className="bg-white p-6 rounded-2xl border border-gray-200 shadow-sm xl:col-span-1">
-                <div className="mb-4">
-                    <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">Top Campaigns</h3>
-                    <p className="text-[10px] text-gray-400">By Hires Volume</p>
-                </div>
-
-                <div className="space-y-3">
-                    {data.campaignMix.length === 0 ? (
-                        <div className="text-xs text-gray-400 italic">No data available</div>
-                    ) : (
-                        data.campaignMix.map((c, i) => (
-                            <div key={c.name} className="flex items-center justify-between text-xs">
-                                <span className="font-medium text-gray-700 truncate max-w-[100px]" title={c.name}>
-                                    {c.name}
-                                </span>
-                                <div className="flex items-center gap-2">
-                                    <div className="w-16 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                                        <div
-                                            className="h-full bg-indigo-500 rounded-full"
-                                            style={{ width: `${(c.count / data.hiresThisMonth) * 100}%` }}
-                                        />
-                                    </div>
-                                    <span className="text-gray-500 w-3 text-right">{c.count}</span>
-                                </div>
-                            </div>
-                        ))
-                    )}
-                </div>
-            </div>
-
-            {/* Booked Days Off Gauge */}
-            <div className="bg-gradient-to-br from-indigo-50 to-white p-6 rounded-2xl border-2 border-indigo-100 shadow-sm xl:col-span-1">
-                <div className="flex items-center gap-3 mb-4">
-                    <div className="p-2 bg-indigo-500 rounded-lg shadow-sm">
-                        <Users className="w-5 h-5 text-white" />
-                    </div>
-                    <div>
-                        <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">Booked Time Off</h3>
-                        <p className="text-[10px] text-gray-400">Planned Absences</p>
-                    </div>
-                </div>
-                <div className="flex items-baseline gap-2">
-                    <span className="text-4xl font-bold text-gray-900">{data.bookedDaysOff}</span>
-                </div>
-                {data.bookedDaysOff > 0 && (
-                    <div className="mt-3 text-xs text-indigo-600 font-medium flex items-center gap-1">
-                        <span>Scheduled</span>
-                    </div>
-                )}
-            </div>
-
-            {/* Non Booked Days Off Gauge */}
-            <div className="bg-gradient-to-br from-orange-50 to-white p-6 rounded-2xl border-2 border-orange-100 shadow-sm xl:col-span-1">
-                <div className="flex items-center gap-3 mb-4">
-                    <div className="p-2 bg-orange-500 rounded-lg shadow-sm">
-                        <UserMinus className="w-5 h-5 text-white" />
-                    </div>
-                    <div>
-                        <h3 className="text-xs font-bold text-gray-500 uppercase tracking-wider">Unplanned Absence</h3>
-                        <p className="text-[10px] text-gray-400">No-Shows / Emergency</p>
-                    </div>
-                </div>
-                <div className="flex items-baseline gap-2">
-                    <span className="text-4xl font-bold text-gray-900">{data.nonBookedDaysOff}</span>
-                </div>
-                {data.nonBookedDaysOff > 0 && (
-                    <div className="mt-3 text-xs text-orange-600 font-medium flex items-center gap-1">
-                        <TrendingDown size={12} />
-                        <span>Attention needed</span>
-                    </div>
-                )}
-            </div>
+            <MetricCard
+                icon={AlertTriangle}
+                label="Unplanned Absence"
+                sublabel="No-Shows / Emergency"
+                value={data.nonBookedDaysOff}
+                trend={data.nonBookedDaysOff > 0 ? 'down' : null}
+                trendLabel={data.nonBookedDaysOff > 0 ? 'Attention needed' : undefined}
+                accentColor="amber"
+                delay={0.6}
+            />
         </div>
     );
 }

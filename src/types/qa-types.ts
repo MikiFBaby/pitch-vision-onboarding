@@ -111,7 +111,17 @@ export interface CallData {
     }[];
     criticalMoments?: { auto_fails: any[]; passes: any[]; warnings: any[] };
     autoFailTriggered?: boolean;
-    autoFailReasons?: string[];
+    autoFailReasons?: Array<{
+        code: string;              // e.g., 'AF-01', 'AF-03', 'AF-09'
+        violation: string;         // e.g., 'Discussing Money', 'Ignoring DNC Request'
+        description: string;       // Human-readable explanation
+        timestamp: string | null;  // e.g., '2:15' - when in call it occurred
+        evidence: string | null;   // Transcript snippet showing violation
+        speaker: 'agent' | 'customer';
+        additional_info?: string;  // Extra context
+        count?: number;            // For threshold violations (e.g., 4 quality issues)
+        threshold?: number;        // The threshold that triggered it
+    }> | string[];  // Keep string[] for backward compatibility
 
     // Speaker turn metrics
     speakerMetrics?: SpeakerMetrics;

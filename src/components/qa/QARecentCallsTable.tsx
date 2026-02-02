@@ -213,13 +213,17 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
     if (s.includes('no consent') ||
       s.includes('rejected') ||
       s.includes('auto_fail')) {
+      let label = 'CRITICAL FAIL';
+      if (s.includes('no consent')) label = 'NO CONSENT';
+      else if (s.includes('auto_fail')) label = 'AUTO FAIL';
+
       return {
         bg: 'bg-rose-50',
         border: 'border-rose-200',
         text: 'text-rose-700',
         iconColor: 'text-rose-600',
         Icon: XCircle,
-        label: s.includes('no consent') ? 'NO CONSENT' : 'CRITICAL FAIL'
+        label
       };
     }
 
@@ -600,6 +604,7 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
                   <option value="Compliant">Compliant</option>
                   <option value="Requires Review">Requires Review</option>
                   <option value="Non-Compliant">Non-Compliant</option>
+                  <option value="auto_fail">Auto Fail</option>
                 </select>
               </div>
 

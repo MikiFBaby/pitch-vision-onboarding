@@ -73,7 +73,7 @@ function QADashboardContent() {
     const [selectedRiskyAgents, setSelectedRiskyAgents] = useState<string[]>([]);
     const [selectedStatus, setSelectedStatus] = useState('');
     const [selectedTag, setSelectedTag] = useState('');
-    const [reviewQueueTab, setReviewQueueTab] = useState<'pending' | 'reviewed'>('pending');
+    const [reviewQueueTab, setReviewQueueTab] = useState<'pending' | 'reviewed' | 'autofail'>('pending');
 
     // Fetch calls from Supabase
     const fetchCalls = useCallback(async (silent = false) => {
@@ -807,20 +807,33 @@ function QADashboardContent() {
                         // 2. EXPLICIT EXCLUSION: High Compliance (90-100%) should NOT be in review queue
                         if (c.complianceScore >= 90) return false;
 
-                        // 3. Include review-needed status
+                        // 3. EXCLUDE auto-fail items (they have their own tab now)
                         const statusLower = (c.status || '').toLowerCase();
+                        if (statusLower.includes('auto_fail') || c.autoFailTriggered) return false;
+
+                        // 4. Include review-needed status
                         const isReviewStatus = statusLower.includes('review') || statusLower.includes('requires');
 
-                        // 4. Include medium risk score (70-89%)
+                        // 5. Include medium risk score (70-89%)
                         const isMidRangeScore = c.complianceScore >= 70 && c.complianceScore < 90;
 
                         return isReviewStatus || isMidRangeScore;
                     }
 
                     // Tab 2: REVIEWED (History)
-                    else {
+                    else if (reviewQueueTab === 'reviewed') {
                         return isFinalized;
                     }
+
+                    // Tab 3: AUTO FAIL QUEUE
+                    else if (reviewQueueTab === 'autofail') {
+                        // Don't show finalized auto-fails in queue (unless we want history)
+                        if (isFinalized) return false;
+                        const statusLower = (c.status || '').toLowerCase();
+                        return statusLower.includes('auto_fail') || c.autoFailTriggered === true;
+                    }
+
+                    return false;
                 });
                 // Calculate global stats for the view
                 const totalReviewedCount = calls.filter(c => c.qaStatus === 'approved' || c.qaStatus === 'rejected').length;
@@ -829,9 +842,16 @@ function QADashboardContent() {
                     if (c.qaStatus === 'approved' || c.qaStatus === 'rejected') return false;
                     if (c.complianceScore >= 90) return false;
                     const statusLower = (c.status || '').toLowerCase();
+                    if (statusLower.includes('auto_fail') || c.autoFailTriggered) return false;  // Exclude auto-fail from pending
                     const isReviewStatus = statusLower.includes('review') || statusLower.includes('requires');
                     const isMidRangeScore = c.complianceScore >= 70 && c.complianceScore < 90;
                     return isReviewStatus || isMidRangeScore;
+                }).length;
+
+                const totalAutoFailCount = calls.filter(c => {
+                    if (c.qaStatus === 'approved' || c.qaStatus === 'rejected') return false;
+                    const statusLower = (c.status || '').toLowerCase();
+                    return statusLower.includes('auto_fail') || c.autoFailTriggered === true;
                 }).length;
 
                 return (
@@ -865,6 +885,15 @@ function QADashboardContent() {
                                             Pending
                                         </button>
                                         <button
+                                            onClick={() => setReviewQueueTab('autofail')}
+                                            className={`px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all duration-300 ${reviewQueueTab === 'autofail'
+                                                ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/25'
+                                                : 'text-white/70 hover:text-white hover:bg-white/10'
+                                                }`}
+                                        >
+                                            Auto Fail
+                                        </button>
+                                        <button
                                             onClick={() => setReviewQueueTab('reviewed')}
                                             className={`px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all duration-300 ${reviewQueueTab === 'reviewed'
                                                 ? 'bg-rose-500 text-white shadow-lg shadow-rose-500/25'
@@ -883,6 +912,13 @@ function QADashboardContent() {
                                     <span className="text-white/70 font-bold uppercase tracking-widest text-[10px]">Pending Reviews</span>
                                     <span className="self-start px-3 py-0.5 rounded-md bg-rose-500/10 text-rose-400 font-extrabold text-lg border border-rose-500/10 shadow-[0_0_10px_rgba(244,63,94,0.1)]">
                                         {totalPendingCount}
+                                    </span>
+                                </div>
+                                <div className="w-px h-10 bg-white/5" />
+                                <div className="flex flex-col gap-1.5">
+                                    <span className="text-white/70 font-bold uppercase tracking-widest text-[10px]">Auto Fail</span>
+                                    <span className="self-start px-3 py-0.5 rounded-md bg-rose-600/20 text-rose-300 font-extrabold text-lg border border-rose-600/20 shadow-[0_0_10px_rgba(225,29,72,0.15)]">
+                                        {totalAutoFailCount}
                                     </span>
                                 </div>
                                 <div className="w-px h-10 bg-white/5" />

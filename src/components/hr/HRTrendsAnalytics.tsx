@@ -71,9 +71,9 @@ export default function HRTrendsAnalytics({ dateRange }: HRTrendsAnalyticsProps)
         const startIso = formatDateKey(startDate); // Use local date string comparison
 
         try {
-            // 1. Headcount Data
-            const { data: allHires } = await supabase.from('HR Hired').select('created_at');
-            const { data: allFires } = await supabase.from('HR Fired').select('created_at');
+            // 1. Headcount Data (use actual Hire Date and Termination Date)
+            const { data: allHires } = await supabase.from('HR Hired').select('"Hire Date"');
+            const { data: allFires } = await supabase.from('HR Fired').select('"Termination Date"');
 
             // 2. Absence Data
             const { data: booked } = await supabase
@@ -101,9 +101,9 @@ export default function HRTrendsAnalytics({ dateRange }: HRTrendsAnalyticsProps)
 
     const processHeadcountData = (hires: any[], fires: any[], startDate: Date) => {
         const events = [
-            ...hires.map(h => ({ date: h.created_at?.split('T')[0], change: 1 })),
-            ...fires.map(f => ({ date: f.created_at?.split('T')[0], change: -1 }))
-        ].sort((a, b) => (a.date > b.date ? 1 : -1));
+            ...hires.map(h => ({ date: h['Hire Date'], change: 1 })),
+            ...fires.map(f => ({ date: f['Termination Date'], change: -1 }))
+        ].filter(e => e.date).sort((a, b) => (a.date > b.date ? 1 : -1));
 
         const chartData = [];
         const endDate = new Date();
@@ -158,14 +158,17 @@ export default function HRTrendsAnalytics({ dateRange }: HRTrendsAnalyticsProps)
     const processReasonData = (nonBooked: any[]) => {
         const counts: Record<string, number> = {};
         nonBooked.forEach(item => {
-            const reason = item.Reason || "Unspecified";
+            // Normalize reasons: trim whitespace and convert to title case
+            const rawReason = (item.Reason || 'Unspecified').trim();
+            // Title case normalize to group similar entries
+            const reason = rawReason.charAt(0).toUpperCase() + rawReason.slice(1).toLowerCase();
             counts[reason] = (counts[reason] || 0) + 1;
         });
 
         const data = Object.entries(counts).map(([name, value]) => ({ name, value }));
-        // Sort by value descending
+        // Sort by value descending and limit to top 10 for visibility
         data.sort((a, b) => b.value - a.value);
-        setReasonData(data);
+        setReasonData(data.slice(0, 10));
     };
 
     if (loading) {
@@ -239,13 +242,13 @@ export default function HRTrendsAnalytics({ dateRange }: HRTrendsAnalyticsProps)
                     <CardTitle className="text-lg font-medium">Unplanned Absence Reasons</CardTitle>
                 </CardHeader>
                 <CardContent>
-                    <div className="h-[250px] w-full">
+                    <div className="h-[350px] w-full">
                         {reasonData.length > 0 ? (
                             <ResponsiveContainer width="100%" height="100%">
-                                <BarChart data={reasonData} layout="vertical" margin={{ left: 20 }}>
+                                <BarChart data={reasonData} layout="vertical" margin={{ left: 20, top: 10, right: 20, bottom: 10 }}>
                                     <CartesianGrid strokeDasharray="3 3" stroke="#333" horizontal={false} />
                                     <XAxis type="number" stroke="#666" fontSize={12} tickLine={false} axisLine={false} />
-                                    <YAxis dataKey="name" type="category" stroke="#888" fontSize={12} tickLine={false} axisLine={false} width={100} />
+                                    <YAxis dataKey="name" type="category" stroke="#888" fontSize={12} tickLine={false} axisLine={false} width={140} />
                                     <RechartsTooltip
                                         cursor={{ fill: 'rgba(255,255,255,0.05)' }}
                                         contentStyle={{ backgroundColor: '#1a1a1a', border: 'none', borderRadius: '8px' }}

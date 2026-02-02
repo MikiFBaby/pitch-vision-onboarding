@@ -1483,6 +1483,28 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
               {isPlaying ? <Pause size={24} fill="currentColor" /> : <Play size={24} fill="currentColor" className="ml-0.5" />}
             </button>
 
+            {/* Playback Speed Control */}
+            <button
+              onClick={() => {
+                const speeds = [1, 1.25, 1.5, 2];
+                const currentIdx = speeds.indexOf(playbackRate);
+                const nextIdx = (currentIdx + 1) % speeds.length;
+                const newRate = speeds[nextIdx];
+                setPlaybackRate(newRate);
+                if (audioRef.current) {
+                  audioRef.current.playbackRate = newRate;
+                }
+              }}
+              disabled={!call.recordingUrl || call.recordingUrl.trim() === '' || !!audioError}
+              className={`h-8 min-w-[42px] px-2 rounded-lg flex items-center justify-center shrink-0 text-xs font-bold transition-all ${!call.recordingUrl || call.recordingUrl.trim() === '' || audioError
+                ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
+                : 'bg-purple-100 text-purple-700 hover:bg-purple-200 active:scale-95 border border-purple-200'
+                }`}
+              title="Change playback speed"
+            >
+              {playbackRate}x
+            </button>
+
             <div className="flex-1 min-w-0">
               {/* Time display - use actual audio duration when available */}
               <div className="flex justify-between text-[11px] font-bold text-[#8E8E93] tabular-nums mb-2">
@@ -1699,7 +1721,67 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
               {/* Meta Grid */}
               {/* Talk Time Distribution - Moved from below */}
 
+              {/* AUTO-FAIL VIOLATIONS SECTION */}
+              {call.autoFailTriggered && call.autoFailReasons && call.autoFailReasons.length > 0 && (
+                <div className="space-y-4">
+                  <div className="flex items-center gap-2 pl-2">
+                    <AlertTriangle size={14} className="text-rose-500" />
+                    <h4 className="text-[11px] font-black text-rose-500 uppercase tracking-widest">Auto-Fail Violations</h4>
+                    <span className="ml-auto bg-rose-100 text-rose-700 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                      {call.autoFailReasons.length} {call.autoFailReasons.length === 1 ? 'Violation' : 'Violations'}
+                    </span>
+                  </div>
+                  <div className="bg-rose-50 rounded-2xl border border-rose-200 overflow-hidden shadow-sm">
+                    {call.autoFailReasons.map((reason, idx) => {
+                      // Handle both string[] and structured object format
+                      const isString = typeof reason === 'string';
+                      const code = isString ? `AF-${String(idx + 1).padStart(2, '0')}` : reason.code;
+                      const violation = isString ? reason : reason.violation;
+                      const description = isString ? null : reason.description;
+                      const timestamp = isString ? null : reason.timestamp;
+                      const evidence = isString ? null : reason.evidence;
+                      const speaker = isString ? null : reason.speaker;
 
+                      return (
+                        <div key={idx} className={`p-4 ${idx > 0 ? 'border-t border-rose-200' : ''}`}>
+                          <div className="flex items-start gap-3">
+                            <span className="shrink-0 bg-rose-600 text-white text-[10px] font-bold px-2 py-1 rounded uppercase tracking-wider">
+                              {code}
+                            </span>
+                            <div className="flex-1 min-w-0 space-y-2">
+                              <div className="flex items-baseline justify-between gap-2">
+                                <h5 className="text-sm font-bold text-rose-800">{violation}</h5>
+                                {timestamp && (
+                                  <button
+                                    onClick={() => handleSeek(timestamp)}
+                                    className="shrink-0 text-[10px] text-rose-600 hover:text-rose-800 flex items-center gap-1 font-medium"
+                                  >
+                                    <Play size={8} fill="currentColor" /> {timestamp}
+                                  </button>
+                                )}
+                              </div>
+                              {description && (
+                                <p className="text-xs text-rose-700 leading-relaxed">{description}</p>
+                              )}
+                              {evidence && (
+                                <div className="bg-white/80 border border-rose-200 rounded-lg p-3 mt-2">
+                                  <div className="flex items-center gap-1.5 mb-1.5">
+                                    <Quote size={10} className="text-rose-400" />
+                                    <span className="text-[9px] font-bold text-rose-400 uppercase tracking-wider">
+                                      {speaker ? `${speaker} said` : 'Evidence'}
+                                    </span>
+                                  </div>
+                                  <p className="text-xs text-rose-900 italic leading-relaxed">"{evidence}"</p>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
 
 

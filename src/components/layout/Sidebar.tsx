@@ -23,7 +23,8 @@ import {
     BrainCircuit,
     TrendingUp,
     FolderOpen,
-    GraduationCap
+    GraduationCap,
+    FileBarChart
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { PitchVisionLogo } from "@/components/ui/pitch-vision-logo";
@@ -289,9 +290,11 @@ export function SidebarInner() {
 
         if (role === 'hr') {
             return [
+                { href: "/hr", icon: <LayoutDashboard size={20} />, label: "Dashboard" },
                 { href: "/hr/directory", icon: <Users size={20} />, label: "Directory" },
                 { href: "/hr/calendar", icon: <Calendar size={20} />, label: "Calendar" },
                 { href: "/hr/schedule", icon: <Clock size={20} />, label: "Agent Schedule" },
+                { href: "/hr/reports", icon: <FileBarChart size={20} />, label: "Reports" },
                 ...commonItems.slice(1)
             ];
         }
