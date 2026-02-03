@@ -302,9 +302,9 @@ export function SidebarInner() {
         // Default agent items
         return [
             ...commonItems.slice(0, 1),
+            { href: "/agent/education", icon: <GraduationCap size={20} />, label: "Education" },
             { href: "/agent/calls", icon: <FileText size={20} />, label: "My Calls" },
             { href: "/agent/resources", icon: <FolderOpen size={20} />, label: "Resource Hub" },
-            { href: "/agent/education", icon: <GraduationCap size={20} />, label: "Education" },
             ...commonItems.slice(1)
         ];
     };

@@ -592,11 +592,15 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
   }, [call?.checklist]);
 
   const timelineMarkers = useMemo(() => {
-    const list: { title: string, time: string, seconds: number, position: number, color: string, type: 'pass' | 'fail' | 'chapter', isEstimated?: boolean }[] = [];
+    const list: { title: string, time: string, seconds: number, position: number, color: string, type: 'pass' | 'fail' | 'chapter' | 'transfer', isEstimated?: boolean }[] = [];
 
     // Calculate effective duration (audio object or metadata string)
     const effectiveDuration = duration > 0 ? duration : parseTimeToSeconds(call?.duration || "0:00");
     if (!effectiveDuration) return [];
+
+    // Minimum time threshold (in seconds) - markers before this are likely before the call was actually answered
+    // This filters out false markers at 0:00 or very early in the recording
+    const MIN_MARKER_TIME_SECONDS = 5;
 
     // Parse database overrides
     let dbOverrides: any[] = [];
@@ -659,18 +663,31 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
         const secs = parseTimeToSeconds(timeVal);
         const pos = (secs / effectiveDuration) * 100;
 
-        // Only verify pos is valid number and within range. 
-        // Note: parseTimeToSeconds returns 0 for invalid inputs, so check if we actually had a valid time string logic if needed, 
-        // but !isNaN check covers the main crash cases.
-        if (pos <= 100 && !isNaN(pos)) {
-          const isPass = (m.status || m.type || '').toLowerCase().includes('pass');
+        // Filter out markers before the call is actually live (e.g., during ringing/answering)
+        // Also verify pos is valid number and within range
+        if (secs >= MIN_MARKER_TIME_SECONDS && pos <= 100 && !isNaN(pos)) {
+          const markerType = (m.type || '').toLowerCase();
+          const markerStatus = (m.status || '').toLowerCase();
+
+          // Determine marker type and color
+          let type: 'pass' | 'fail' | 'chapter' | 'transfer' = 'fail';
+          let color = 'bg-rose-500';
+
+          if (markerType === 'transfer' || markerStatus === 'info') {
+            type = 'transfer';
+            color = 'bg-blue-500'; // Blue for LA transfer point
+          } else if (markerStatus.includes('pass') || markerType === 'pass') {
+            type = 'pass';
+            color = 'bg-emerald-500';
+          }
+
           list.push({
-            title: m.title || m.event || m.item_key || 'Marker', // Use title from JSON, fallback to 'Marker'
+            title: m.title || m.event || m.item_key || 'Marker',
             time: timeVal,
             seconds: secs,
             position: pos,
-            color: isPass ? 'bg-emerald-500' : 'bg-rose-500', // Correct color mapping
-            type: isPass ? 'pass' : 'fail' // Map to expected types for priority logic
+            color: color,
+            type: type
           });
         }
       });
@@ -695,14 +712,17 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
         timeStr = `${mins}:${secs.toString().padStart(2, '0')}`;
       }
 
-      const secs = parseTimeToSeconds(timeStr);
-      const pos = (secs / effectiveDuration) * 100;
+      const itemSecs = parseTimeToSeconds(timeStr);
+      const pos = (itemSecs / effectiveDuration) * 100;
 
-      if (pos <= 100) {
+      // Filter out markers before the call is actually live
+      // Even explicit timestamps at 0:00 are likely invalid (before call answered)
+      // Allow items that are at or after the minimum threshold
+      if (pos <= 100 && itemSecs >= MIN_MARKER_TIME_SECONDS) {
         list.push({
           title: itemName,
           time: timeStr,
-          seconds: secs,
+          seconds: itemSecs,
           position: pos,
           color: isMet ? 'bg-emerald-500' : 'bg-rose-500',
           type: isMet ? 'pass' : 'fail',
@@ -1557,18 +1577,22 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                   {clusteredMarkers.map((cluster, idx) => {
                     const isCluster = cluster.items.length > 1;
                     const primaryType = cluster.items.some(i => i.type === 'fail') ? 'fail' :
+                      cluster.items.some(i => i.type === 'transfer') ? 'transfer' :
                       cluster.items.some(i => i.type === 'chapter') ? 'chapter' : 'pass';
 
                     // Background Class Logic
-                    const bgClass = primaryType === 'chapter' ? 'bg-indigo-500' :
+                    const bgClass = primaryType === 'transfer' ? 'bg-blue-500' :
+                      primaryType === 'chapter' ? 'bg-indigo-500' :
                       primaryType === 'pass' ? 'bg-emerald-500' : 'bg-rose-500';
 
                     // Shadow/Glow colors
                     const shadowGlow = primaryType === 'fail' ? 'shadow-[0_0_12px_rgba(244,63,94,0.8)]' :
+                      primaryType === 'transfer' ? 'shadow-[0_0_12px_rgba(59,130,246,0.8)]' :
                       primaryType === 'pass' ? 'shadow-[0_0_12px_rgba(16,185,129,0.8)]' : 'shadow-[0_0_12px_rgba(99,102,241,0.8)]';
 
                     // Icon Logic for Pill
                     let MarkerIcon = isCluster ? Layers :
+                      primaryType === 'transfer' ? Activity :
                       primaryType === 'pass' ? Check :
                         primaryType === 'fail' ? AlertTriangle : Flag;
 
@@ -1590,7 +1614,8 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                             absolute w-[3px] rounded-full transition-all duration-300
                             ${bgClass} ${shadowGlow} opacity-80 group-hover/marker:opacity-100 group-hover/marker:w-[4px]
                             ${primaryType === 'pass' ? 'top-0 h-1/2 rounded-b-none' :
-                            primaryType === 'fail' ? 'bottom-0 h-1/2 rounded-t-none' : 'inset-y-0'}
+                            primaryType === 'fail' ? 'bottom-0 h-1/2 rounded-t-none' :
+                            primaryType === 'transfer' ? 'inset-y-0 w-[4px]' : 'inset-y-0'}
                          `} />
 
                         {/* HOVER BADGE ONLY (No permanent pill) */}
@@ -1629,8 +1654,10 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                           <div className="p-2 space-y-1 max-h-[200px] overflow-y-auto custom-scrollbar">
                             {cluster.items.map((item, i) => {
                               const iconColor = item.type === 'fail' ? 'text-rose-500' :
+                                item.type === 'transfer' ? 'text-blue-500' :
                                 item.type === 'pass' ? 'text-emerald-500' : 'text-indigo-500';
                               const Icon = item.type === 'fail' ? AlertTriangle :
+                                item.type === 'transfer' ? Activity :
                                 item.type === 'pass' ? Check : Flag;
 
                               return (
@@ -1722,7 +1749,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
               {/* Talk Time Distribution - Moved from below */}
 
               {/* AUTO-FAIL VIOLATIONS SECTION */}
-              {call.autoFailTriggered && call.autoFailReasons && call.autoFailReasons.length > 0 && (
+              {call.autoFailTriggered && call.autoFailReasons && Array.isArray(call.autoFailReasons) && call.autoFailReasons.length > 0 && (
                 <div className="space-y-4">
                   <div className="flex items-center gap-2 pl-2">
                     <AlertTriangle size={14} className="text-rose-500" />
@@ -1734,13 +1761,18 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                   <div className="bg-rose-50 rounded-2xl border border-rose-200 overflow-hidden shadow-sm">
                     {call.autoFailReasons.map((reason, idx) => {
                       // Handle both string[] and structured object format
+                      // Also handle edge cases where properties might be objects or undefined
                       const isString = typeof reason === 'string';
-                      const code = isString ? `AF-${String(idx + 1).padStart(2, '0')}` : reason.code;
-                      const violation = isString ? reason : reason.violation;
-                      const description = isString ? null : reason.description;
-                      const timestamp = isString ? null : reason.timestamp;
-                      const evidence = isString ? null : reason.evidence;
-                      const speaker = isString ? null : reason.speaker;
+                      const code = isString
+                        ? `AF-${String(idx + 1).padStart(2, '0')}`
+                        : (typeof reason.code === 'string' ? reason.code : `AF-${String(idx + 1).padStart(2, '0')}`);
+                      const violation = isString
+                        ? reason
+                        : (typeof reason.violation === 'string' ? reason.violation : (reason.violation ? JSON.stringify(reason.violation) : 'Auto-fail violation'));
+                      const description = isString ? null : (typeof reason.description === 'string' ? reason.description : null);
+                      const timestamp = isString ? null : (typeof reason.timestamp === 'string' ? reason.timestamp : null);
+                      const evidence = isString ? null : (typeof reason.evidence === 'string' ? reason.evidence : null);
+                      const speaker = isString ? null : (typeof reason.speaker === 'string' ? reason.speaker : null);
 
                       return (
                         <div key={idx} className={`p-4 ${idx > 0 ? 'border-t border-rose-200' : ''}`}>
@@ -2240,12 +2272,18 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                               <span className="text-[10px] font-bold text-rose-600 uppercase tracking-wider">Auto-Fails ({call.criticalMoments.auto_fails.length})</span>
                             </div>
                             <div className="space-y-1.5">
-                              {call.criticalMoments.auto_fails.slice(0, 3).map((item: any, idx: number) => (
-                                <div key={idx} className="flex items-start gap-2 p-2 bg-rose-50 rounded-lg border border-rose-100">
-                                  <div className="w-1.5 h-1.5 rounded-full bg-rose-500 mt-1.5 shrink-0" />
-                                  <p className="text-xs text-rose-700">{item.reason || item.title || item.event || (typeof item === 'string' ? item : 'Critical failure')}</p>
-                                </div>
-                              ))}
+                              {call.criticalMoments.auto_fails.slice(0, 3).map((item: any, idx: number) => {
+                                // Handle multiple formats: old (reason/title/event), new (violation/description), or string
+                                const displayText = typeof item === 'string'
+                                  ? item
+                                  : (item.violation || item.reason || item.title || item.event || item.description || 'Critical failure');
+                                return (
+                                  <div key={idx} className="flex items-start gap-2 p-2 bg-rose-50 rounded-lg border border-rose-100">
+                                    <div className="w-1.5 h-1.5 rounded-full bg-rose-500 mt-1.5 shrink-0" />
+                                    <p className="text-xs text-rose-700">{typeof displayText === 'string' ? displayText : JSON.stringify(displayText)}</p>
+                                  </div>
+                                );
+                              })}
                             </div>
                           </div>
                         )}
@@ -2296,7 +2334,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
               )}
 
               {/* Auto-Fail Alert - Prominent if triggered */}
-              {call.autoFailTriggered && call.autoFailReasons && call.autoFailReasons.length > 0 && (
+              {call.autoFailTriggered && call.autoFailReasons && Array.isArray(call.autoFailReasons) && call.autoFailReasons.length > 0 && (
                 <div className="bg-rose-50 rounded-2xl border-2 border-rose-200 p-4">
                   <div className="flex items-center gap-2 mb-3">
                     <div className="p-1.5 bg-rose-100 rounded-lg">
@@ -2305,12 +2343,30 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                     <h4 className="text-sm font-black text-rose-700 uppercase tracking-wide">Auto-Fail Triggered</h4>
                   </div>
                   <div className="space-y-2">
-                    {call.autoFailReasons.map((reason: string, idx: number) => (
-                      <div key={idx} className="flex items-start gap-2 p-2 bg-white rounded-lg border border-rose-200">
-                        <XCircle size={14} className="text-rose-500 mt-0.5 shrink-0" />
-                        <p className="text-sm text-rose-700 font-medium">{reason}</p>
-                      </div>
-                    ))}
+                    {call.autoFailReasons.map((reason, idx: number) => {
+                      const isString = typeof reason === 'string';
+                      const code = isString
+                        ? `AF-${String(idx + 1).padStart(2, '0')}`
+                        : (typeof reason.code === 'string' ? reason.code : `AF-${String(idx + 1).padStart(2, '0')}`);
+                      const violation = isString
+                        ? reason
+                        : (typeof reason.violation === 'string' ? reason.violation : (reason.violation ? JSON.stringify(reason.violation) : 'Auto-fail violation'));
+                      const timestamp = isString ? null : (typeof reason.timestamp === 'string' ? reason.timestamp : null);
+                      return (
+                        <div key={idx} className="flex items-start gap-2 p-2 bg-white rounded-lg border border-rose-200">
+                          <XCircle size={14} className="text-rose-500 mt-0.5 shrink-0" />
+                          <div className="flex-1">
+                            <p className="text-sm text-rose-700 font-medium">
+                              {!isString && <span className="font-bold mr-1">[{code}]</span>}
+                              {violation}
+                            </p>
+                            {timestamp && (
+                              <p className="text-xs text-rose-500 mt-0.5">@ {timestamp}</p>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
                 </div>
               )}
@@ -2359,16 +2415,26 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                     <span className={`text-[10px] font-bold uppercase tracking-widest ${call.autoFailTriggered ? 'text-rose-600/80' : 'text-slate-400'}`}>Auto-Fails</span>
                   </div>
                   <p className={`text-xl font-black tracking-tight ${call.autoFailTriggered ? 'text-rose-600' : 'text-slate-400'}`}>
-                    {call.autoFailReasons?.length || 0}
+                    {Array.isArray(call.autoFailReasons) ? call.autoFailReasons.length : 0}
                   </p>
                   {/* Display actual auto-fail reasons */}
-                  {call.autoFailReasons && call.autoFailReasons.length > 0 && (
+                  {call.autoFailReasons && Array.isArray(call.autoFailReasons) && call.autoFailReasons.length > 0 && (
                     <div className="mt-2 space-y-1 text-left">
-                      {call.autoFailReasons.map((reason, idx) => (
-                        <div key={idx} className="text-[10px] text-rose-700 bg-rose-100/80 px-2 py-1 rounded border border-rose-200 leading-tight">
-                          {reason}
-                        </div>
-                      ))}
+                      {call.autoFailReasons.map((reason, idx) => {
+                        const isString = typeof reason === 'string';
+                        const code = isString
+                          ? `AF-${String(idx + 1).padStart(2, '0')}`
+                          : (typeof reason.code === 'string' ? reason.code : `AF-${String(idx + 1).padStart(2, '0')}`);
+                        const violation = isString
+                          ? reason
+                          : (typeof reason.violation === 'string' ? reason.violation : (reason.violation ? JSON.stringify(reason.violation) : 'Auto-fail'));
+                        const displayText = isString ? reason : `[${code}] ${violation}`;
+                        return (
+                          <div key={idx} className="text-[10px] text-rose-700 bg-rose-100/80 px-2 py-1 rounded border border-rose-200 leading-tight">
+                            {displayText}
+                          </div>
+                        );
+                      })}
                     </div>
                   )}
                 </div>

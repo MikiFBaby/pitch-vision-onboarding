@@ -133,6 +133,13 @@ export interface CallData {
     // Tag for escalation/training/audit tracking
     tag?: 'escalated' | 'training_review' | 'audit_list';
 
+    // Licensed Agent (LA) detection metadata
+    transferDetected?: boolean;
+    transferInitiatedAtSeconds?: number;
+    laDetected?: boolean;
+    laStartedAtSeconds?: number;
+    analysisCutoffSeconds?: number;
+
     // Additional metadata
     batchId?: string;
     suggestedListenStart?: string;
@@ -197,6 +204,18 @@ export interface DatabaseCallRow {
 
     // Tag for escalation/training/audit tracking
     tag: string | null;
+
+    // Auto-fail columns (TOP-LEVEL per schema)
+    auto_fail_triggered: boolean | null;
+    auto_fail_reasons: any | null;
+    critical_moments: any | null;
+
+    // Licensed Agent (LA) detection columns
+    transfer_detected: boolean | null;
+    transfer_initiated_at_seconds: number | null;
+    la_detected: boolean | null;
+    la_started_at_seconds: number | null;
+    analysis_cutoff_seconds: number | null;
 
     // Additional metadata columns
     batch_id: string | null;

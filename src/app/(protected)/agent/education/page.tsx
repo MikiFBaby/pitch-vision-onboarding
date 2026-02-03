@@ -1,7 +1,8 @@
 "use client";
-import React, { useState } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import Link from "next/link";
 import DashboardLayout from "@/components/layout/DashboardLayout";
+import { supabase } from "@/lib/supabase";
 import {
     Search,
     Play,
@@ -10,94 +11,158 @@ import {
     VolumeX,
     Maximize2,
     Grid3X3,
-    Heart,
-    Share2,
-    Eye,
-    ThumbsUp,
     Radio,
     Clock,
-    Users,
-    MessageCircle,
-    Send,
     ChevronRight,
     Video,
-    Headphones,
     FileQuestion,
-    CheckCircle
+    CheckCircle,
+    Loader2
 } from "lucide-react";
 import Image from "next/image";
 
-// Mock content data - will be replaced with Supabase data
-const featuredContent = {
-    id: "compliance-intro",
-    type: "video",
-    title: "Compliance Fundamentals: Understanding the Regulatory Framework",
-    description: "Master the essential compliance requirements for call handling and customer interactions. This comprehensive module covers regulatory requirements, best practices, and real-world scenarios that every agent needs to understand.",
-    instructor: {
-        name: "Sarah Johnson",
-        avatar: "/images/avatar-agent.png",
-        title: "Compliance Director",
-        followers: 1245
-    },
-    duration: "25:34",
-    currentTime: "12:18",
-    views: 3892,
-    likes: 847,
-    isLive: false,
-    thumbnail: "/images/compliance-video-thumb.jpg"
-};
-
-const liveChat = [
-    { id: 1, user: "Marcus Chen", avatar: "/images/avatar-agent.png", message: "Great explanation of the disclosure requirements!", online: true },
-    { id: 2, user: "Emily Rodriguez", avatar: "/images/avatar-agent.png", message: "Can you clarify the timeout policy?", online: true },
-    { id: 3, user: "James Wilson", avatar: "/images/avatar-agent.png", message: "This helped me understand the verification process", online: false },
-    { id: 4, user: "Aisha Patel", avatar: "/images/avatar-agent.png", message: "Taking notes on this section!", online: true },
-];
-
-const relatedContent = [
-    {
-        id: "advanced-compliance",
-        type: "video",
-        title: "Advanced Compliance Scenarios",
-        instructor: "Sarah Johnson",
-        views: 2156,
-        duration: "32:15",
-        thumbnail: "/images/course-compliance.jpg"
-    },
-    {
-        id: "sales-techniques",
-        type: "video",
-        title: "Mastering the Sales Call",
-        instructor: "Michael Chen",
-        views: 4521,
-        duration: "28:42",
-        thumbnail: "/images/course-sales.jpg"
-    },
-    {
-        id: "product-knowledge",
-        type: "audio",
-        title: "Product Deep Dive Podcast",
-        instructor: "Lisa Park",
-        views: 1823,
-        duration: "45:00",
-        thumbnail: "/images/course-product.jpg"
-    },
-];
+// Types for educational resources
+interface EducationalResource {
+    id: string;
+    chapter_number: number;
+    title: string;
+    type: 'video' | 'audio' | 'quiz';
+    media_url: string | null;
+    media_duration: string | null;
+    thumbnail_url: string | null;
+    quiz_data: unknown | null;
+    passing_score: number | null;
+    description: string | null;
+    instructor: string | null;
+    sort_order: number | null;
+    is_required: boolean | null;
+    is_published: boolean | null;
+}
 
 const contentCategories = [
     { id: "all", label: "All Content", icon: Grid3X3 },
-    { id: "video", label: "Video Lessons", icon: Video },
-    { id: "audio", label: "Audio Training", icon: Headphones },
-    { id: "quiz", label: "Assessments", icon: FileQuestion },
+    { id: "video", label: "Videos", icon: Video },
+    { id: "quiz", label: "Quizzes", icon: FileQuestion },
 ];
 
 export default function EducationalPortalPage() {
     const [isPlaying, setIsPlaying] = useState(false);
     const [isMuted, setIsMuted] = useState(false);
-    const [isLiked, setIsLiked] = useState(false);
-    const [chatMessage, setChatMessage] = useState("");
     const [activeCategory, setActiveCategory] = useState("all");
-    const [progress, setProgress] = useState(48); // Percentage of video watched
+    const [progress, setProgress] = useState(0);
+    const [currentTime, setCurrentTime] = useState("0:00");
+    const [playbackSpeed, setPlaybackSpeed] = useState(1);
+    const [isWatched, setIsWatched] = useState(false);
+    const [videoDuration, setVideoDuration] = useState("0:00");
+
+    // Supabase data states
+    const [resources, setResources] = useState<EducationalResource[]>([]);
+    const [featuredResource, setFeaturedResource] = useState<EducationalResource | null>(null);
+    const [isLoading, setIsLoading] = useState(true);
+
+    // Video ref for actual playback
+    const videoRef = useRef<HTMLVideoElement>(null);
+
+    // Fetch educational resources from Supabase
+    useEffect(() => {
+        const fetchResources = async () => {
+            console.log('[Education] Fetching resources...');
+            const { data, error } = await supabase
+                .from('educational_resources')
+                .select('*')
+                .eq('is_published', true)
+                .order('sort_order', { ascending: true });
+
+            if (error) {
+                console.error('[Education] Error fetching educational resources:', error);
+                setIsLoading(false);
+                return;
+            }
+
+            console.log('[Education] Fetched data:', data);
+            if (data && data.length > 0) {
+                setResources(data);
+                // Set first resource as featured
+                setFeaturedResource(data[0]);
+                console.log('[Education] Featured resource:', data[0]);
+            }
+            setIsLoading(false);
+        };
+
+        fetchResources();
+    }, []);
+
+    // Handle video time updates
+    const handleTimeUpdate = () => {
+        if (videoRef.current) {
+            const current = videoRef.current.currentTime;
+            const duration = videoRef.current.duration;
+            const progressPercent = (current / duration) * 100;
+            setProgress(progressPercent);
+
+            const minutes = Math.floor(current / 60);
+            const seconds = Math.floor(current % 60);
+            setCurrentTime(`${minutes}:${seconds.toString().padStart(2, '0')}`);
+        }
+    };
+
+    // Handle video metadata loaded - get duration
+    const handleLoadedMetadata = () => {
+        if (videoRef.current) {
+            const duration = videoRef.current.duration;
+            const minutes = Math.floor(duration / 60);
+            const seconds = Math.floor(duration % 60);
+            setVideoDuration(`${minutes}:${seconds.toString().padStart(2, '0')}`);
+        }
+    };
+
+    // Handle video completion - mark as watched
+    const handleVideoEnded = () => {
+        setIsPlaying(false);
+        setIsWatched(true);
+        // TODO: Save watched status to Supabase user_progress table
+        console.log('[Education] Video completed - marked as watched');
+    };
+
+    // Handle play/pause toggle
+    const togglePlayPause = () => {
+        if (videoRef.current) {
+            if (isPlaying) {
+                videoRef.current.pause();
+            } else {
+                videoRef.current.play();
+            }
+            setIsPlaying(!isPlaying);
+        }
+    };
+
+    // Handle mute toggle
+    const toggleMute = () => {
+        if (videoRef.current) {
+            videoRef.current.muted = !isMuted;
+            setIsMuted(!isMuted);
+        }
+    };
+
+    // Cycle through playback speeds: 1x -> 1.25x -> 1.5x -> 1x
+    const cyclePlaybackSpeed = () => {
+        const speeds = [1, 1.25, 1.5];
+        const currentIndex = speeds.indexOf(playbackSpeed);
+        const nextIndex = (currentIndex + 1) % speeds.length;
+        const newSpeed = speeds[nextIndex];
+        setPlaybackSpeed(newSpeed);
+        if (videoRef.current) {
+            videoRef.current.playbackRate = newSpeed;
+        }
+    };
+
+    // Filter resources by category
+    const filteredResources = resources.filter(r =>
+        activeCategory === 'all' || r.type === activeCategory
+    );
+
+    // Get related content (exclude featured)
+    const relatedContent = filteredResources.filter(r => r.id !== featuredResource?.id).slice(0, 3);
 
     return (
         <DashboardLayout>
@@ -121,8 +186,8 @@ export default function EducationalPortalPage() {
                                 key={cat.id}
                                 onClick={() => setActiveCategory(cat.id)}
                                 className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-xs font-bold uppercase tracking-wider transition-all whitespace-nowrap ${activeCategory === cat.id
-                                        ? "bg-indigo-500 text-white shadow-[0_0_20px_rgba(99,102,241,0.3)]"
-                                        : "bg-white/5 text-white/60 hover:bg-white/10 hover:text-white"
+                                    ? "bg-indigo-500 text-white shadow-[0_0_20px_rgba(99,102,241,0.3)]"
+                                    : "bg-white/5 text-white/60 hover:bg-white/10 hover:text-white"
                                     }`}
                             >
                                 <Icon size={14} />
@@ -132,234 +197,181 @@ export default function EducationalPortalPage() {
                     })}
                 </div>
 
-                {/* Main Content Grid */}
-                <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
-                    {/* Left Column - Video Player & Info */}
-                    <div className="xl:col-span-2 space-y-4">
-                        {/* Video Player */}
-                        <div className="glass-card rounded-2xl overflow-hidden border border-white/5">
-                            {/* Video Frame */}
-                            <div className="relative aspect-video bg-gradient-to-br from-indigo-900/50 to-purple-900/50">
-                                {/* Placeholder Video Background */}
-                                <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
-                                    <button
-                                        onClick={() => setIsPlaying(!isPlaying)}
-                                        className="p-6 rounded-full bg-white/10 backdrop-blur-sm hover:bg-white/20 transition-all duration-300 hover:scale-110"
-                                    >
-                                        {isPlaying ? (
-                                            <Pause className="w-12 h-12 text-white" />
-                                        ) : (
-                                            <Play className="w-12 h-12 text-white ml-1" />
-                                        )}
-                                    </button>
+                {/* Main Content */}
+                <div className="space-y-6">
+                    {/* Video Player - Constrained Width */}
+                    <div className="glass-card rounded-2xl overflow-hidden border border-white/5 max-w-4xl">
+                        {/* Video Frame - 16:9 aspect ratio but smaller */}
+                        <div className="relative aspect-video bg-gradient-to-br from-indigo-900/50 to-purple-900/50">
+                            {isLoading ? (
+                                <div className="absolute inset-0 flex items-center justify-center">
+                                    <Loader2 className="w-12 h-12 text-indigo-400 animate-spin" />
                                 </div>
-
-                                {/* Video Controls Overlay */}
-                                <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-black/80 to-transparent">
-                                    {/* Live Badge (if applicable) */}
-                                    {featuredContent.isLive && (
-                                        <div className="absolute top-4 left-4 flex items-center gap-2 px-3 py-1.5 bg-red-500 rounded-lg">
-                                            <Radio className="w-3 h-3 animate-pulse" />
-                                            <span className="text-xs font-bold text-white uppercase">Live</span>
+                            ) : featuredResource?.media_url ? (
+                                <>
+                                    {/* Actual Video Element */}
+                                    <video
+                                        ref={videoRef}
+                                        src={featuredResource.media_url}
+                                        className="absolute inset-0 w-full h-full object-contain bg-black"
+                                        onTimeUpdate={handleTimeUpdate}
+                                        onLoadedMetadata={handleLoadedMetadata}
+                                        onEnded={handleVideoEnded}
+                                        muted={isMuted}
+                                        crossOrigin="anonymous"
+                                        playsInline
+                                        preload="metadata"
+                                        controlsList="nodownload"
+                                    />
+                                    {/* Play Button Overlay */}
+                                    {!isPlaying && (
+                                        <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
+                                            <button
+                                                onClick={togglePlayPause}
+                                                className="p-6 rounded-full bg-white/10 backdrop-blur-sm hover:bg-white/20 transition-all duration-300 hover:scale-110"
+                                            >
+                                                <Play className="w-12 h-12 text-white ml-1" />
+                                            </button>
                                         </div>
                                     )}
+                                </>
+                            ) : (
+                                <div className="absolute inset-0 flex items-center justify-center">
+                                    <p className="text-white/50">No video available</p>
+                                </div>
+                            )}
 
-                                    {/* Progress Bar */}
-                                    <div className="mb-3">
-                                        <div className="h-1 bg-white/20 rounded-full cursor-pointer group">
-                                            <div
-                                                className="h-full bg-indigo-500 rounded-full relative group-hover:h-1.5 transition-all"
-                                                style={{ width: `${progress}%` }}
-                                            >
-                                                <div className="absolute right-0 top-1/2 -translate-y-1/2 w-3 h-3 bg-white rounded-full opacity-0 group-hover:opacity-100 transition-opacity shadow-lg" />
-                                            </div>
-                                        </div>
-                                    </div>
-
-                                    {/* Controls Row */}
-                                    <div className="flex items-center justify-between">
-                                        <div className="flex items-center gap-3">
-                                            <button
-                                                onClick={() => setIsPlaying(!isPlaying)}
-                                                className="p-2 rounded-lg bg-white/10 hover:bg-white/20 transition-colors"
-                                            >
-                                                {isPlaying ? <Pause size={18} /> : <Play size={18} />}
-                                            </button>
-                                            <button
-                                                onClick={() => setIsMuted(!isMuted)}
-                                                className="p-2 rounded-lg bg-white/10 hover:bg-white/20 transition-colors"
-                                            >
-                                                {isMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
-                                            </button>
-                                            <span className="text-sm text-white/80 font-medium">
-                                                {featuredContent.currentTime} / {featuredContent.duration}
-                                            </span>
-                                        </div>
-                                        <div className="flex items-center gap-2">
-                                            <button className="p-2 rounded-lg bg-white/10 hover:bg-white/20 transition-colors">
-                                                <Grid3X3 size={18} />
-                                            </button>
-                                            <button className="p-2 rounded-lg bg-white/10 hover:bg-white/20 transition-colors">
-                                                <Maximize2 size={18} />
-                                            </button>
-                                        </div>
+                            {/* Video Controls Overlay */}
+                            <div className="absolute bottom-0 left-0 right-0 p-4 bg-gradient-to-t from-black/80 to-transparent">
+                                {/* Progress Bar - Display Only (no scrubbing) */}
+                                <div className="mb-3">
+                                    <div className="h-1 bg-white/20 rounded-full">
+                                        <div
+                                            className="h-full bg-indigo-500 rounded-full transition-all duration-300"
+                                            style={{ width: `${progress}%` }}
+                                        />
                                     </div>
                                 </div>
-                            </div>
-                        </div>
 
-                        {/* Video Info */}
-                        <div className="glass-card p-6 rounded-2xl border border-white/5">
-                            {/* Instructor & Actions Row */}
-                            <div className="flex items-start justify-between mb-4">
-                                <div className="flex items-center gap-4">
-                                    <div className="relative">
-                                        <div className="w-12 h-12 rounded-full bg-gradient-to-br from-indigo-500 to-purple-500 flex items-center justify-center text-white font-bold text-lg">
-                                            {featuredContent.instructor.name[0]}
-                                        </div>
-                                        <div className="absolute -bottom-0.5 -right-0.5 w-4 h-4 bg-green-500 border-2 border-[#0a0a1a] rounded-full" />
+                                {/* Controls Row */}
+                                <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-3">
+                                        <button
+                                            onClick={togglePlayPause}
+                                            className="p-2 rounded-lg bg-white/10 hover:bg-white/20 transition-colors"
+                                        >
+                                            {isPlaying ? <Pause size={18} /> : <Play size={18} />}
+                                        </button>
+                                        <button
+                                            onClick={toggleMute}
+                                            className="p-2 rounded-lg bg-white/10 hover:bg-white/20 transition-colors"
+                                        >
+                                            {isMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
+                                        </button>
+                                        <span className="text-sm text-white/80 font-medium">
+                                            {currentTime} / {videoDuration}
+                                        </span>
                                     </div>
-                                    <div>
-                                        <h4 className="font-bold text-white">{featuredContent.instructor.name}</h4>
-                                        <p className="text-xs text-white/50">{featuredContent.instructor.followers.toLocaleString()} followers</p>
+                                    <div className="flex items-center gap-2">
+                                        {/* Playback Speed Button */}
+                                        <button
+                                            onClick={cyclePlaybackSpeed}
+                                            className="px-3 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 transition-colors text-sm font-bold text-white"
+                                        >
+                                            {playbackSpeed}x
+                                        </button>
+                                        <button className="p-2 rounded-lg bg-white/10 hover:bg-white/20 transition-colors">
+                                            <Maximize2 size={18} />
+                                        </button>
                                     </div>
                                 </div>
-                                <div className="flex items-center gap-3">
-                                    <button className="flex items-center gap-2 px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-white/80 hover:text-white transition-all">
-                                        <Share2 size={16} />
-                                        <span className="text-sm font-medium">Share</span>
-                                    </button>
-                                    <button
-                                        onClick={() => setIsLiked(!isLiked)}
-                                        className={`flex items-center gap-2 px-4 py-2 rounded-xl transition-all ${isLiked
-                                                ? "bg-rose-500 text-white"
-                                                : "bg-white/5 hover:bg-white/10 text-white/80 hover:text-white"
-                                            }`}
-                                    >
-                                        <Heart size={16} className={isLiked ? "fill-current" : ""} />
-                                        <span className="text-sm font-medium">{isLiked ? "Liked" : "Like"}</span>
-                                    </button>
-                                </div>
-                            </div>
-
-                            {/* Title */}
-                            <h2 className="text-xl font-bold text-white mb-3">
-                                {featuredContent.title}
-                            </h2>
-
-                            {/* Stats Row */}
-                            <div className="flex flex-wrap items-center gap-4 mb-4 text-sm text-white/50">
-                                <span className="flex items-center gap-1.5">
-                                    <Eye size={14} />
-                                    {featuredContent.views.toLocaleString()} views
-                                </span>
-                                <span className="flex items-center gap-1.5">
-                                    <ThumbsUp size={14} />
-                                    {featuredContent.likes.toLocaleString()} likes
-                                </span>
-                                <span className="flex items-center gap-1.5">
-                                    <Clock size={14} />
-                                    {featuredContent.duration}
-                                </span>
-                            </div>
-
-                            {/* Description */}
-                            <p className="text-white/60 text-sm leading-relaxed">
-                                {featuredContent.description}
-                            </p>
-
-                            {/* Mark Complete Button */}
-                            <div className="mt-6 pt-4 border-t border-white/5">
-                                <button className="w-full py-3 rounded-xl bg-gradient-to-r from-indigo-500 to-purple-500 hover:from-indigo-600 hover:to-purple-600 text-white font-bold text-sm transition-all flex items-center justify-center gap-2 shadow-[0_0_20px_rgba(99,102,241,0.3)]">
-                                    <CheckCircle size={18} />
-                                    Mark as Complete
-                                </button>
                             </div>
                         </div>
                     </div>
 
-                    {/* Right Column - Chat & Related */}
-                    <div className="space-y-6">
-                        {/* Live Chat / Discussion */}
-                        <div className="glass-card rounded-2xl border border-white/5 overflow-hidden">
-                            <div className="p-4 border-b border-white/5 flex items-center justify-between">
-                                <h3 className="font-bold text-white flex items-center gap-2">
-                                    <MessageCircle size={16} className="text-indigo-400" />
-                                    Discussion
-                                </h3>
-                                <span className="flex items-center gap-1.5 text-xs text-white/50">
-                                    <Users size={12} />
-                                    {liveChat.filter(c => c.online).length} online
-                                </span>
-                            </div>
-
-                            {/* Chat Messages */}
-                            <div className="h-64 overflow-y-auto p-4 space-y-4">
-                                {liveChat.map((chat) => (
-                                    <div key={chat.id} className="flex items-start gap-3">
-                                        <div className="relative flex-shrink-0">
-                                            <div className="w-8 h-8 rounded-full bg-gradient-to-br from-indigo-500 to-purple-500 flex items-center justify-center text-white text-xs font-bold">
-                                                {chat.user[0]}
-                                            </div>
-                                            {chat.online && (
-                                                <div className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 bg-green-500 border border-[#0a0a1a] rounded-full" />
-                                            )}
-                                        </div>
-                                        <div className="flex-1 min-w-0">
-                                            <div className="flex items-center gap-2">
-                                                <span className="text-sm font-medium text-white">{chat.user}</span>
-                                                {chat.online && (
-                                                    <span className="w-1.5 h-1.5 rounded-full bg-green-500" />
-                                                )}
-                                            </div>
-                                            <p className="text-xs text-white/60 mt-0.5">{chat.message}</p>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-
-                            {/* Chat Input */}
-                            <div className="p-4 border-t border-white/5">
-                                <div className="flex items-center gap-2">
-                                    <input
-                                        type="text"
-                                        value={chatMessage}
-                                        onChange={(e) => setChatMessage(e.target.value)}
-                                        placeholder="Write your message..."
-                                        className="flex-1 px-4 py-2.5 bg-white/5 border border-white/10 rounded-xl text-sm text-white placeholder:text-white/40 focus:outline-none focus:border-indigo-500/50"
-                                    />
-                                    <button className="p-2.5 rounded-xl bg-indigo-500 hover:bg-indigo-600 text-white transition-colors">
-                                        <Send size={16} />
-                                    </button>
+                    {/* Video Info */}
+                    <div className="glass-card p-6 rounded-2xl border border-white/5 max-w-4xl">
+                        <div className="flex items-start justify-between mb-4">
+                            <div className="flex-1">
+                                <h2 className="text-2xl font-bold text-white mb-2">
+                                    {featuredResource?.title || 'Select a video'}
+                                </h2>
+                                <div className="flex items-center gap-4 text-sm text-white/50">
+                                    <span className="flex items-center gap-1.5">
+                                        <Clock size={14} />
+                                        {videoDuration || featuredResource?.media_duration || '—'}
+                                    </span>
+                                    <span>Chapter {featuredResource?.chapter_number || 1}</span>
+                                    {featuredResource?.is_required && (
+                                        <span className="flex items-center gap-1.5 text-amber-400">
+                                            <CheckCircle size={14} />
+                                            Required
+                                        </span>
+                                    )}
+                                    {isWatched && (
+                                        <span className="flex items-center gap-1.5 text-emerald-400">
+                                            <CheckCircle size={14} />
+                                            Completed
+                                        </span>
+                                    )}
                                 </div>
                             </div>
                         </div>
 
-                        {/* Related Content */}
+                        {/* Description */}
+                        <p className="text-white/60 text-sm leading-relaxed mb-6">
+                            {featuredResource?.description || 'Watch the video above to learn more about this topic. Complete the full video to mark this chapter as done.'}
+                        </p>
+
+                        {/* Mark Complete Button - Changes When Watched */}
+                        {isWatched ? (
+                            <div className="w-full py-3 rounded-xl bg-emerald-500/20 border border-emerald-500/30 text-emerald-400 font-bold text-sm flex items-center justify-center gap-2">
+                                <CheckCircle size={18} />
+                                Chapter Completed
+                            </div>
+                        ) : (
+                            <div className="w-full py-3 rounded-xl bg-white/5 border border-white/10 text-white/50 font-medium text-sm flex items-center justify-center gap-2">
+                                <Radio size={18} />
+                                Complete video to mark as done
+                            </div>
+                        )}
+                    </div>
+
+                    {/* More Chapters Section */}
+                    {relatedContent.length > 0 && (
                         <div className="glass-card rounded-2xl border border-white/5 overflow-hidden">
-                            <div className="p-4 border-b border-white/5">
-                                <h3 className="font-bold text-white">Related Content</h3>
+                            <div className="p-4 border-b border-white/5 flex items-center justify-between">
+                                <h3 className="font-bold text-white">More Chapters</h3>
+                                <Link
+                                    href="/agent/education/browse"
+                                    className="flex items-center gap-1 text-sm text-indigo-400 hover:text-indigo-300 transition-colors"
+                                >
+                                    See All
+                                    <ChevronRight size={14} />
+                                </Link>
                             </div>
 
-                            <div className="p-4 space-y-4">
+                            <div className="p-4 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                                 {relatedContent.map((content) => (
-                                    <Link
+                                    <button
                                         key={content.id}
-                                        href={`/agent/education/${content.id}`}
-                                        className="flex gap-3 group"
+                                        onClick={() => setFeaturedResource(content)}
+                                        className="flex gap-3 group text-left p-3 rounded-xl hover:bg-white/5 transition-colors"
                                     >
                                         {/* Thumbnail */}
-                                        <div className="relative w-28 h-16 rounded-lg overflow-hidden bg-gradient-to-br from-indigo-600/30 to-purple-600/30 flex-shrink-0">
+                                        <div className="relative w-24 h-14 rounded-lg overflow-hidden bg-gradient-to-br from-indigo-600/30 to-purple-600/30 flex-shrink-0">
                                             <div className="absolute inset-0 flex items-center justify-center">
                                                 {content.type === "video" ? (
                                                     <Video className="w-5 h-5 text-white/60" />
                                                 ) : (
-                                                    <Headphones className="w-5 h-5 text-white/60" />
+                                                    <FileQuestion className="w-5 h-5 text-white/60" />
                                                 )}
                                             </div>
-                                            <div className="absolute bottom-1 right-1 px-1.5 py-0.5 bg-black/60 rounded text-[10px] text-white font-medium">
-                                                {content.duration}
-                                            </div>
+                                            {content.media_duration && (
+                                                <div className="absolute bottom-1 right-1 px-1.5 py-0.5 bg-black/60 rounded text-[10px] text-white font-medium">
+                                                    {content.media_duration}
+                                                </div>
+                                            )}
                                         </div>
 
                                         {/* Info */}
@@ -367,25 +379,13 @@ export default function EducationalPortalPage() {
                                             <h4 className="text-sm font-medium text-white group-hover:text-indigo-400 transition-colors line-clamp-2">
                                                 {content.title}
                                             </h4>
-                                            <p className="text-xs text-white/50 mt-1">{content.instructor}</p>
-                                            <p className="text-xs text-white/40 mt-0.5">{content.views.toLocaleString()} views</p>
+                                            <p className="text-xs text-white/40 mt-1">Chapter {content.chapter_number}</p>
                                         </div>
-                                    </Link>
+                                    </button>
                                 ))}
                             </div>
-
-                            {/* See All Button */}
-                            <div className="p-4 pt-0">
-                                <Link
-                                    href="/agent/education/browse"
-                                    className="flex items-center justify-center gap-2 w-full py-3 rounded-xl bg-indigo-500/20 hover:bg-indigo-500/30 text-indigo-400 font-medium text-sm transition-all"
-                                >
-                                    See All Content
-                                    <ChevronRight size={16} />
-                                </Link>
-                            </div>
                         </div>
-                    </div>
+                    )}
                 </div>
             </div>
         </DashboardLayout>

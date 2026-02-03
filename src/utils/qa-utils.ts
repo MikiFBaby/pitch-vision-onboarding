@@ -66,7 +66,19 @@ export function transformRow(row: DatabaseCallRow): CallData {
         // TODO: Restore original logic once n8n webhook sends correct upload_type
         uploadType: 'manual' as 'manual' | 'automated',
         // Prefer integer column, fallback to parsing text column
+        // CRITICAL: Auto-fail ALWAYS overrides to score of 0
         complianceScore: (() => {
+            // Check for auto-fail from TOP-LEVEL column (per schema)
+            const autoFailFromColumn = row.auto_fail_triggered === true;
+
+            // Check for auto-fail from call_status as backup
+            const statusIndicatesAutoFail = (row.call_status || '').toLowerCase().includes('auto_fail');
+
+            // If auto-fail is triggered, score MUST be 0
+            if (autoFailFromColumn || statusIndicatesAutoFail) {
+                return 0;
+            }
+
             const dbScore = parseScore(row.compliance_score ?? row.call_score);
             if (dbScore > 0) return dbScore;
 
@@ -160,17 +172,30 @@ export function transformRow(row: DatabaseCallRow): CallData {
             if (analysis?.timeline_markers) return analysis.timeline_markers;
             return [];
         })(),
+        // Read from TOP-LEVEL columns per schema, fallback to call_analysis for legacy
         criticalMoments: (() => {
-            // Extract critical moments from call_analysis if available
+            // Prefer top-level column
+            if (row.critical_moments) return parseJsonField(row.critical_moments, { auto_fails: [], passes: [], warnings: [] });
+            // Fallback: Extract from call_analysis
             const analysis = parseJsonField(row.call_analysis, null);
             if (analysis?.critical_moments) return analysis.critical_moments;
             return { auto_fails: [], passes: [], warnings: [] };
         })(),
         autoFailTriggered: (() => {
+            // Prefer top-level column
+            if (row.auto_fail_triggered !== null && row.auto_fail_triggered !== undefined) {
+                return row.auto_fail_triggered;
+            }
+            // Fallback: Extract from call_analysis
             const analysis = parseJsonField(row.call_analysis, null);
             return analysis?.auto_fail_triggered || false;
         })(),
         autoFailReasons: (() => {
+            // Prefer top-level column
+            if (row.auto_fail_reasons) {
+                return parseJsonField(row.auto_fail_reasons, []);
+            }
+            // Fallback: Extract from call_analysis
             const analysis = parseJsonField(row.call_analysis, null);
             return analysis?.auto_fail_reasons || [];
         })(),
@@ -212,6 +237,13 @@ export function transformRow(row: DatabaseCallRow): CallData {
 
         // Tag for escalation/training/audit tracking
         tag: row.tag as 'escalated' | 'training_review' | 'audit_list' | undefined,
+
+        // Licensed Agent (LA) detection metadata
+        transferDetected: row.transfer_detected ?? undefined,
+        transferInitiatedAtSeconds: row.transfer_initiated_at_seconds ?? undefined,
+        laDetected: row.la_detected ?? undefined,
+        laStartedAtSeconds: row.la_started_at_seconds ?? undefined,
+        analysisCutoffSeconds: row.analysis_cutoff_seconds ?? undefined,
 
         // Additional metadata (previously missing)
         batchId: row.batch_id || undefined,
