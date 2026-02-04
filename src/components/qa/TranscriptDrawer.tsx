@@ -657,18 +657,35 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
     if (call?.timelineMarkers && call.timelineMarkers.length > 0) {
       call.timelineMarkers.forEach(m => {
         let timeVal = m.time;
+        let secs = -1;
 
-        // Fallback: Extract time from Evidence if time is "N/A"
-        if ((!timeVal || timeVal === 'N/A') && m.evidence) {
+        // Priority 1: Use time_seconds if valid (this is often populated correctly when time is "N/A")
+        const markerTimeSeconds = (m as any).time_seconds;
+        if (markerTimeSeconds !== undefined && markerTimeSeconds !== null && markerTimeSeconds >= 0 && markerTimeSeconds !== -1) {
+          secs = markerTimeSeconds;
+          // Also generate timeVal for display if not already set
+          if (!timeVal || timeVal === 'N/A') {
+            timeVal = `${Math.floor(markerTimeSeconds / 60)}:${String(markerTimeSeconds % 60).padStart(2, '0')}`;
+          }
+        }
+        // Priority 2: Parse time string
+        else if (timeVal && timeVal !== 'N/A') {
+          secs = parseTimeToSeconds(timeVal);
+        }
+        // Priority 3: Extract time from Evidence
+        else if (m.evidence) {
           const match = m.evidence.match(/\[(\d+:\d+)\]/);
           if (match) {
             timeVal = match[1];
+            secs = parseTimeToSeconds(timeVal);
           } else if (m.evidence.includes('[0:00]')) {
             timeVal = '0:00';
+            secs = 0;
           }
         }
 
-        const secs = parseTimeToSeconds(timeVal);
+        // If still no valid time, skip this marker
+        if (secs < 0) return;
         const pos = (secs / effectiveDuration) * 100;
 
         // Filter out markers before the call is actually live (e.g., during ringing/answering)
@@ -743,22 +760,36 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
       const itemName = item.name || item.requirement || 'Check';
       const isMet = getEffectiveStatus(itemName, originalStatus);
 
-      // Use explicit time, or estimate based on position in checklist if absolutely missing
+      // Use explicit time from multiple sources
       let timeStr = item.time || item.timestamp;
-      const hasExplicitTime = Boolean(timeStr);
+      let itemSecs = -1;
+      let hasExplicitTime = false;
 
-      // If still missing, spread them across 10%-90% of the call duration
-      // Start at 10% to avoid the intro/greeting portion
-      if (!timeStr) {
+      // Priority 1: Use time_seconds if valid (this is often populated when time string is "N/A")
+      if (item.time_seconds !== undefined && item.time_seconds !== null && item.time_seconds >= 0 && item.time_seconds !== -1) {
+        itemSecs = item.time_seconds;
+        hasExplicitTime = true;
+        // Generate timeStr for display
+        if (!timeStr || timeStr === 'N/A') {
+          timeStr = `${Math.floor(item.time_seconds / 60)}:${String(item.time_seconds % 60).padStart(2, '0')}`;
+        }
+      }
+      // Priority 2: Parse time string if valid
+      else if (timeStr && timeStr !== 'N/A' && /^\d{1,2}:\d{2}$/.test(timeStr)) {
+        itemSecs = parseTimeToSeconds(timeStr);
+        hasExplicitTime = true;
+      }
+      // Priority 3: Estimate based on position in checklist
+      else {
         const startOffset = effectiveDuration * 0.1; // Start at 10% of call
         const spreadDuration = effectiveDuration * 0.8; // Spread across 80% of call
         const estimatedSeconds = Math.round(startOffset + (idx / Math.max(validItems.length - 1, 1)) * spreadDuration);
+        itemSecs = estimatedSeconds;
         const mins = Math.floor(estimatedSeconds / 60);
         const secs = estimatedSeconds % 60;
         timeStr = `${mins}:${secs.toString().padStart(2, '0')}`;
+        hasExplicitTime = false;
       }
-
-      const itemSecs = parseTimeToSeconds(timeStr);
       const pos = (itemSecs / effectiveDuration) * 100;
 
       // For explicit timestamps, allow any position > 0
@@ -3110,8 +3141,20 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                                   item.time !== '' &&
                                   item.time !== 'N/A' &&
                                   /^\d{1,2}:\d{2}$/.test(item.time);
-                                const hasTimestamp = !!match || validItemTime;
-                                const displayTime = match ? match[1] : (validItemTime ? item.time : null);
+
+                                // Check time_seconds as fallback (this is often populated when time is "N/A")
+                                const validTimeSeconds = item.time_seconds !== undefined &&
+                                  item.time_seconds !== null &&
+                                  item.time_seconds >= 0 &&
+                                  item.time_seconds !== -1;
+
+                                // Convert time_seconds to MM:SS format for display
+                                const timeSecondsDisplay = validTimeSeconds
+                                  ? `${Math.floor(item.time_seconds / 60)}:${String(item.time_seconds % 60).padStart(2, '0')}`
+                                  : null;
+
+                                const hasTimestamp = !!match || validItemTime || validTimeSeconds;
+                                const displayTime = match ? match[1] : (validItemTime ? item.time : timeSecondsDisplay);
 
                                 // Check if this is "no clear evidence" and needs counter-evidence option
                                 const isNoEvidence = item.evidence.toLowerCase().includes('no clear evidence');
@@ -3127,6 +3170,8 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                                           handleSeek(parseTimeToSeconds(match[1]));
                                         } else if (validItemTime) {
                                           handleSeek(parseTimeToSeconds(item.time));
+                                        } else if (validTimeSeconds) {
+                                          handleSeek(item.time_seconds);
                                         }
                                       }}
                                       className={`
@@ -3203,6 +3248,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                                             e.stopPropagation();
                                             if (match) handleSeek(parseTimeToSeconds(match[1]));
                                             else if (validItemTime) handleSeek(parseTimeToSeconds(item.time));
+                                            else if (validTimeSeconds) handleSeek(item.time_seconds);
                                           }}
                                           className="flex items-center gap-1.5 text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-1 rounded-md hover:bg-indigo-100 transition-colors border border-indigo-100"
                                         >
