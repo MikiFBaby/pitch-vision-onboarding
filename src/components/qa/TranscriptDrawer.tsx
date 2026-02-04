@@ -160,9 +160,6 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
   // Local state to track overrides without page reload
   const [localOverrides, setLocalOverrides] = useState<{ [key: string]: string }>({});
 
-  // State for counter-evidence input
-  const [counterEvidenceInput, setCounterEvidenceInput] = useState<{ [key: string]: string }>({});
-  const [editingCounterEvidence, setEditingCounterEvidence] = useState<string | null>(null);
 
   // Local score that updates based on overrides
   const [localScore, setLocalScore] = useState<number | null>(null);
@@ -2849,10 +2846,24 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                       const code = isString
                         ? (isExtractionError ? 'ERR' : `AF-${String(idx + 1).padStart(2, '0')}`)
                         : (typeof reason.code === 'string' ? reason.code : (isExtractionError ? 'ERR' : `AF-${String(idx + 1).padStart(2, '0')}`));
-                      const timestamp = isString ? null : (typeof reason.timestamp === 'string' ? reason.timestamp : null);
+                      const rawTimestamp = isString ? null : (typeof reason.timestamp === 'string' ? reason.timestamp : null);
                       const evidence = isString ? null : reason.evidence;
-                      const timeSeconds = isString ? -1 : ((reason as any).time_seconds ?? -1);
-                      const hasValidTimestamp = timestamp && timestamp !== 'N/A' && timestamp !== '-1' && timeSeconds >= 0;
+                      const rawTimeSeconds = isString ? -1 : ((reason as any).time_seconds ?? -1);
+
+                      // Determine valid timestamp and seconds - accept either source
+                      let displayTimestamp = rawTimestamp;
+                      let seekSeconds = rawTimeSeconds;
+
+                      // If we have valid time_seconds but no display timestamp, generate one
+                      if (seekSeconds >= 0 && (!displayTimestamp || displayTimestamp === 'N/A')) {
+                        displayTimestamp = `${Math.floor(seekSeconds / 60)}:${String(seekSeconds % 60).padStart(2, '0')}`;
+                      }
+                      // If we have valid timestamp string but no time_seconds, parse it
+                      else if (displayTimestamp && displayTimestamp !== 'N/A' && displayTimestamp !== '-1' && seekSeconds < 0) {
+                        seekSeconds = parseTimeToSeconds(displayTimestamp);
+                      }
+
+                      const hasValidTimestamp = seekSeconds >= 0 || (displayTimestamp && displayTimestamp !== 'N/A' && displayTimestamp !== '-1');
 
                       return (
                         <div key={idx} className={`p-3 bg-white rounded-lg border ${isExtractionError ? 'border-amber-200' : 'border-rose-200'}`}>
@@ -2873,11 +2884,11 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                             </div>
                             {hasValidTimestamp && (
                               <button
-                                onClick={() => handleSeek(timeSeconds)}
+                                onClick={() => handleSeek(seekSeconds >= 0 ? seekSeconds : parseTimeToSeconds(displayTimestamp || '0:00'))}
                                 className={`shrink-0 flex items-center gap-1.5 text-xs font-bold ${isExtractionError ? 'text-amber-600 bg-amber-100 hover:bg-amber-200' : 'text-rose-600 bg-rose-100 hover:bg-rose-200'} px-2.5 py-1.5 rounded-md transition-colors`}
                               >
                                 <Play size={10} fill="currentColor" />
-                                Jump to {timestamp}
+                                Jump to {displayTimestamp}
                               </button>
                             )}
                           </div>
@@ -3160,11 +3171,8 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                                 const hasTimestamp = !!match || validItemTime || validTimeSeconds;
                                 const displayTime = match ? match[1] : (validItemTime ? item.time : timeSecondsDisplay);
 
-                                // Check if this is "no clear evidence" and needs counter-evidence option
+                                // Check if this is "no clear evidence" - highlight for QA attention
                                 const isNoEvidence = item.evidence.toLowerCase().includes('no clear evidence');
-                                const itemKey = (item.name || item.requirement || '').toLowerCase().replace(/\s+/g, '_');
-                                const savedCounterEvidence = counterEvidenceInput[itemKey];
-                                const isEditing = editingCounterEvidence === itemKey;
 
                                 return (
                                   <>
@@ -3181,68 +3189,11 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                                       className={`
                                       text-sm text-slate-600 bg-slate-50 p-2.5 rounded-lg border border-slate-100 italic transition-all leading-relaxed
                                       ${hasTimestamp ? 'cursor-pointer hover:bg-indigo-50 hover:border-indigo-100 hover:text-indigo-700' : ''}
-                                      ${isNoEvidence && !savedCounterEvidence ? 'bg-amber-50 border-amber-200 text-amber-700' : ''}
+                                      ${isNoEvidence ? 'bg-amber-50 border-amber-200 text-amber-700' : ''}
                                     `}
                                     >
-                                      {savedCounterEvidence ? `"${savedCounterEvidence}"` : `"${item.evidence}"`}
-                                      {savedCounterEvidence && (
-                                        <span className="ml-2 text-[10px] font-bold text-emerald-600 bg-emerald-100 px-1.5 py-0.5 rounded not-italic">QA Override</span>
-                                      )}
+                                      "{item.evidence}"
                                     </div>
-
-                                    {/* Counter-Evidence Input for "No clear evidence" items */}
-                                    {isNoEvidence && !savedCounterEvidence && (
-                                      <div className="mt-2">
-                                        {isEditing ? (
-                                          <div className="space-y-2">
-                                            <textarea
-                                              placeholder="Enter evidence from transcript that shows this requirement was met..."
-                                              className="w-full px-3 py-2 text-sm border border-amber-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500 resize-none"
-                                              rows={2}
-                                              value={counterEvidenceInput[itemKey] || ''}
-                                              onChange={(e) => setCounterEvidenceInput(prev => ({ ...prev, [itemKey]: e.target.value }))}
-                                              autoFocus
-                                            />
-                                            <div className="flex gap-2 justify-end">
-                                              <button
-                                                onClick={() => {
-                                                  setEditingCounterEvidence(null);
-                                                  setCounterEvidenceInput(prev => ({ ...prev, [itemKey]: '' }));
-                                                }}
-                                                className="text-xs text-slate-500 hover:text-slate-700 px-2 py-1"
-                                              >
-                                                Cancel
-                                              </button>
-                                              <button
-                                                onClick={() => {
-                                                  if (counterEvidenceInput[itemKey]?.trim()) {
-                                                    // Save counter-evidence and mark as pass
-                                                    handleToggleOverride(item.name || item.requirement, 'fail');
-                                                    setEditingCounterEvidence(null);
-                                                    setToast({
-                                                      message: `Counter-evidence saved and marked as PASS`,
-                                                      type: 'success'
-                                                    });
-                                                  }
-                                                }}
-                                                disabled={!counterEvidenceInput[itemKey]?.trim()}
-                                                className="text-xs font-bold text-white bg-emerald-500 hover:bg-emerald-600 disabled:bg-slate-300 px-3 py-1 rounded-md transition-colors"
-                                              >
-                                                Save & Mark Pass
-                                              </button>
-                                            </div>
-                                          </div>
-                                        ) : (
-                                          <button
-                                            onClick={() => setEditingCounterEvidence(itemKey)}
-                                            className="flex items-center gap-1.5 text-[10px] font-bold text-amber-600 hover:text-amber-700 bg-amber-100 hover:bg-amber-200 px-2.5 py-1.5 rounded-md transition-colors"
-                                          >
-                                            <Plus size={10} />
-                                            Provide Counter-Evidence
-                                          </button>
-                                        )}
-                                      </div>
-                                    )}
 
                                     {/* Explicit Timestamp Button if present and valid */}
                                     {hasTimestamp && displayTime && (
