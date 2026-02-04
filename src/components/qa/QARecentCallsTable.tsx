@@ -986,14 +986,66 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
                                   <ShieldAlert size={12} className="text-rose-500" /> Violations & Risks
                                 </h4>
                                 <div className="space-y-3 flex-1 overflow-y-auto max-h-[200px] pr-2 custom-scrollbar">
-                                  {call.violations && call.violations.length > 0 ? (
-                                    call.violations.map((v, i) => (
-                                      <div key={i} className="flex gap-3 bg-rose-50/50 p-3 rounded-lg border border-rose-100">
-                                        <AlertTriangle size={14} className="text-rose-500 shrink-0 mt-0.5" />
-                                        <p className="text-xs text-rose-800 font-bold">{v}</p>
-                                      </div>
-                                    ))
-                                  ) : (
+                                  {/* Auto-Fail Reasons (highest priority) */}
+                                  {call.autoFailReasons && call.autoFailReasons.length > 0 && (
+                                    call.autoFailReasons.map((af: any, i: number) => {
+                                      const isObject = typeof af === 'object' && af !== null;
+                                      const code = isObject ? af.code : `AF-${i + 1}`;
+                                      const violation = isObject ? (af.violation || af.description) : af;
+                                      const evidence = isObject ? af.evidence : null;
+                                      const timestamp = isObject ? af.timestamp : null;
+                                      const hasValidTimestamp = timestamp && timestamp !== '-1' && timestamp !== 'N/A' && timestamp !== '';
+                                      return (
+                                        <div key={`af-${i}`} className="flex gap-3 bg-rose-100 p-3 rounded-lg border border-rose-300">
+                                          <XCircle size={14} className="text-rose-600 shrink-0 mt-0.5" />
+                                          <div className="flex-1 min-w-0">
+                                            <div className="flex items-baseline justify-between gap-2">
+                                              <p className="text-xs text-rose-900 font-black">{code}: {violation}</p>
+                                              {hasValidTimestamp && (
+                                                <span className="shrink-0 text-[10px] text-rose-600 font-mono bg-rose-200/50 px-1.5 py-0.5 rounded flex items-center gap-1">
+                                                  <Clock size={8} /> {timestamp}
+                                                </span>
+                                              )}
+                                            </div>
+                                            {evidence && (
+                                              <p className="text-[10px] text-rose-700 mt-1 italic line-clamp-2">"{evidence}"</p>
+                                            )}
+                                          </div>
+                                        </div>
+                                      );
+                                    })
+                                  )}
+                                  {/* Regular Violations */}
+                                  {call.violations && call.violations.length > 0 && (
+                                    call.violations.map((v, i) => {
+                                      const isObject = typeof v === 'object' && v !== null;
+                                      const violation = typeof v === 'string' ? v : (v as any).description || (v as any).violation || JSON.stringify(v);
+                                      const timestamp = isObject ? (v as any).timestamp : null;
+                                      const evidence = isObject ? (v as any).evidence : null;
+                                      const hasValidTimestamp = timestamp && timestamp !== '-1' && timestamp !== 'N/A' && timestamp !== '';
+                                      return (
+                                        <div key={`v-${i}`} className="flex gap-3 bg-rose-50/50 p-3 rounded-lg border border-rose-100">
+                                          <AlertTriangle size={14} className="text-rose-500 shrink-0 mt-0.5" />
+                                          <div className="flex-1 min-w-0">
+                                            <div className="flex items-baseline justify-between gap-2">
+                                              <p className="text-xs text-rose-800 font-bold">{violation}</p>
+                                              {hasValidTimestamp && (
+                                                <span className="shrink-0 text-[10px] text-rose-500 font-mono bg-rose-100 px-1.5 py-0.5 rounded flex items-center gap-1">
+                                                  <Clock size={8} /> {timestamp}
+                                                </span>
+                                              )}
+                                            </div>
+                                            {evidence && (
+                                              <p className="text-[10px] text-rose-600 mt-1 italic line-clamp-2">"{evidence}"</p>
+                                            )}
+                                          </div>
+                                        </div>
+                                      );
+                                    })
+                                  )}
+                                  {/* No violations message */}
+                                  {(!call.autoFailReasons || call.autoFailReasons.length === 0) &&
+                                   (!call.violations || call.violations.length === 0) && (
                                     <div className="flex flex-col items-center justify-center h-full text-slate-400">
                                       <CheckCircle2 size={32} className="mb-2 text-emerald-500/20" />
                                       <p className="text-xs font-bold">No Violations Detected</p>

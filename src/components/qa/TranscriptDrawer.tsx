@@ -2045,20 +2045,35 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                       {/* Additional Metrics Grid */}
                       <div className="grid grid-cols-2 gap-3">
                         {/* Script Adherence - Enhanced with expandable details */}
-                        {call.languageAssessment.script_adherence && (
+                        {call.languageAssessment.script_adherence !== undefined && call.languageAssessment.script_adherence !== null && (
                           (() => {
-                            // Support both old format (string) and new format (object with details)
+                            // Support multiple formats: string ("moderate"), number (90), or object ({level, score, ...})
                             const scriptData = call.languageAssessment.script_adherence;
                             const isDetailedFormat = typeof scriptData === 'object' && scriptData !== null;
+                            const isNumericFormat = typeof scriptData === 'number';
 
-                            const level = isDetailedFormat ? (scriptData.level || 'moderate') : scriptData;
-                            const score = isDetailedFormat ? scriptData.score : null;
+                            // Handle all three formats
+                            let level: string;
+                            let score: number | null;
+                            if (isDetailedFormat) {
+                              level = scriptData.level || 'moderate';
+                              score = scriptData.score ?? scriptData.overall_adherence ?? null;
+                            } else if (isNumericFormat) {
+                              // Number format: 90 = high, 50-89 = moderate, <50 = low
+                              score = scriptData;
+                              level = scriptData >= 80 ? 'high' : scriptData >= 50 ? 'moderate' : 'low';
+                            } else {
+                              // String format: "high", "moderate", "low"
+                              level = String(scriptData);
+                              score = null;
+                            }
+
                             const phrasesFound = isDetailedFormat ? (scriptData.key_phrases_found || []) : [];
                             const phrasesMissing = isDetailedFormat ? (scriptData.key_phrases_missing || []) : [];
                             const sequenceCorrect = isDetailedFormat ? scriptData.sequence_correct : null;
                             const terminologyIssues = isDetailedFormat ? (scriptData.terminology_issues || []) : [];
 
-                            const levelLower = (level || '').toLowerCase();
+                            const levelLower = (level || 'moderate').toLowerCase();
                             const colorClass = levelLower === 'high' ? 'text-emerald-600' :
                               levelLower === 'moderate' || levelLower === 'medium' ? 'text-amber-600' : 'text-rose-600';
                             const bgColorClass = levelLower === 'high' ? 'bg-emerald-500' :
