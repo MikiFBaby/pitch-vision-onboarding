@@ -160,6 +160,10 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
   // Local state to track overrides without page reload
   const [localOverrides, setLocalOverrides] = useState<{ [key: string]: string }>({});
 
+  // State for counter-evidence input
+  const [counterEvidenceInput, setCounterEvidenceInput] = useState<{ [key: string]: string }>({});
+  const [editingCounterEvidence, setEditingCounterEvidence] = useState<string | null>(null);
+
   // Local score that updates based on overrides
   const [localScore, setLocalScore] = useState<number | null>(null);
 
@@ -2048,7 +2052,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
 
                       {/* Additional Metrics Grid */}
                       <div className="grid grid-cols-2 gap-3">
-                        {/* Script Adherence - Enhanced with expandable details */}
+                        {/* Script Adherence - Enhanced with section-by-section breakdown */}
                         {call.languageAssessment.script_adherence !== undefined && call.languageAssessment.script_adherence !== null && (
                           (() => {
                             // Support multiple formats: string ("moderate"), number (90), or object ({level, score, ...})
@@ -2077,13 +2081,38 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                             const sequenceCorrect = isDetailedFormat ? scriptData.sequence_correct : null;
                             const terminologyIssues = isDetailedFormat ? (scriptData.terminology_issues || []) : [];
 
+                            // Section scores from new format
+                            const sectionScores = isDetailedFormat ? (scriptData.section_scores || {}) : {};
+                            const hasSectionScores = Object.keys(sectionScores).length > 0;
+
+                            // Individual metric scores
+                            const metricScores = isDetailedFormat ? {
+                              key_phrases: scriptData.key_phrases_score,
+                              sequence_order: scriptData.sequence_order_score,
+                              response_handling: scriptData.response_handling_score,
+                              terminology: scriptData.terminology_score
+                            } : {};
+                            const hasMetricScores = Object.values(metricScores).some(v => v !== undefined && v !== null);
+
                             const levelLower = (level || 'moderate').toLowerCase();
                             const colorClass = levelLower === 'high' ? 'text-emerald-600' :
                               levelLower === 'moderate' || levelLower === 'medium' ? 'text-amber-600' : 'text-rose-600';
                             const bgColorClass = levelLower === 'high' ? 'bg-emerald-500' :
                               levelLower === 'moderate' || levelLower === 'medium' ? 'bg-amber-500' : 'bg-rose-500';
 
-                            const hasDetails = phrasesFound.length > 0 || phrasesMissing.length > 0 || terminologyIssues.length > 0;
+                            const hasDetails = phrasesFound.length > 0 || phrasesMissing.length > 0 || terminologyIssues.length > 0 || hasSectionScores || hasMetricScores;
+
+                            // Helper to format section names
+                            const formatSectionName = (key: string) => {
+                              return key.split('_').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+                            };
+
+                            // Helper to get score color
+                            const getScoreColor = (score: number) => {
+                              if (score >= 80) return { text: 'text-emerald-600', bg: 'bg-emerald-500' };
+                              if (score >= 50) return { text: 'text-amber-600', bg: 'bg-amber-500' };
+                              return { text: 'text-rose-600', bg: 'bg-rose-500' };
+                            };
 
                             return (
                               <div className="bg-slate-50 rounded-xl p-3 col-span-2">
@@ -2110,10 +2139,130 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                                 {/* Expandable details */}
                                 {hasDetails && (
                                   <details className="mt-2">
-                                    <summary className="text-[10px] text-slate-500 cursor-pointer hover:text-slate-700 font-medium">
-                                      View Details ({phrasesFound.length} found, {phrasesMissing.length} missing)
+                                    <summary className="text-[10px] text-slate-500 cursor-pointer hover:text-slate-700 font-medium flex items-center gap-1">
+                                      <ChevronRight size={12} className="transition-transform details-open:rotate-90" />
+                                      View Breakdown {hasSectionScores && `(${Object.keys(sectionScores).length} sections)`}
                                     </summary>
-                                    <div className="mt-2 space-y-2 text-[10px]">
+                                    <div className="mt-3 space-y-3 text-[10px]">
+
+                                      {/* Metric Scores Grid */}
+                                      {hasMetricScores && (
+                                        <div className="grid grid-cols-2 gap-2 mb-3">
+                                          {metricScores.key_phrases !== undefined && (
+                                            <div className="bg-white rounded-lg p-2 border border-slate-200">
+                                              <span className="text-[9px] text-slate-500 block">Key Phrases</span>
+                                              <div className="flex items-center gap-2 mt-1">
+                                                <span className={`text-sm font-bold ${getScoreColor(metricScores.key_phrases).text}`}>
+                                                  {metricScores.key_phrases}%
+                                                </span>
+                                                <div className="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                                                  <div className={`h-full rounded-full ${getScoreColor(metricScores.key_phrases).bg}`} style={{ width: `${metricScores.key_phrases}%` }} />
+                                                </div>
+                                              </div>
+                                            </div>
+                                          )}
+                                          {metricScores.sequence_order !== undefined && (
+                                            <div className="bg-white rounded-lg p-2 border border-slate-200">
+                                              <span className="text-[9px] text-slate-500 block">Sequence Order</span>
+                                              <div className="flex items-center gap-2 mt-1">
+                                                <span className={`text-sm font-bold ${getScoreColor(metricScores.sequence_order).text}`}>
+                                                  {metricScores.sequence_order}%
+                                                </span>
+                                                <div className="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                                                  <div className={`h-full rounded-full ${getScoreColor(metricScores.sequence_order).bg}`} style={{ width: `${metricScores.sequence_order}%` }} />
+                                                </div>
+                                              </div>
+                                            </div>
+                                          )}
+                                          {metricScores.response_handling !== undefined && (
+                                            <div className="bg-white rounded-lg p-2 border border-slate-200">
+                                              <span className="text-[9px] text-slate-500 block">Response Handling</span>
+                                              <div className="flex items-center gap-2 mt-1">
+                                                <span className={`text-sm font-bold ${getScoreColor(metricScores.response_handling).text}`}>
+                                                  {metricScores.response_handling}%
+                                                </span>
+                                                <div className="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                                                  <div className={`h-full rounded-full ${getScoreColor(metricScores.response_handling).bg}`} style={{ width: `${metricScores.response_handling}%` }} />
+                                                </div>
+                                              </div>
+                                            </div>
+                                          )}
+                                          {metricScores.terminology !== undefined && (
+                                            <div className="bg-white rounded-lg p-2 border border-slate-200">
+                                              <span className="text-[9px] text-slate-500 block">Terminology</span>
+                                              <div className="flex items-center gap-2 mt-1">
+                                                <span className={`text-sm font-bold ${getScoreColor(metricScores.terminology).text}`}>
+                                                  {metricScores.terminology}%
+                                                </span>
+                                                <div className="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                                                  <div className={`h-full rounded-full ${getScoreColor(metricScores.terminology).bg}`} style={{ width: `${metricScores.terminology}%` }} />
+                                                </div>
+                                              </div>
+                                            </div>
+                                          )}
+                                        </div>
+                                      )}
+
+                                      {/* Section-by-Section Breakdown */}
+                                      {hasSectionScores && (
+                                        <div className="space-y-2">
+                                          <span className="font-semibold text-slate-700 block mb-2 text-[11px]">Section Breakdown:</span>
+                                          {Object.entries(sectionScores).map(([sectionKey, sectionData]: [string, any]) => {
+                                            const sectionScore = sectionData?.score ?? 0;
+                                            const sectionWeight = sectionData?.weight ?? 0;
+                                            const sectionNotes = sectionData?.notes || '';
+                                            const sectionColors = getScoreColor(sectionScore);
+
+                                            return (
+                                              <div key={sectionKey} className="bg-white rounded-lg p-2.5 border border-slate-200">
+                                                <div className="flex justify-between items-center mb-1.5">
+                                                  <span className="font-semibold text-slate-700 text-[11px]">
+                                                    {formatSectionName(sectionKey)}
+                                                  </span>
+                                                  <div className="flex items-center gap-2">
+                                                    {sectionWeight > 0 && (
+                                                      <span className="text-[9px] text-slate-400">Weight: {sectionWeight}%</span>
+                                                    )}
+                                                    <span className={`text-xs font-bold ${sectionColors.text}`}>
+                                                      {sectionScore}%
+                                                    </span>
+                                                  </div>
+                                                </div>
+                                                <div className="h-1.5 bg-slate-200 rounded-full overflow-hidden mb-2">
+                                                  <div
+                                                    className={`h-full rounded-full ${sectionColors.bg}`}
+                                                    style={{ width: `${sectionScore}%` }}
+                                                  />
+                                                </div>
+                                                {sectionNotes && (
+                                                  <div className="bg-slate-50 rounded p-2 border-l-2 border-slate-300">
+                                                    <span className="text-[9px] text-slate-500 block mb-0.5">Analysis:</span>
+                                                    <p className="text-[10px] text-slate-600 leading-relaxed">{sectionNotes}</p>
+                                                  </div>
+                                                )}
+                                                {/* Show specific flags if available */}
+                                                {sectionData?.got_verbal_okay !== undefined && (
+                                                  <div className="flex items-center gap-1 mt-1.5 text-[9px]">
+                                                    {sectionData.got_verbal_okay ? (
+                                                      <>
+                                                        <CheckCircle2 size={10} className="text-emerald-500" />
+                                                        <span className="text-emerald-600">Customer gave verbal consent</span>
+                                                      </>
+                                                    ) : (
+                                                      <>
+                                                        <XCircle size={10} className="text-rose-500" />
+                                                        <span className="text-rose-600">No verbal consent obtained</span>
+                                                      </>
+                                                    )}
+                                                  </div>
+                                                )}
+                                              </div>
+                                            );
+                                          })}
+                                        </div>
+                                      )}
+
+                                      {/* Legacy details for older format */}
                                       {phrasesFound.length > 0 && (
                                         <div>
                                           <span className="font-semibold text-emerald-600 block mb-1">Key Phrases Found:</span>
@@ -2530,16 +2679,40 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                               <XCircle size={12} className="text-rose-500" />
                               <span className="text-[10px] font-bold text-rose-600 uppercase tracking-wider">Auto-Fails ({call.criticalMoments.auto_fails.length})</span>
                             </div>
-                            <div className="space-y-1.5">
-                              {call.criticalMoments.auto_fails.slice(0, 3).map((item: any, idx: number) => {
-                                // Handle multiple formats: old (reason/title/event), new (violation/description), or string
-                                const displayText = typeof item === 'string'
-                                  ? item
-                                  : (item.violation || item.reason || item.title || item.event || item.description || 'Critical failure');
+                            <div className="space-y-2">
+                              {call.criticalMoments.auto_fails.slice(0, 5).map((item: any, idx: number) => {
+                                const isString = typeof item === 'string';
+                                const code = isString ? `AF-${String(idx + 1).padStart(2, '0')}` : (item.code || `AF-${String(idx + 1).padStart(2, '0')}`);
+                                const displayText = isString ? item : (item.description || item.violation || item.reason || item.title || 'Critical failure');
+                                const evidence = isString ? null : item.evidence;
+                                const timestamp = isString ? null : item.timestamp;
+                                const timeSeconds = isString ? -1 : (item.time_seconds ?? -1);
+                                const hasValidTimestamp = timestamp && timestamp !== 'N/A' && timestamp !== '-1' && timeSeconds >= 0;
+
                                 return (
-                                  <div key={idx} className="flex items-start gap-2 p-2 bg-rose-50 rounded-lg border border-rose-100">
-                                    <div className="w-1.5 h-1.5 rounded-full bg-rose-500 mt-1.5 shrink-0" />
-                                    <p className="text-xs text-rose-700">{typeof displayText === 'string' ? displayText : JSON.stringify(displayText)}</p>
+                                  <div key={idx} className="p-2.5 bg-rose-50 rounded-lg border border-rose-200">
+                                    <div className="flex items-start justify-between gap-2">
+                                      <div className="flex items-start gap-2 flex-1 min-w-0">
+                                        <div className="w-1.5 h-1.5 rounded-full bg-rose-500 mt-1.5 shrink-0" />
+                                        <div className="flex-1 min-w-0">
+                                          <p className="text-xs font-bold text-rose-700">
+                                            <span className="text-rose-500">[{code}]</span> {displayText}
+                                          </p>
+                                          {evidence && (
+                                            <p className="text-[10px] text-rose-600 mt-1 italic">"{evidence}"</p>
+                                          )}
+                                        </div>
+                                      </div>
+                                      {hasValidTimestamp && (
+                                        <button
+                                          onClick={() => handleSeek(timeSeconds)}
+                                          className="shrink-0 flex items-center gap-1 text-[10px] font-bold text-rose-600 bg-rose-100 hover:bg-rose-200 px-2 py-1 rounded-md transition-colors"
+                                        >
+                                          <Play size={8} fill="currentColor" />
+                                          {timestamp}
+                                        </button>
+                                      )}
+                                    </div>
                                   </div>
                                 );
                               })}
@@ -2565,23 +2738,48 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                           </div>
                         )}
 
-                        {/* Key Passes - Collapsed by default */}
+                        {/* Key Passes - With item names and clickable timestamps */}
                         {call.criticalMoments.passes?.length > 0 && (
                           <div>
                             <div className="flex items-center gap-2 mb-2">
                               <CheckCircle2 size={12} className="text-emerald-500" />
                               <span className="text-[10px] font-bold text-emerald-600 uppercase tracking-wider">Key Passes ({call.criticalMoments.passes.length})</span>
                             </div>
-                            <div className="flex flex-wrap gap-1.5">
-                              {call.criticalMoments.passes.slice(0, 5).map((item: any, idx: number) => (
-                                <span key={idx} className="text-[10px] font-medium text-emerald-700 bg-emerald-50 px-2 py-1 rounded-md border border-emerald-100">
-                                  {item.title || item.event || (typeof item === 'string' ? item : `Pass ${idx + 1}`)}
-                                </span>
-                              ))}
-                              {call.criticalMoments.passes.length > 5 && (
-                                <span className="text-[10px] font-medium text-slate-500 bg-slate-100 px-2 py-1 rounded-md">
-                                  +{call.criticalMoments.passes.length - 5}
-                                </span>
+                            <div className="space-y-1.5">
+                              {call.criticalMoments.passes.slice(0, 7).map((item: any, idx: number) => {
+                                const isString = typeof item === 'string';
+                                const itemName = isString ? item : (item.item || item.title || item.event || `Pass ${idx + 1}`);
+                                const timestamp = isString ? null : item.timestamp;
+                                const evidence = isString ? null : item.evidence;
+                                const timeSeconds = timestamp ? parseTimeToSeconds(timestamp) : -1;
+                                const hasValidTimestamp = timestamp && timestamp !== 'N/A' && timeSeconds >= 0;
+
+                                return (
+                                  <div
+                                    key={idx}
+                                    className={`flex items-center justify-between gap-2 p-2 bg-emerald-50 rounded-lg border border-emerald-100 ${hasValidTimestamp ? 'cursor-pointer hover:bg-emerald-100 transition-colors' : ''}`}
+                                    onClick={() => hasValidTimestamp && handleSeek(timeSeconds)}
+                                    title={evidence ? `"${evidence}"` : undefined}
+                                  >
+                                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                                      <CheckCircle2 size={12} className="text-emerald-500 shrink-0" />
+                                      <span className="text-[11px] font-medium text-emerald-700 truncate">{itemName}</span>
+                                    </div>
+                                    {hasValidTimestamp && (
+                                      <span className="shrink-0 text-[10px] font-mono text-emerald-600 bg-emerald-100 px-1.5 py-0.5 rounded flex items-center gap-1">
+                                        <Play size={8} fill="currentColor" />
+                                        {timestamp}
+                                      </span>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                              {call.criticalMoments.passes.length > 7 && (
+                                <div className="text-center">
+                                  <span className="text-[10px] font-medium text-slate-500 bg-slate-100 px-2 py-1 rounded-md">
+                                    +{call.criticalMoments.passes.length - 7} more passes
+                                  </span>
+                                </div>
                               )}
                             </div>
                           </div>
@@ -2617,16 +2815,35 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                         ? (isExtractionError ? 'ERR' : `AF-${String(idx + 1).padStart(2, '0')}`)
                         : (typeof reason.code === 'string' ? reason.code : (isExtractionError ? 'ERR' : `AF-${String(idx + 1).padStart(2, '0')}`));
                       const timestamp = isString ? null : (typeof reason.timestamp === 'string' ? reason.timestamp : null);
+                      const evidence = isString ? null : reason.evidence;
+                      const timeSeconds = isString ? -1 : ((reason as any).time_seconds ?? -1);
+                      const hasValidTimestamp = timestamp && timestamp !== 'N/A' && timestamp !== '-1' && timeSeconds >= 0;
+
                       return (
-                        <div key={idx} className={`flex items-start gap-2 p-2 bg-white rounded-lg border ${isExtractionError ? 'border-amber-200' : 'border-rose-200'}`}>
-                          <XCircle size={14} className={`${isExtractionError ? 'text-amber-500' : 'text-rose-500'} mt-0.5 shrink-0`} />
-                          <div className="flex-1">
-                            <p className={`text-sm ${isExtractionError ? 'text-amber-700' : 'text-rose-700'} font-medium`}>
-                              {!isString && <span className="font-bold mr-1">[{code}]</span>}
-                              {violation}
-                            </p>
-                            {timestamp && (
-                              <p className={`text-xs ${isExtractionError ? 'text-amber-500' : 'text-rose-500'} mt-0.5`}>@ {timestamp}</p>
+                        <div key={idx} className={`p-3 bg-white rounded-lg border ${isExtractionError ? 'border-amber-200' : 'border-rose-200'}`}>
+                          <div className="flex items-start justify-between gap-2">
+                            <div className="flex items-start gap-2 flex-1 min-w-0">
+                              <XCircle size={14} className={`${isExtractionError ? 'text-amber-500' : 'text-rose-500'} mt-0.5 shrink-0`} />
+                              <div className="flex-1 min-w-0">
+                                <p className={`text-sm ${isExtractionError ? 'text-amber-700' : 'text-rose-700'} font-bold`}>
+                                  <span className={`${isExtractionError ? 'text-amber-500' : 'text-rose-500'} mr-1`}>[{code}]</span>
+                                  {violation}
+                                </p>
+                                {evidence && (
+                                  <p className={`text-xs ${isExtractionError ? 'text-amber-600' : 'text-rose-600'} mt-1.5 italic bg-rose-50 p-2 rounded`}>
+                                    "{evidence}"
+                                  </p>
+                                )}
+                              </div>
+                            </div>
+                            {hasValidTimestamp && (
+                              <button
+                                onClick={() => handleSeek(timeSeconds)}
+                                className={`shrink-0 flex items-center gap-1.5 text-xs font-bold ${isExtractionError ? 'text-amber-600 bg-amber-100 hover:bg-amber-200' : 'text-rose-600 bg-rose-100 hover:bg-rose-200'} px-2.5 py-1.5 rounded-md transition-colors`}
+                              >
+                                <Play size={10} fill="currentColor" />
+                                Jump to {timestamp}
+                              </button>
                             )}
                           </div>
                         </div>
@@ -2896,6 +3113,12 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                                 const hasTimestamp = !!match || validItemTime;
                                 const displayTime = match ? match[1] : (validItemTime ? item.time : null);
 
+                                // Check if this is "no clear evidence" and needs counter-evidence option
+                                const isNoEvidence = item.evidence.toLowerCase().includes('no clear evidence');
+                                const itemKey = (item.name || item.requirement || '').toLowerCase().replace(/\s+/g, '_');
+                                const savedCounterEvidence = counterEvidenceInput[itemKey];
+                                const isEditing = editingCounterEvidence === itemKey;
+
                                 return (
                                   <>
                                     <div
@@ -2909,10 +3132,68 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                                       className={`
                                       text-sm text-slate-600 bg-slate-50 p-2.5 rounded-lg border border-slate-100 italic transition-all leading-relaxed
                                       ${hasTimestamp ? 'cursor-pointer hover:bg-indigo-50 hover:border-indigo-100 hover:text-indigo-700' : ''}
+                                      ${isNoEvidence && !savedCounterEvidence ? 'bg-amber-50 border-amber-200 text-amber-700' : ''}
                                     `}
                                     >
-                                      "{item.evidence}"
+                                      {savedCounterEvidence ? `"${savedCounterEvidence}"` : `"${item.evidence}"`}
+                                      {savedCounterEvidence && (
+                                        <span className="ml-2 text-[10px] font-bold text-emerald-600 bg-emerald-100 px-1.5 py-0.5 rounded not-italic">QA Override</span>
+                                      )}
                                     </div>
+
+                                    {/* Counter-Evidence Input for "No clear evidence" items */}
+                                    {isNoEvidence && !savedCounterEvidence && (
+                                      <div className="mt-2">
+                                        {isEditing ? (
+                                          <div className="space-y-2">
+                                            <textarea
+                                              placeholder="Enter evidence from transcript that shows this requirement was met..."
+                                              className="w-full px-3 py-2 text-sm border border-amber-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500 resize-none"
+                                              rows={2}
+                                              value={counterEvidenceInput[itemKey] || ''}
+                                              onChange={(e) => setCounterEvidenceInput(prev => ({ ...prev, [itemKey]: e.target.value }))}
+                                              autoFocus
+                                            />
+                                            <div className="flex gap-2 justify-end">
+                                              <button
+                                                onClick={() => {
+                                                  setEditingCounterEvidence(null);
+                                                  setCounterEvidenceInput(prev => ({ ...prev, [itemKey]: '' }));
+                                                }}
+                                                className="text-xs text-slate-500 hover:text-slate-700 px-2 py-1"
+                                              >
+                                                Cancel
+                                              </button>
+                                              <button
+                                                onClick={() => {
+                                                  if (counterEvidenceInput[itemKey]?.trim()) {
+                                                    // Save counter-evidence and mark as pass
+                                                    handleToggleOverride(item.name || item.requirement, 'fail');
+                                                    setEditingCounterEvidence(null);
+                                                    setToast({
+                                                      message: `Counter-evidence saved and marked as PASS`,
+                                                      type: 'success'
+                                                    });
+                                                  }
+                                                }}
+                                                disabled={!counterEvidenceInput[itemKey]?.trim()}
+                                                className="text-xs font-bold text-white bg-emerald-500 hover:bg-emerald-600 disabled:bg-slate-300 px-3 py-1 rounded-md transition-colors"
+                                              >
+                                                Save & Mark Pass
+                                              </button>
+                                            </div>
+                                          </div>
+                                        ) : (
+                                          <button
+                                            onClick={() => setEditingCounterEvidence(itemKey)}
+                                            className="flex items-center gap-1.5 text-[10px] font-bold text-amber-600 hover:text-amber-700 bg-amber-100 hover:bg-amber-200 px-2.5 py-1.5 rounded-md transition-colors"
+                                          >
+                                            <Plus size={10} />
+                                            Provide Counter-Evidence
+                                          </button>
+                                        )}
+                                      </div>
+                                    )}
 
                                     {/* Explicit Timestamp Button if present and valid */}
                                     {hasTimestamp && displayTime && (
