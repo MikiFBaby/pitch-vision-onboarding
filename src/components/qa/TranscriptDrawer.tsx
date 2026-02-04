@@ -575,13 +575,17 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
       const timeB = timeToSeconds(b.time || b.timestamp || b.start_time);
       return timeA - timeB;
     }).map((item: any) => {
-      // Use API confidence if available, otherwise calculate
+      // Use API confidence if available and valid, otherwise calculate
       const apiConfidence = item.confidence;
       const calculatedConf = calculateItemConfidence(item);
 
-      // If API provides confidence, normalize it; otherwise use calculated
-      const finalConfidence = apiConfidence !== undefined
-        ? normalizeConfidence(apiConfidence)
+      // Normalize API confidence if provided
+      const normalizedApiConf = apiConfidence !== undefined ? normalizeConfidence(apiConfidence) : null;
+
+      // Use API confidence only if it's valid (> 10), otherwise use calculated
+      // This handles cases where AI returns 0 or very low values incorrectly
+      const finalConfidence = (normalizedApiConf !== null && normalizedApiConf > 10)
+        ? normalizedApiConf
         : calculatedConf;
 
       return {
