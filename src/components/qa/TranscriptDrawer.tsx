@@ -2822,82 +2822,6 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                 )
               )}
 
-              {/* Auto-Fail Alert - Prominent if triggered */}
-              {call.autoFailTriggered && call.autoFailReasons && Array.isArray(call.autoFailReasons) && call.autoFailReasons.length > 0 && (
-                <div className="bg-rose-50 rounded-2xl border-2 border-rose-200 p-4">
-                  <div className="flex items-center gap-2 mb-3">
-                    <div className="p-1.5 bg-rose-100 rounded-lg">
-                      <AlertTriangle size={16} className="text-rose-600" />
-                    </div>
-                    <h4 className="text-sm font-black text-rose-700 uppercase tracking-wide">Auto-Fail Triggered</h4>
-                  </div>
-                  <div className="space-y-2">
-                    {call.autoFailReasons.map((reason, idx: number) => {
-                      const isString = typeof reason === 'string';
-                      const violation = isString
-                        ? reason
-                        : (typeof reason.violation === 'string' ? reason.violation : (reason.violation ? JSON.stringify(reason.violation) : 'Auto-fail violation'));
-
-                      // Check if this is an extraction error (not a real compliance auto-fail)
-                      const isExtractionError = violation.toLowerCase().includes('extraction') ||
-                        violation.toLowerCase().includes('json') ||
-                        violation.toLowerCase().includes('parse');
-
-                      const code = isString
-                        ? (isExtractionError ? 'ERR' : `AF-${String(idx + 1).padStart(2, '0')}`)
-                        : (typeof reason.code === 'string' ? reason.code : (isExtractionError ? 'ERR' : `AF-${String(idx + 1).padStart(2, '0')}`));
-                      const rawTimestamp = isString ? null : (typeof reason.timestamp === 'string' ? reason.timestamp : null);
-                      const evidence = isString ? null : reason.evidence;
-                      const rawTimeSeconds = isString ? -1 : ((reason as any).time_seconds ?? -1);
-
-                      // Determine valid timestamp and seconds - accept either source
-                      let displayTimestamp = rawTimestamp;
-                      let seekSeconds = rawTimeSeconds;
-
-                      // If we have valid time_seconds but no display timestamp, generate one
-                      if (seekSeconds >= 0 && (!displayTimestamp || displayTimestamp === 'N/A')) {
-                        displayTimestamp = `${Math.floor(seekSeconds / 60)}:${String(seekSeconds % 60).padStart(2, '0')}`;
-                      }
-                      // If we have valid timestamp string but no time_seconds, parse it
-                      else if (displayTimestamp && displayTimestamp !== 'N/A' && displayTimestamp !== '-1' && seekSeconds < 0) {
-                        seekSeconds = parseTimeToSeconds(displayTimestamp);
-                      }
-
-                      const hasValidTimestamp = seekSeconds >= 0 || (displayTimestamp && displayTimestamp !== 'N/A' && displayTimestamp !== '-1');
-
-                      return (
-                        <div key={idx} className={`p-3 bg-white rounded-lg border ${isExtractionError ? 'border-amber-200' : 'border-rose-200'}`}>
-                          <div className="flex items-start justify-between gap-2">
-                            <div className="flex items-start gap-2 flex-1 min-w-0">
-                              <XCircle size={14} className={`${isExtractionError ? 'text-amber-500' : 'text-rose-500'} mt-0.5 shrink-0`} />
-                              <div className="flex-1 min-w-0">
-                                <p className={`text-sm ${isExtractionError ? 'text-amber-700' : 'text-rose-700'} font-bold`}>
-                                  <span className={`${isExtractionError ? 'text-amber-500' : 'text-rose-500'} mr-1`}>[{code}]</span>
-                                  {violation}
-                                </p>
-                                {evidence && (
-                                  <p className={`text-xs ${isExtractionError ? 'text-amber-600' : 'text-rose-600'} mt-1.5 italic bg-rose-50 p-2 rounded`}>
-                                    "{evidence}"
-                                  </p>
-                                )}
-                              </div>
-                            </div>
-                            {hasValidTimestamp && (
-                              <button
-                                onClick={() => handleSeek(seekSeconds >= 0 ? seekSeconds : parseTimeToSeconds(displayTimestamp || '0:00'))}
-                                className={`shrink-0 flex items-center gap-1.5 text-xs font-bold ${isExtractionError ? 'text-amber-600 bg-amber-100 hover:bg-amber-200' : 'text-rose-600 bg-rose-100 hover:bg-rose-200'} px-2.5 py-1.5 rounded-md transition-colors`}
-                              >
-                                <Play size={10} fill="currentColor" />
-                                Jump to {displayTimestamp}
-                              </button>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              )}
 
               {/* Quick Stats Summary - Moved above Score Calculation */}
               <div className="grid grid-cols-2 gap-3">
@@ -3296,24 +3220,60 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                           </button>
                         </div>
 
-                        {/* Show auto-fail reasons */}
+                        {/* Show auto-fail reasons with full details */}
                         {call.autoFailReasons && call.autoFailReasons.length > 0 && (
-                          <div className="mt-3 space-y-1">
-                            <p className="text-[10px] font-bold text-slate-500 uppercase">Triggered Violations:</p>
-                            {call.autoFailReasons.slice(0, 3).map((reason: any, idx: number) => {
+                          <div className="mt-4 space-y-2">
+                            <p className="text-[10px] font-bold text-slate-500 uppercase mb-2">Triggered Violations:</p>
+                            {call.autoFailReasons.map((reason: any, idx: number) => {
                               const isString = typeof reason === 'string';
                               const violation = isString ? reason : (reason.violation || reason.description || 'Violation');
                               const code = isString ? `AF-${String(idx + 1).padStart(2, '0')}` : (reason.code || `AF-${String(idx + 1).padStart(2, '0')}`);
+                              const evidence = isString ? null : reason.evidence;
+                              const rawTimestamp = isString ? null : (typeof reason.timestamp === 'string' ? reason.timestamp : null);
+                              const rawTimeSeconds = isString ? -1 : ((reason as any).time_seconds ?? -1);
+
+                              // Determine valid timestamp and seconds
+                              let displayTimestamp = rawTimestamp;
+                              let seekSeconds = rawTimeSeconds;
+
+                              if (seekSeconds >= 0 && (!displayTimestamp || displayTimestamp === 'N/A')) {
+                                displayTimestamp = `${Math.floor(seekSeconds / 60)}:${String(seekSeconds % 60).padStart(2, '0')}`;
+                              } else if (displayTimestamp && displayTimestamp !== 'N/A' && displayTimestamp !== '-1' && seekSeconds < 0) {
+                                seekSeconds = parseTimeToSeconds(displayTimestamp);
+                              }
+
+                              const hasValidTimestamp = seekSeconds >= 0 || (displayTimestamp && displayTimestamp !== 'N/A' && displayTimestamp !== '-1');
+
                               return (
-                                <div key={idx} className="flex items-center gap-2 text-xs text-slate-600">
-                                  <span className={`font-mono font-bold ${autoFailOverride ? 'text-amber-500 line-through' : 'text-rose-500'}`}>[{code}]</span>
-                                  <span className={autoFailOverride ? 'line-through text-slate-400' : ''}>{violation}</span>
+                                <div key={idx} className={`p-3 rounded-lg border ${autoFailOverride ? 'bg-amber-50/50 border-amber-200' : 'bg-rose-50 border-rose-200'}`}>
+                                  <div className="flex items-start justify-between gap-2">
+                                    <div className="flex items-start gap-2 flex-1 min-w-0">
+                                      <XCircle size={14} className={`${autoFailOverride ? 'text-amber-500' : 'text-rose-500'} mt-0.5 shrink-0`} />
+                                      <div className="flex-1 min-w-0">
+                                        <p className={`text-sm font-bold ${autoFailOverride ? 'text-amber-700 line-through' : 'text-rose-700'}`}>
+                                          <span className={`${autoFailOverride ? 'text-amber-500' : 'text-rose-500'} mr-1`}>[{code}]</span>
+                                          {violation}
+                                        </p>
+                                        {evidence && (
+                                          <p className={`text-xs mt-1.5 italic p-2 rounded ${autoFailOverride ? 'bg-amber-100/50 text-amber-600' : 'bg-rose-100 text-rose-600'}`}>
+                                            "{evidence}"
+                                          </p>
+                                        )}
+                                      </div>
+                                    </div>
+                                    {hasValidTimestamp && (
+                                      <button
+                                        onClick={() => handleSeek(seekSeconds >= 0 ? seekSeconds : parseTimeToSeconds(displayTimestamp || '0:00'))}
+                                        className={`shrink-0 flex items-center gap-1.5 text-xs font-bold px-2.5 py-1.5 rounded-md transition-colors ${autoFailOverride ? 'text-amber-600 bg-amber-100 hover:bg-amber-200' : 'text-rose-600 bg-rose-100 hover:bg-rose-200'}`}
+                                      >
+                                        <Play size={10} fill="currentColor" />
+                                        Jump to {displayTimestamp}
+                                      </button>
+                                    )}
+                                  </div>
                                 </div>
                               );
                             })}
-                            {call.autoFailReasons.length > 3 && (
-                              <p className="text-[10px] text-slate-400">+{call.autoFailReasons.length - 3} more</p>
-                            )}
                           </div>
                         )}
 
