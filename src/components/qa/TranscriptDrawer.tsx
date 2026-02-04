@@ -180,6 +180,10 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
   // Local tags state for immediate UI feedback
   const [localTags, setLocalTags] = useState<string[]>([]);
 
+  // Auto-fail override state - allows QA to override false positive auto-fails
+  const [autoFailOverride, setAutoFailOverride] = useState(false);
+  const [autoFailOverrideReason, setAutoFailOverrideReason] = useState('');
+
   // Confidence threshold for requiring manual review
   const CONFIDENCE_THRESHOLD = 90;
 
@@ -3293,6 +3297,131 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                 </div>
               </div>
 
+
+              {/* AUTO-FAIL OVERRIDE SECTION */}
+              {call.autoFailTriggered && call.qaStatus !== 'approved' && (
+                <div className="space-y-4 mt-6">
+                  <div className="flex items-center gap-2 pl-2">
+                    <AlertTriangle size={14} className="text-amber-500" />
+                    <h4 className="text-[11px] font-black text-[#8E8E93] uppercase tracking-widest">Auto-Fail Override</h4>
+                  </div>
+                  <div className={`rounded-2xl border-2 p-5 shadow-sm transition-all ${autoFailOverride ? 'bg-amber-50 border-amber-300' : 'bg-white border-slate-200'}`}>
+                    <div className="flex items-start gap-4">
+                      <div className={`mt-1 h-10 w-10 rounded-xl flex items-center justify-center shrink-0 ${autoFailOverride ? 'bg-amber-100' : 'bg-rose-100'}`}>
+                        <AlertTriangle size={20} className={autoFailOverride ? 'text-amber-600' : 'text-rose-600'} />
+                      </div>
+                      <div className="flex-1">
+                        <div className="flex items-center justify-between mb-2">
+                          <div>
+                            <p className={`text-sm font-bold ${autoFailOverride ? 'text-amber-700' : 'text-rose-700'}`}>
+                              {autoFailOverride ? 'Auto-Fail Overridden (False Positive)' : 'Auto-Fail Status Active'}
+                            </p>
+                            <p className="text-xs text-slate-500 mt-0.5">
+                              {autoFailOverride
+                                ? 'Score will be calculated normally based on earned points'
+                                : 'Score is currently locked at 0 due to auto-fail violation(s)'}
+                            </p>
+                          </div>
+                          <button
+                            onClick={() => setAutoFailOverride(!autoFailOverride)}
+                            className={`
+                              px-4 py-2 rounded-lg text-xs font-bold transition-all border flex items-center gap-2
+                              ${autoFailOverride
+                                ? 'bg-rose-100 border-rose-300 text-rose-700 hover:bg-rose-200'
+                                : 'bg-amber-100 border-amber-300 text-amber-700 hover:bg-amber-200'}
+                            `}
+                          >
+                            {autoFailOverride ? (
+                              <>
+                                <XCircle size={14} />
+                                Restore Auto-Fail
+                              </>
+                            ) : (
+                              <>
+                                <ShieldCheck size={14} />
+                                Override (False Positive)
+                              </>
+                            )}
+                          </button>
+                        </div>
+
+                        {/* Show auto-fail reasons */}
+                        {call.autoFailReasons && call.autoFailReasons.length > 0 && (
+                          <div className="mt-3 space-y-1">
+                            <p className="text-[10px] font-bold text-slate-500 uppercase">Triggered Violations:</p>
+                            {call.autoFailReasons.slice(0, 3).map((reason: any, idx: number) => {
+                              const isString = typeof reason === 'string';
+                              const violation = isString ? reason : (reason.violation || reason.description || 'Violation');
+                              const code = isString ? `AF-${String(idx + 1).padStart(2, '0')}` : (reason.code || `AF-${String(idx + 1).padStart(2, '0')}`);
+                              return (
+                                <div key={idx} className="flex items-center gap-2 text-xs text-slate-600">
+                                  <span className={`font-mono font-bold ${autoFailOverride ? 'text-amber-500 line-through' : 'text-rose-500'}`}>[{code}]</span>
+                                  <span className={autoFailOverride ? 'line-through text-slate-400' : ''}>{violation}</span>
+                                </div>
+                              );
+                            })}
+                            {call.autoFailReasons.length > 3 && (
+                              <p className="text-[10px] text-slate-400">+{call.autoFailReasons.length - 3} more</p>
+                            )}
+                          </div>
+                        )}
+
+                        {/* Override reason input */}
+                        {autoFailOverride && (
+                          <div className="mt-4 pt-3 border-t border-amber-200">
+                            <label className="block text-[10px] font-bold text-amber-700 uppercase tracking-wider mb-1.5">
+                              Override Reason (Required)
+                            </label>
+                            <textarea
+                              value={autoFailOverrideReason}
+                              onChange={(e) => setAutoFailOverrideReason(e.target.value)}
+                              placeholder="Explain why this auto-fail is a false positive..."
+                              className="w-full px-3 py-2 rounded-lg border border-amber-300 text-sm text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-amber-500/30 focus:border-amber-500 resize-none bg-white"
+                              rows={2}
+                            />
+                            {/* Show recalculated score */}
+                            {(() => {
+                              // Calculate what the score would be without auto-fail
+                              const totalPossible = fullAuditList.reduce((sum: number, item: any) => {
+                                const status = (item.status || '').toLowerCase();
+                                if (status === 'n/a') return sum;
+                                return sum + (item.points_possible || item.pointsPossible || 0);
+                              }, 0);
+                              const totalEarned = fullAuditList.reduce((sum: number, item: any) => {
+                                const status = (item.status || '').toLowerCase();
+                                if (status === 'n/a') return sum;
+                                const itemKey = (item.name || item.requirement || '').toLowerCase();
+                                const isOverridden = localOverrides[itemKey];
+                                const isPassing = isOverridden
+                                  ? isOverridden.toLowerCase() === 'pass'
+                                  : ['met', 'pass', 'yes', 'true'].includes(status);
+                                return sum + (isPassing ? (item.points_possible || item.pointsPossible || item.points_earned || 0) : 0);
+                              }, 0);
+                              const recalculatedScore = totalPossible > 0 ? Math.round((totalEarned / totalPossible) * 100) : 0;
+
+                              return (
+                                <div className="mt-3 flex items-center gap-3 p-3 bg-emerald-50 rounded-lg border border-emerald-200">
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-xs text-slate-500">Current Score:</span>
+                                    <span className="text-sm font-bold text-rose-600 line-through">0</span>
+                                  </div>
+                                  <ArrowRight size={14} className="text-slate-400" />
+                                  <div className="flex items-center gap-2">
+                                    <span className="text-xs text-slate-500">Recalculated:</span>
+                                    <span className={`text-sm font-bold ${recalculatedScore >= 80 ? 'text-emerald-600' : recalculatedScore >= 60 ? 'text-amber-600' : 'text-rose-600'}`}>
+                                      {recalculatedScore}
+                                    </span>
+                                  </div>
+                                </div>
+                              );
+                            })()}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              )}
 
               {/* QA SUBMIT REVIEW SECTION */}
               {onQASubmit && call.qaStatus !== 'approved' && (
