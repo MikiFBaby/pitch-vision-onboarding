@@ -263,3 +263,103 @@ After updating the prompt, test with:
 2. A known FAIL call (should trigger auto-fail)
 3. An ACA call and a Medicare call (verify correct checklist is used)
 4. A call with borderline phrases (verify safe exceptions work)
+
+---
+
+## CRITICAL: Evidence & Timestamp Requirements
+
+### Every Auto-Fail MUST Include:
+1. **Evidence**: Direct quote from transcript showing the violation
+2. **Timestamp**: The MM:SS timestamp where the violation occurred
+3. **Speaker**: Whether agent or customer said it
+
+Example auto-fail output:
+```json
+{
+  "code": "AF-01",
+  "violation": "Making Promises",
+  "description": "Agent guaranteed benefits instead of using conditional language",
+  "timestamp": "1:45",
+  "evidence": "You're definitely going to get the $500 card",
+  "speaker": "agent"
+}
+```
+
+### Every Checklist Item MUST Include:
+1. **Evidence**: Quote from transcript proving PASS or showing FAIL
+2. **Timestamp**: The MM:SS timestamp where this item was addressed (or should have been)
+3. If no clear evidence: Set `evidence: "No clear evidence found"` and `confidence: 50`
+
+Example checklist output:
+```json
+{
+  "name": "Recorded Line Disclosure",
+  "status": "PASS",
+  "weight": 14,
+  "evidence": "[0:15] Agent: 'on a recorded line'",
+  "time": "0:15",
+  "confidence": 95
+}
+```
+
+### AF-13 (Poor Call Quality) is WARNING ONLY
+- AF-13 should be flagged but does NOT trigger auto-fail
+- Set `severity: "warning"` for AF-13
+- The UI will display AF-13 in a separate "Call Quality Notes" section
+- Score is NOT affected by AF-13
+
+---
+
+## Empathy Detection Criteria
+
+For `empathy_displayed: true`, look for:
+- Acknowledgment phrases: "I understand", "I hear you", "That makes sense"
+- Responding to customer concerns before continuing script
+- Adjusting tone when customer expresses frustration
+- Asking clarifying questions about customer's situation
+- Using customer's name naturally in conversation
+
+For `empathy_displayed: false`:
+- Agent ignores customer's concerns or questions
+- Agent sounds robotic or rushed
+- Agent talks over customer
+- No acknowledgment of customer's responses
+
+---
+
+## Script Adherence Calculation Details
+
+### Step 1: Key Phrase Matching (40% of score)
+For ACA, find these required phrases:
+- "recorded line" ✓/✗
+- "free health" or "government subsidy" ✓/✗
+- "Affordable Care Act" or "ACA" ✓/✗
+- "Medicare or Medicaid or work insurance" ✓/✗
+- State confirmation ✓/✗
+- "just to be sure" (double check) ✓/✗
+- "filed taxes" ✓/✗
+- "MAY qualify" (conditional language) ✓/✗
+
+Score: (phrases found / 8) × 40
+
+### Step 2: Sequence Order (20% of score)
+- Are phrases in the expected order?
+- Full points if correct sequence
+- Deduct points for major reordering
+
+### Step 3: Customer Response Handling (20% of score)
+- Did customer verbally confirm each compliance question?
+- Did agent wait for response before continuing?
+- Did agent handle objections appropriately?
+
+### Step 4: Terminology Compliance (20% of score)
+- No banned phrases used ("Pitch Perfect", "money", "guaranteed")
+- Correct DBA name used
+- Conditional language ("MAY", "MIGHT") instead of promises
+
+Final Score = Step1 + Step2 + Step3 + Step4
+
+Level:
+- 80-100 = "high"
+- 60-79 = "moderate"
+- 0-59 = "low"

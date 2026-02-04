@@ -693,6 +693,36 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
       });
     }
 
+    // Add auto-fail violation markers (AF-01 through AF-14)
+    if (call?.autoFailReasons && Array.isArray(call.autoFailReasons)) {
+      const warningOnlyCodes = ['AF-13']; // AF-13 is warning-only
+
+      call.autoFailReasons.forEach((reason: any, idx: number) => {
+        const isString = typeof reason === 'string';
+        const code = isString ? `AF-${String(idx + 1).padStart(2, '0')}` : (reason.code || `AF-${String(idx + 1).padStart(2, '0')}`);
+        const violation = isString ? reason : (reason.violation || 'Violation');
+        const timestamp = isString ? null : reason.timestamp;
+
+        // Skip if no valid timestamp
+        if (!timestamp || timestamp === '-1' || timestamp === '' || timestamp === 'N/A') return;
+
+        const secs = parseTimeToSeconds(timestamp);
+        const pos = (secs / effectiveDuration) * 100;
+
+        if (secs >= MIN_MARKER_TIME_SECONDS && pos <= 100 && !isNaN(pos)) {
+          const isWarning = warningOnlyCodes.includes(code);
+          list.push({
+            title: `${code}: ${violation}`,
+            time: timestamp,
+            seconds: secs,
+            position: pos,
+            color: isWarning ? 'bg-amber-500' : 'bg-rose-600',
+            type: 'fail'
+          });
+        }
+      });
+    }
+
     // Process all checklist items with override support
     // Filter out N/A items first, then process
     const validItems = fullAuditList.filter((item: any) => {
@@ -1782,117 +1812,157 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
               {/* Meta Grid */}
               {/* Talk Time Distribution - Moved from below */}
 
-              {/* AUTO-FAIL VIOLATIONS SECTION */}
-              {call.autoFailReasons && Array.isArray(call.autoFailReasons) && call.autoFailReasons.length > 0 && (
-                (() => {
-                  // Separate critical violations from warnings (AF-13 is warning-only)
-                  const warningOnlyCodes = ['AF-13'];
-                  const allViolations = call.autoFailReasons;
-                  const criticalViolations = allViolations.filter((v: any) => {
-                    const code = typeof v === 'string' ? v : (v.code || '');
-                    return !warningOnlyCodes.includes(code);
-                  });
-                  const warningViolations = allViolations.filter((v: any) => {
-                    const code = typeof v === 'string' ? v : (v.code || '');
-                    return warningOnlyCodes.includes(code);
-                  });
-                  const hasCritical = criticalViolations.length > 0;
+              {/* AUTO-FAIL VIOLATIONS SECTION - Only critical violations */}
+              {call.autoFailReasons && Array.isArray(call.autoFailReasons) && (() => {
+                const warningOnlyCodes = ['AF-13'];
+                const criticalViolations = call.autoFailReasons.filter((v: any) => {
+                  const code = typeof v === 'string' ? v : (v.code || '');
+                  return !warningOnlyCodes.includes(code);
+                });
 
-                  return (
-                    <div className="space-y-4">
-                      <div className="flex items-center gap-2 pl-2">
-                        <AlertTriangle size={14} className={hasCritical ? "text-rose-500" : "text-amber-500"} />
-                        <h4 className={`text-[11px] font-black uppercase tracking-widest ${hasCritical ? 'text-rose-500' : 'text-amber-500'}`}>
-                          {hasCritical ? 'Auto-Fail Violations' : 'Call Quality Warnings'}
-                        </h4>
-                        <div className="ml-auto flex items-center gap-2">
-                          {criticalViolations.length > 0 && (
-                            <span className="bg-rose-100 text-rose-700 text-[10px] font-bold px-2 py-0.5 rounded-full">
-                              {criticalViolations.length} Critical
-                            </span>
-                          )}
-                          {warningViolations.length > 0 && (
-                            <span className="bg-amber-100 text-amber-700 text-[10px] font-bold px-2 py-0.5 rounded-full">
-                              {warningViolations.length} Warning
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                      <div className={`rounded-2xl border overflow-hidden shadow-sm ${hasCritical ? 'bg-rose-50 border-rose-200' : 'bg-amber-50 border-amber-200'}`}>
-                        {allViolations.map((reason: any, idx: number) => {
-                          // Handle both string[] and structured object format
-                          const isString = typeof reason === 'string';
-                          const violation = isString
-                            ? reason
-                            : (typeof reason.violation === 'string' ? reason.violation : (reason.violation ? JSON.stringify(reason.violation) : 'Violation'));
+                if (criticalViolations.length === 0) return null;
 
-                          // Check if this is an extraction error or warning
-                          const isExtractionError = violation.toLowerCase().includes('extraction') ||
-                            violation.toLowerCase().includes('json') ||
-                            violation.toLowerCase().includes('parse');
+                return (
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-2 pl-2">
+                      <AlertTriangle size={14} className="text-rose-500" />
+                      <h4 className="text-[11px] font-black text-rose-500 uppercase tracking-widest">Auto-Fail Violations</h4>
+                      <span className="ml-auto bg-rose-100 text-rose-700 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                        {criticalViolations.length} {criticalViolations.length === 1 ? 'Violation' : 'Violations'}
+                      </span>
+                    </div>
+                    <div className="bg-rose-50 rounded-2xl border border-rose-200 overflow-hidden shadow-sm">
+                      {criticalViolations.map((reason: any, idx: number) => {
+                        const isString = typeof reason === 'string';
+                        const violation = isString
+                          ? reason
+                          : (typeof reason.violation === 'string' ? reason.violation : (reason.violation ? JSON.stringify(reason.violation) : 'Violation'));
+                        const code = isString ? `AF-${String(idx + 1).padStart(2, '0')}` : (typeof reason.code === 'string' ? reason.code : `AF-${String(idx + 1).padStart(2, '0')}`);
+                        const description = isString ? null : (typeof reason.description === 'string' ? reason.description : null);
+                        const timestamp = isString ? null : (typeof reason.timestamp === 'string' && reason.timestamp !== '-1' && reason.timestamp !== '' ? reason.timestamp : null);
+                        const evidence = isString ? null : (typeof reason.evidence === 'string' ? reason.evidence : null);
+                        const speaker = isString ? null : (typeof reason.speaker === 'string' ? reason.speaker : null);
 
-                          const code = isString
-                            ? (isExtractionError ? 'ERR' : `AF-${String(idx + 1).padStart(2, '0')}`)
-                            : (typeof reason.code === 'string' ? reason.code : (isExtractionError ? 'ERR' : `AF-${String(idx + 1).padStart(2, '0')}`));
-
-                          // Check if this is a warning-only violation (AF-13)
-                          const isWarning = warningOnlyCodes.includes(code);
-
-                          const description = isString ? null : (typeof reason.description === 'string' ? reason.description : null);
-                          const timestamp = isString ? null : (typeof reason.timestamp === 'string' ? reason.timestamp : null);
-                          const evidence = isString ? null : (typeof reason.evidence === 'string' ? reason.evidence : null);
-                          const speaker = isString ? null : (typeof reason.speaker === 'string' ? reason.speaker : null);
-
-                          // Color scheme: rose for critical, amber for warnings/extraction errors
-                          const isAmber = isWarning || isExtractionError;
-
-                          return (
-                            <div key={idx} className={`p-4 ${idx > 0 ? (isAmber ? 'border-t border-amber-200' : 'border-t border-rose-200') : ''}`}>
-                              <div className="flex items-start gap-3">
-                                <div className="flex flex-col items-center gap-1">
-                                  <span className={`shrink-0 text-white text-[10px] font-bold px-2 py-1 rounded uppercase tracking-wider ${isAmber ? 'bg-amber-600' : 'bg-rose-600'}`}>
-                                    {code}
-                                  </span>
-                                  {isWarning && (
-                                    <span className="text-[8px] text-amber-600 font-semibold uppercase">Warning</span>
+                        return (
+                          <div key={idx} className={`p-4 ${idx > 0 ? 'border-t border-rose-200' : ''}`}>
+                            <div className="flex items-start gap-3">
+                              <span className="shrink-0 bg-rose-600 text-white text-[10px] font-bold px-2 py-1 rounded uppercase tracking-wider">
+                                {code}
+                              </span>
+                              <div className="flex-1 min-w-0 space-y-2">
+                                <div className="flex items-baseline justify-between gap-2">
+                                  <h5 className="text-sm font-bold text-rose-800">{violation}</h5>
+                                  {timestamp && (
+                                    <button
+                                      onClick={() => handleSeek(timestamp)}
+                                      className="shrink-0 text-[10px] text-rose-600 hover:text-rose-800 flex items-center gap-1 font-medium"
+                                    >
+                                      <Play size={8} fill="currentColor" /> {timestamp}
+                                    </button>
                                   )}
                                 </div>
-                                <div className="flex-1 min-w-0 space-y-2">
-                                  <div className="flex items-baseline justify-between gap-2">
-                                    <h5 className={`text-sm font-bold ${isAmber ? 'text-amber-800' : 'text-rose-800'}`}>{violation}</h5>
-                                    {timestamp && (
-                                      <button
-                                        onClick={() => handleSeek(timestamp)}
-                                        className={`shrink-0 text-[10px] flex items-center gap-1 font-medium ${isAmber ? 'text-amber-600 hover:text-amber-800' : 'text-rose-600 hover:text-rose-800'}`}
-                                      >
-                                        <Play size={8} fill="currentColor" /> {timestamp}
-                                      </button>
-                                    )}
-                                  </div>
-                                  {description && (
-                                    <p className={`text-xs leading-relaxed ${isAmber ? 'text-amber-700' : 'text-rose-700'}`}>{description}</p>
-                                  )}
-                                  {evidence && (
-                                    <div className={`bg-white/80 rounded-lg p-3 mt-2 ${isAmber ? 'border border-amber-200' : 'border border-rose-200'}`}>
-                                      <div className="flex items-center gap-1.5 mb-1.5">
-                                        <Quote size={10} className={isAmber ? 'text-amber-400' : 'text-rose-400'} />
-                                        <span className={`text-[9px] font-bold uppercase tracking-wider ${isAmber ? 'text-amber-400' : 'text-rose-400'}`}>
-                                          {speaker ? `${speaker} said` : 'Evidence'}
-                                        </span>
-                                      </div>
-                                      <p className={`text-xs italic leading-relaxed ${isAmber ? 'text-amber-900' : 'text-rose-900'}`}>"{evidence}"</p>
+                                {description && (
+                                  <p className="text-xs text-rose-700 leading-relaxed">{description}</p>
+                                )}
+                                {evidence && (
+                                  <div className="bg-white/80 border border-rose-200 rounded-lg p-3 mt-2">
+                                    <div className="flex items-center gap-1.5 mb-1.5">
+                                      <Quote size={10} className="text-rose-400" />
+                                      <span className="text-[9px] font-bold text-rose-400 uppercase tracking-wider">
+                                        {speaker ? `${speaker} said` : 'Evidence'}
+                                      </span>
                                     </div>
-                                  )}
-                                </div>
+                                    <p className="text-xs text-rose-900 italic leading-relaxed">"{evidence}"</p>
+                                  </div>
+                                )}
+                                {!evidence && (
+                                  <p className="text-[10px] text-rose-400 italic">Evidence required from transcript</p>
+                                )}
                               </div>
                             </div>
-                          );
-                        })}
-                      </div>
+                          </div>
+                        );
+                      })}
                     </div>
-                  );
-                })()
-              )}
+                  </div>
+                );
+              })()}
+
+              {/* CALL QUALITY NOTES SECTION - Warnings only (AF-13, etc.) */}
+              {call.autoFailReasons && Array.isArray(call.autoFailReasons) && (() => {
+                const warningOnlyCodes = ['AF-13'];
+                const warningViolations = call.autoFailReasons.filter((v: any) => {
+                  const code = typeof v === 'string' ? v : (v.code || '');
+                  return warningOnlyCodes.includes(code);
+                });
+
+                if (warningViolations.length === 0) return null;
+
+                return (
+                  <div className="space-y-4">
+                    <div className="flex items-center gap-2 pl-2">
+                      <AlertCircle size={14} className="text-amber-500" />
+                      <h4 className="text-[11px] font-black text-amber-600 uppercase tracking-widest">Call Quality Notes</h4>
+                      <span className="ml-auto bg-amber-100 text-amber-700 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                        {warningViolations.length} {warningViolations.length === 1 ? 'Note' : 'Notes'}
+                      </span>
+                    </div>
+                    <div className="bg-amber-50 rounded-2xl border border-amber-200 overflow-hidden shadow-sm">
+                      {warningViolations.map((reason: any, idx: number) => {
+                        const isString = typeof reason === 'string';
+                        const violation = isString
+                          ? reason
+                          : (typeof reason.violation === 'string' ? reason.violation : (reason.violation ? JSON.stringify(reason.violation) : 'Note'));
+                        const code = isString ? 'NOTE' : (typeof reason.code === 'string' ? reason.code : 'NOTE');
+                        const description = isString ? null : (typeof reason.description === 'string' ? reason.description : null);
+                        const timestamp = isString ? null : (typeof reason.timestamp === 'string' && reason.timestamp !== '-1' && reason.timestamp !== '' ? reason.timestamp : null);
+                        const evidence = isString ? null : (typeof reason.evidence === 'string' ? reason.evidence : null);
+                        const speaker = isString ? null : (typeof reason.speaker === 'string' ? reason.speaker : null);
+
+                        return (
+                          <div key={idx} className={`p-4 ${idx > 0 ? 'border-t border-amber-200' : ''}`}>
+                            <div className="flex items-start gap-3">
+                              <span className="shrink-0 bg-amber-500 text-white text-[10px] font-bold px-2 py-1 rounded uppercase tracking-wider">
+                                {code}
+                              </span>
+                              <div className="flex-1 min-w-0 space-y-2">
+                                <div className="flex items-baseline justify-between gap-2">
+                                  <h5 className="text-sm font-bold text-amber-800">{violation}</h5>
+                                  {timestamp && (
+                                    <button
+                                      onClick={() => handleSeek(timestamp)}
+                                      className="shrink-0 text-[10px] text-amber-600 hover:text-amber-800 flex items-center gap-1 font-medium"
+                                    >
+                                      <Play size={8} fill="currentColor" /> {timestamp}
+                                    </button>
+                                  )}
+                                </div>
+                                {description && (
+                                  <p className="text-xs text-amber-700 leading-relaxed">{description}</p>
+                                )}
+                                {evidence && (
+                                  <div className="bg-white/80 border border-amber-200 rounded-lg p-3 mt-2">
+                                    <div className="flex items-center gap-1.5 mb-1.5">
+                                      <Quote size={10} className="text-amber-400" />
+                                      <span className="text-[9px] font-bold text-amber-400 uppercase tracking-wider">
+                                        {speaker ? `${speaker} said` : 'Evidence'}
+                                      </span>
+                                    </div>
+                                    <p className="text-xs text-amber-900 italic leading-relaxed">"{evidence}"</p>
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <p className="text-[10px] text-amber-600 italic pl-2">
+                      Note: Call quality issues do not trigger auto-fail but should be reviewed for coaching purposes.
+                    </p>
+                  </div>
+                );
+              })()}
 
 
 
@@ -2798,7 +2868,14 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                                 // Extract timestamp if present [12:30]
                                 const timestampRegex = /\[(\d{1,2}:\d{2})\]/;
                                 const match = item.evidence.match(timestampRegex);
-                                const hasTimestamp = !!match || !!item.time;
+                                // Validate item.time is a real timestamp (not -1, empty, or invalid)
+                                const validItemTime = item.time &&
+                                  item.time !== '-1' &&
+                                  item.time !== '' &&
+                                  item.time !== 'N/A' &&
+                                  /^\d{1,2}:\d{2}$/.test(item.time);
+                                const hasTimestamp = !!match || validItemTime;
+                                const displayTime = match ? match[1] : (validItemTime ? item.time : null);
 
                                 return (
                                   <>
@@ -2806,7 +2883,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                                       onClick={() => {
                                         if (match) {
                                           handleSeek(parseTimeToSeconds(match[1]));
-                                        } else if (item.time) {
+                                        } else if (validItemTime) {
                                           handleSeek(parseTimeToSeconds(item.time));
                                         }
                                       }}
@@ -2818,19 +2895,19 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                                       "{item.evidence}"
                                     </div>
 
-                                    {/* Explicit Timestamp Button if present */}
-                                    {hasTimestamp && (
+                                    {/* Explicit Timestamp Button if present and valid */}
+                                    {hasTimestamp && displayTime && (
                                       <div className="mt-2 flex justify-end">
                                         <button
                                           onClick={(e) => {
                                             e.stopPropagation();
                                             if (match) handleSeek(parseTimeToSeconds(match[1]));
-                                            else if (item.time) handleSeek(parseTimeToSeconds(item.time));
+                                            else if (validItemTime) handleSeek(parseTimeToSeconds(item.time));
                                           }}
                                           className="flex items-center gap-1.5 text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-1 rounded-md hover:bg-indigo-100 transition-colors border border-indigo-100"
                                         >
                                           <Play size={8} fill="currentColor" />
-                                          Jump to {match ? match[1] : item.time}
+                                          Jump to {displayTime}
                                         </button>
                                       </div>
                                     )}
