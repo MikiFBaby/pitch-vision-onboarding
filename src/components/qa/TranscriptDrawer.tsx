@@ -694,19 +694,27 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
     }
 
     // Process all checklist items with override support
-    fullAuditList.forEach((item, idx) => {
-      const originalStatus = (item.status || '').toLowerCase();
-      if (originalStatus === 'n/a') return;
+    // Filter out N/A items first, then process
+    const validItems = fullAuditList.filter((item: any) => {
+      const status = (item.status || '').toLowerCase();
+      return status !== 'n/a';
+    });
 
+    validItems.forEach((item: any, idx: number) => {
+      const originalStatus = (item.status || '').toLowerCase();
       const itemName = item.name || item.requirement || 'Check';
       const isMet = getEffectiveStatus(itemName, originalStatus);
 
       // Use explicit time, or estimate based on position in checklist if absolutely missing
       let timeStr = item.time || item.timestamp;
+      const hasExplicitTime = Boolean(timeStr);
 
-      // If still missing, we spread them but keep it precise
+      // If still missing, spread them across 10%-90% of the call duration
+      // Start at 10% to avoid the intro/greeting portion
       if (!timeStr) {
-        const estimatedSeconds = Math.round((idx / Math.max(fullAuditList.length, 1)) * (effectiveDuration * 0.9));
+        const startOffset = effectiveDuration * 0.1; // Start at 10% of call
+        const spreadDuration = effectiveDuration * 0.8; // Spread across 80% of call
+        const estimatedSeconds = Math.round(startOffset + (idx / Math.max(validItems.length - 1, 1)) * spreadDuration);
         const mins = Math.floor(estimatedSeconds / 60);
         const secs = estimatedSeconds % 60;
         timeStr = `${mins}:${secs.toString().padStart(2, '0')}`;
@@ -715,10 +723,11 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
       const itemSecs = parseTimeToSeconds(timeStr);
       const pos = (itemSecs / effectiveDuration) * 100;
 
-      // Filter out markers before the call is actually live
-      // Even explicit timestamps at 0:00 are likely invalid (before call answered)
-      // Allow items that are at or after the minimum threshold
-      if (pos <= 100 && itemSecs >= MIN_MARKER_TIME_SECONDS) {
+      // For explicit timestamps, allow any position > 0
+      // For estimated timestamps, use the minimum threshold
+      const minTime = hasExplicitTime ? 1 : MIN_MARKER_TIME_SECONDS;
+
+      if (pos <= 100 && itemSecs >= minTime) {
         list.push({
           title: itemName,
           time: timeStr,
@@ -726,7 +735,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
           position: pos,
           color: isMet ? 'bg-emerald-500' : 'bg-rose-500',
           type: isMet ? 'pass' : 'fail',
-          isEstimated: !item.time && !item.timestamp
+          isEstimated: !hasExplicitTime
         });
       }
     });
@@ -1340,30 +1349,55 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
           {/* Metadata Bar - Sleek connected design */}
           <div className="w-full mb-4">
             <div className="flex items-stretch bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex-nowrap">
-              {/* Score - Using computed weighted score for consistency with FINAL SCORE */}
-              <div className={`shrink-0 py-2 px-3 text-center border-r border-slate-100 min-w-[60px] ${calculatedScore >= 85 ? 'bg-emerald-50/50' :
-                calculatedScore >= 70 ? 'bg-amber-50/50' : 'bg-rose-50/50'}`}>
-                <div className={`flex items-center justify-center gap-1 mb-0.5 ${calculatedScore >= 85 ? 'text-emerald-500' :
-                  calculatedScore >= 70 ? 'text-amber-500' : 'text-rose-500'}`}>
-                  <Award size={11} />
-                  <span className="text-[9px] font-bold uppercase tracking-wider">Score</span>
-                </div>
-                <p className={`text-lg font-black leading-none ${calculatedScore >= 85 ? 'text-emerald-600' :
-                  calculatedScore >= 70 ? 'text-amber-600' : 'text-rose-600'}`}>{calculatedScore || 0}</p>
-              </div>
+              {/* Score - Shows 0 for auto-fail, otherwise computed weighted score */}
+              {(() => {
+                // Check for CRITICAL auto-fail violations (AF-13 "Poor Call Quality" is warning-only, not auto-fail)
+                const warningOnlyCodes = ['AF-13']; // AF-13 is a warning, not a critical auto-fail
+                const violations = Array.isArray(call.autoFailReasons) ? call.autoFailReasons : [];
+                const criticalViolations = violations.filter((v: any) => {
+                  const code = typeof v === 'string' ? v : (v.code || '');
+                  return !warningOnlyCodes.includes(code);
+                });
+                const hasAutoFail = criticalViolations.length > 0 || (call.autoFailTriggered && criticalViolations.length > 0);
+                const displayScore = hasAutoFail ? 0 : (calculatedScore || 0);
+                const scoreColorBg = hasAutoFail ? 'bg-rose-50/50' : (displayScore >= 85 ? 'bg-emerald-50/50' : displayScore >= 70 ? 'bg-amber-50/50' : 'bg-rose-50/50');
+                const scoreColorText = hasAutoFail ? 'text-rose-500' : (displayScore >= 85 ? 'text-emerald-500' : displayScore >= 70 ? 'text-amber-500' : 'text-rose-500');
+                const scoreColorValue = hasAutoFail ? 'text-rose-600' : (displayScore >= 85 ? 'text-emerald-600' : displayScore >= 70 ? 'text-amber-600' : 'text-rose-600');
 
-              {/* Status - Based on computed weighted score for consistency */}
+                return (
+                  <div className={`shrink-0 py-2 px-3 text-center border-r border-slate-100 min-w-[60px] ${scoreColorBg}`}>
+                    <div className={`flex items-center justify-center gap-1 mb-0.5 ${scoreColorText}`}>
+                      <Award size={11} />
+                      <span className="text-[9px] font-bold uppercase tracking-wider">Score</span>
+                    </div>
+                    <p className={`text-lg font-black leading-none ${scoreColorValue}`}>{displayScore}</p>
+                  </div>
+                );
+              })()}
+
+              {/* Status - Shows AUTO-FAIL when critical violations exist, otherwise based on score */}
               <div className="shrink-0 py-2 px-3 text-center border-r border-slate-100 flex flex-col items-center justify-center min-w-[70px]">
                 <div className="text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">Status</div>
                 {(() => {
-                  // Use calculatedScore for status consistency
+                  // Check for CRITICAL auto-fail violations (AF-13 is warning-only)
+                  const warningOnlyCodes = ['AF-13'];
+                  const violations = Array.isArray(call.autoFailReasons) ? call.autoFailReasons : [];
+                  const criticalViolations = violations.filter((v: any) => {
+                    const code = typeof v === 'string' ? v : (v.code || '');
+                    return !warningOnlyCodes.includes(code);
+                  });
+                  const hasAutoFail = criticalViolations.length > 0;
                   const scoreVal = calculatedScore || 0;
 
                   let status = 'REVIEW';
                   let colorClass = 'text-amber-600 bg-amber-100';
                   let icon = <AlertCircle size={12} />;
 
-                  if (scoreVal < 50) {
+                  if (hasAutoFail) {
+                    status = 'AUTO-FAIL';
+                    colorClass = 'text-rose-600 bg-rose-100';
+                    icon = <XCircle size={12} />;
+                  } else if (scoreVal < 50) {
                     status = 'FAIL';
                     colorClass = 'text-rose-600 bg-rose-100';
                     icon = <XCircle size={12} />;
@@ -1544,8 +1578,8 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                   <span className="text-[9px] text-slate-500 font-medium uppercase tracking-wider">Failed</span>
                 </div>
                 <div className="flex items-center gap-1.5">
-                  <div className="w-[2px] h-3 bg-indigo-500" />
-                  <span className="text-[9px] text-slate-500 font-medium uppercase tracking-wider">Chapter</span>
+                  <div className="w-[2px] h-3 bg-blue-500" />
+                  <span className="text-[9px] text-slate-500 font-medium uppercase tracking-wider">Transfer</span>
                 </div>
               </div>
 
@@ -1749,70 +1783,115 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
               {/* Talk Time Distribution - Moved from below */}
 
               {/* AUTO-FAIL VIOLATIONS SECTION */}
-              {call.autoFailTriggered && call.autoFailReasons && Array.isArray(call.autoFailReasons) && call.autoFailReasons.length > 0 && (
-                <div className="space-y-4">
-                  <div className="flex items-center gap-2 pl-2">
-                    <AlertTriangle size={14} className="text-rose-500" />
-                    <h4 className="text-[11px] font-black text-rose-500 uppercase tracking-widest">Auto-Fail Violations</h4>
-                    <span className="ml-auto bg-rose-100 text-rose-700 text-[10px] font-bold px-2 py-0.5 rounded-full">
-                      {call.autoFailReasons.length} {call.autoFailReasons.length === 1 ? 'Violation' : 'Violations'}
-                    </span>
-                  </div>
-                  <div className="bg-rose-50 rounded-2xl border border-rose-200 overflow-hidden shadow-sm">
-                    {call.autoFailReasons.map((reason, idx) => {
-                      // Handle both string[] and structured object format
-                      // Also handle edge cases where properties might be objects or undefined
-                      const isString = typeof reason === 'string';
-                      const code = isString
-                        ? `AF-${String(idx + 1).padStart(2, '0')}`
-                        : (typeof reason.code === 'string' ? reason.code : `AF-${String(idx + 1).padStart(2, '0')}`);
-                      const violation = isString
-                        ? reason
-                        : (typeof reason.violation === 'string' ? reason.violation : (reason.violation ? JSON.stringify(reason.violation) : 'Auto-fail violation'));
-                      const description = isString ? null : (typeof reason.description === 'string' ? reason.description : null);
-                      const timestamp = isString ? null : (typeof reason.timestamp === 'string' ? reason.timestamp : null);
-                      const evidence = isString ? null : (typeof reason.evidence === 'string' ? reason.evidence : null);
-                      const speaker = isString ? null : (typeof reason.speaker === 'string' ? reason.speaker : null);
+              {call.autoFailReasons && Array.isArray(call.autoFailReasons) && call.autoFailReasons.length > 0 && (
+                (() => {
+                  // Separate critical violations from warnings (AF-13 is warning-only)
+                  const warningOnlyCodes = ['AF-13'];
+                  const allViolations = call.autoFailReasons;
+                  const criticalViolations = allViolations.filter((v: any) => {
+                    const code = typeof v === 'string' ? v : (v.code || '');
+                    return !warningOnlyCodes.includes(code);
+                  });
+                  const warningViolations = allViolations.filter((v: any) => {
+                    const code = typeof v === 'string' ? v : (v.code || '');
+                    return warningOnlyCodes.includes(code);
+                  });
+                  const hasCritical = criticalViolations.length > 0;
 
-                      return (
-                        <div key={idx} className={`p-4 ${idx > 0 ? 'border-t border-rose-200' : ''}`}>
-                          <div className="flex items-start gap-3">
-                            <span className="shrink-0 bg-rose-600 text-white text-[10px] font-bold px-2 py-1 rounded uppercase tracking-wider">
-                              {code}
+                  return (
+                    <div className="space-y-4">
+                      <div className="flex items-center gap-2 pl-2">
+                        <AlertTriangle size={14} className={hasCritical ? "text-rose-500" : "text-amber-500"} />
+                        <h4 className={`text-[11px] font-black uppercase tracking-widest ${hasCritical ? 'text-rose-500' : 'text-amber-500'}`}>
+                          {hasCritical ? 'Auto-Fail Violations' : 'Call Quality Warnings'}
+                        </h4>
+                        <div className="ml-auto flex items-center gap-2">
+                          {criticalViolations.length > 0 && (
+                            <span className="bg-rose-100 text-rose-700 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                              {criticalViolations.length} Critical
                             </span>
-                            <div className="flex-1 min-w-0 space-y-2">
-                              <div className="flex items-baseline justify-between gap-2">
-                                <h5 className="text-sm font-bold text-rose-800">{violation}</h5>
-                                {timestamp && (
-                                  <button
-                                    onClick={() => handleSeek(timestamp)}
-                                    className="shrink-0 text-[10px] text-rose-600 hover:text-rose-800 flex items-center gap-1 font-medium"
-                                  >
-                                    <Play size={8} fill="currentColor" /> {timestamp}
-                                  </button>
-                                )}
-                              </div>
-                              {description && (
-                                <p className="text-xs text-rose-700 leading-relaxed">{description}</p>
-                              )}
-                              {evidence && (
-                                <div className="bg-white/80 border border-rose-200 rounded-lg p-3 mt-2">
-                                  <div className="flex items-center gap-1.5 mb-1.5">
-                                    <Quote size={10} className="text-rose-400" />
-                                    <span className="text-[9px] font-bold text-rose-400 uppercase tracking-wider">
-                                      {speaker ? `${speaker} said` : 'Evidence'}
-                                    </span>
-                                  </div>
-                                  <p className="text-xs text-rose-900 italic leading-relaxed">"{evidence}"</p>
-                                </div>
-                              )}
-                            </div>
-                          </div>
+                          )}
+                          {warningViolations.length > 0 && (
+                            <span className="bg-amber-100 text-amber-700 text-[10px] font-bold px-2 py-0.5 rounded-full">
+                              {warningViolations.length} Warning
+                            </span>
+                          )}
                         </div>
-                      );
-                    })}
-                  </div>
-                </div>
+                      </div>
+                      <div className={`rounded-2xl border overflow-hidden shadow-sm ${hasCritical ? 'bg-rose-50 border-rose-200' : 'bg-amber-50 border-amber-200'}`}>
+                        {allViolations.map((reason: any, idx: number) => {
+                          // Handle both string[] and structured object format
+                          const isString = typeof reason === 'string';
+                          const violation = isString
+                            ? reason
+                            : (typeof reason.violation === 'string' ? reason.violation : (reason.violation ? JSON.stringify(reason.violation) : 'Violation'));
+
+                          // Check if this is an extraction error or warning
+                          const isExtractionError = violation.toLowerCase().includes('extraction') ||
+                            violation.toLowerCase().includes('json') ||
+                            violation.toLowerCase().includes('parse');
+
+                          const code = isString
+                            ? (isExtractionError ? 'ERR' : `AF-${String(idx + 1).padStart(2, '0')}`)
+                            : (typeof reason.code === 'string' ? reason.code : (isExtractionError ? 'ERR' : `AF-${String(idx + 1).padStart(2, '0')}`));
+
+                          // Check if this is a warning-only violation (AF-13)
+                          const isWarning = warningOnlyCodes.includes(code);
+
+                          const description = isString ? null : (typeof reason.description === 'string' ? reason.description : null);
+                          const timestamp = isString ? null : (typeof reason.timestamp === 'string' ? reason.timestamp : null);
+                          const evidence = isString ? null : (typeof reason.evidence === 'string' ? reason.evidence : null);
+                          const speaker = isString ? null : (typeof reason.speaker === 'string' ? reason.speaker : null);
+
+                          // Color scheme: rose for critical, amber for warnings/extraction errors
+                          const isAmber = isWarning || isExtractionError;
+
+                          return (
+                            <div key={idx} className={`p-4 ${idx > 0 ? (isAmber ? 'border-t border-amber-200' : 'border-t border-rose-200') : ''}`}>
+                              <div className="flex items-start gap-3">
+                                <div className="flex flex-col items-center gap-1">
+                                  <span className={`shrink-0 text-white text-[10px] font-bold px-2 py-1 rounded uppercase tracking-wider ${isAmber ? 'bg-amber-600' : 'bg-rose-600'}`}>
+                                    {code}
+                                  </span>
+                                  {isWarning && (
+                                    <span className="text-[8px] text-amber-600 font-semibold uppercase">Warning</span>
+                                  )}
+                                </div>
+                                <div className="flex-1 min-w-0 space-y-2">
+                                  <div className="flex items-baseline justify-between gap-2">
+                                    <h5 className={`text-sm font-bold ${isAmber ? 'text-amber-800' : 'text-rose-800'}`}>{violation}</h5>
+                                    {timestamp && (
+                                      <button
+                                        onClick={() => handleSeek(timestamp)}
+                                        className={`shrink-0 text-[10px] flex items-center gap-1 font-medium ${isAmber ? 'text-amber-600 hover:text-amber-800' : 'text-rose-600 hover:text-rose-800'}`}
+                                      >
+                                        <Play size={8} fill="currentColor" /> {timestamp}
+                                      </button>
+                                    )}
+                                  </div>
+                                  {description && (
+                                    <p className={`text-xs leading-relaxed ${isAmber ? 'text-amber-700' : 'text-rose-700'}`}>{description}</p>
+                                  )}
+                                  {evidence && (
+                                    <div className={`bg-white/80 rounded-lg p-3 mt-2 ${isAmber ? 'border border-amber-200' : 'border border-rose-200'}`}>
+                                      <div className="flex items-center gap-1.5 mb-1.5">
+                                        <Quote size={10} className={isAmber ? 'text-amber-400' : 'text-rose-400'} />
+                                        <span className={`text-[9px] font-bold uppercase tracking-wider ${isAmber ? 'text-amber-400' : 'text-rose-400'}`}>
+                                          {speaker ? `${speaker} said` : 'Evidence'}
+                                        </span>
+                                      </div>
+                                      <p className={`text-xs italic leading-relaxed ${isAmber ? 'text-amber-900' : 'text-rose-900'}`}>"{evidence}"</p>
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  );
+                })()
               )}
 
 
@@ -1895,16 +1974,107 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
 
                       {/* Additional Metrics Grid */}
                       <div className="grid grid-cols-2 gap-3">
-                        {/* Script Adherence */}
+                        {/* Script Adherence - Enhanced with expandable details */}
                         {call.languageAssessment.script_adherence && (
-                          <div className="bg-slate-50 rounded-xl p-3">
-                            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">Script Adherence</span>
-                            <span className={`text-sm font-bold ${call.languageAssessment.script_adherence === 'high' ? 'text-emerald-600' :
-                              call.languageAssessment.script_adherence === 'medium' ? 'text-amber-600' : 'text-rose-600'
-                              }`}>
-                              {call.languageAssessment.script_adherence.charAt(0).toUpperCase() + call.languageAssessment.script_adherence.slice(1)}
-                            </span>
-                          </div>
+                          (() => {
+                            // Support both old format (string) and new format (object with details)
+                            const scriptData = call.languageAssessment.script_adherence;
+                            const isDetailedFormat = typeof scriptData === 'object' && scriptData !== null;
+
+                            const level = isDetailedFormat ? (scriptData.level || 'moderate') : scriptData;
+                            const score = isDetailedFormat ? scriptData.score : null;
+                            const phrasesFound = isDetailedFormat ? (scriptData.key_phrases_found || []) : [];
+                            const phrasesMissing = isDetailedFormat ? (scriptData.key_phrases_missing || []) : [];
+                            const sequenceCorrect = isDetailedFormat ? scriptData.sequence_correct : null;
+                            const terminologyIssues = isDetailedFormat ? (scriptData.terminology_issues || []) : [];
+
+                            const levelLower = (level || '').toLowerCase();
+                            const colorClass = levelLower === 'high' ? 'text-emerald-600' :
+                              levelLower === 'moderate' || levelLower === 'medium' ? 'text-amber-600' : 'text-rose-600';
+                            const bgColorClass = levelLower === 'high' ? 'bg-emerald-500' :
+                              levelLower === 'moderate' || levelLower === 'medium' ? 'bg-amber-500' : 'bg-rose-500';
+
+                            const hasDetails = phrasesFound.length > 0 || phrasesMissing.length > 0 || terminologyIssues.length > 0;
+
+                            return (
+                              <div className="bg-slate-50 rounded-xl p-3 col-span-2">
+                                <div className="flex justify-between items-center mb-2">
+                                  <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">Script Adherence</span>
+                                  {score !== null && (
+                                    <span className={`text-xs font-semibold ${colorClass}`}>{score}/100</span>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-3 mb-2">
+                                  <span className={`text-sm font-bold ${colorClass}`}>
+                                    {levelLower.charAt(0).toUpperCase() + levelLower.slice(1)}
+                                  </span>
+                                  {score !== null && (
+                                    <div className="flex-1 h-2 bg-slate-200 rounded-full overflow-hidden">
+                                      <div
+                                        className={`h-full rounded-full ${bgColorClass}`}
+                                        style={{ width: `${score}%` }}
+                                      />
+                                    </div>
+                                  )}
+                                </div>
+
+                                {/* Expandable details */}
+                                {hasDetails && (
+                                  <details className="mt-2">
+                                    <summary className="text-[10px] text-slate-500 cursor-pointer hover:text-slate-700 font-medium">
+                                      View Details ({phrasesFound.length} found, {phrasesMissing.length} missing)
+                                    </summary>
+                                    <div className="mt-2 space-y-2 text-[10px]">
+                                      {phrasesFound.length > 0 && (
+                                        <div>
+                                          <span className="font-semibold text-emerald-600 block mb-1">Key Phrases Found:</span>
+                                          <div className="flex flex-wrap gap-1">
+                                            {phrasesFound.map((phrase: string, idx: number) => (
+                                              <span key={idx} className="px-1.5 py-0.5 bg-emerald-100 text-emerald-700 rounded text-[9px]">
+                                                {phrase}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      )}
+                                      {phrasesMissing.length > 0 && (
+                                        <div>
+                                          <span className="font-semibold text-rose-600 block mb-1">Missing Phrases:</span>
+                                          <div className="flex flex-wrap gap-1">
+                                            {phrasesMissing.map((phrase: string, idx: number) => (
+                                              <span key={idx} className="px-1.5 py-0.5 bg-rose-100 text-rose-700 rounded text-[9px]">
+                                                {phrase}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      )}
+                                      {sequenceCorrect !== null && (
+                                        <div className="flex items-center gap-1">
+                                          <span className="font-semibold text-slate-600">Sequence Order:</span>
+                                          <span className={sequenceCorrect ? 'text-emerald-600' : 'text-amber-600'}>
+                                            {sequenceCorrect ? 'Correct' : 'Minor deviations'}
+                                          </span>
+                                        </div>
+                                      )}
+                                      {terminologyIssues.length > 0 && (
+                                        <div>
+                                          <span className="font-semibold text-amber-600 block mb-1">Terminology Issues:</span>
+                                          <div className="flex flex-wrap gap-1">
+                                            {terminologyIssues.map((issue: string, idx: number) => (
+                                              <span key={idx} className="px-1.5 py-0.5 bg-amber-100 text-amber-700 rounded text-[9px]">
+                                                {issue}
+                                              </span>
+                                            ))}
+                                          </div>
+                                        </div>
+                                      )}
+                                    </div>
+                                  </details>
+                                )}
+                              </div>
+                            );
+                          })()
                         )}
 
                         {/* Pace */}
@@ -2345,23 +2515,29 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                   <div className="space-y-2">
                     {call.autoFailReasons.map((reason, idx: number) => {
                       const isString = typeof reason === 'string';
-                      const code = isString
-                        ? `AF-${String(idx + 1).padStart(2, '0')}`
-                        : (typeof reason.code === 'string' ? reason.code : `AF-${String(idx + 1).padStart(2, '0')}`);
                       const violation = isString
                         ? reason
                         : (typeof reason.violation === 'string' ? reason.violation : (reason.violation ? JSON.stringify(reason.violation) : 'Auto-fail violation'));
+
+                      // Check if this is an extraction error (not a real compliance auto-fail)
+                      const isExtractionError = violation.toLowerCase().includes('extraction') ||
+                        violation.toLowerCase().includes('json') ||
+                        violation.toLowerCase().includes('parse');
+
+                      const code = isString
+                        ? (isExtractionError ? 'ERR' : `AF-${String(idx + 1).padStart(2, '0')}`)
+                        : (typeof reason.code === 'string' ? reason.code : (isExtractionError ? 'ERR' : `AF-${String(idx + 1).padStart(2, '0')}`));
                       const timestamp = isString ? null : (typeof reason.timestamp === 'string' ? reason.timestamp : null);
                       return (
-                        <div key={idx} className="flex items-start gap-2 p-2 bg-white rounded-lg border border-rose-200">
-                          <XCircle size={14} className="text-rose-500 mt-0.5 shrink-0" />
+                        <div key={idx} className={`flex items-start gap-2 p-2 bg-white rounded-lg border ${isExtractionError ? 'border-amber-200' : 'border-rose-200'}`}>
+                          <XCircle size={14} className={`${isExtractionError ? 'text-amber-500' : 'text-rose-500'} mt-0.5 shrink-0`} />
                           <div className="flex-1">
-                            <p className="text-sm text-rose-700 font-medium">
+                            <p className={`text-sm ${isExtractionError ? 'text-amber-700' : 'text-rose-700'} font-medium`}>
                               {!isString && <span className="font-bold mr-1">[{code}]</span>}
                               {violation}
                             </p>
                             {timestamp && (
-                              <p className="text-xs text-rose-500 mt-0.5">@ {timestamp}</p>
+                              <p className={`text-xs ${isExtractionError ? 'text-amber-500' : 'text-rose-500'} mt-0.5`}>@ {timestamp}</p>
                             )}
                           </div>
                         </div>
@@ -2422,15 +2598,21 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                     <div className="mt-2 space-y-1 text-left">
                       {call.autoFailReasons.map((reason, idx) => {
                         const isString = typeof reason === 'string';
-                        const code = isString
-                          ? `AF-${String(idx + 1).padStart(2, '0')}`
-                          : (typeof reason.code === 'string' ? reason.code : `AF-${String(idx + 1).padStart(2, '0')}`);
                         const violation = isString
                           ? reason
                           : (typeof reason.violation === 'string' ? reason.violation : (reason.violation ? JSON.stringify(reason.violation) : 'Auto-fail'));
+
+                        // Check if this is an extraction error (not a real compliance auto-fail)
+                        const isExtractionError = violation.toLowerCase().includes('extraction') ||
+                          violation.toLowerCase().includes('json') ||
+                          violation.toLowerCase().includes('parse');
+
+                        const code = isString
+                          ? (isExtractionError ? 'ERR' : `AF-${String(idx + 1).padStart(2, '0')}`)
+                          : (typeof reason.code === 'string' ? reason.code : (isExtractionError ? 'ERR' : `AF-${String(idx + 1).padStart(2, '0')}`));
                         const displayText = isString ? reason : `[${code}] ${violation}`;
                         return (
-                          <div key={idx} className="text-[10px] text-rose-700 bg-rose-100/80 px-2 py-1 rounded border border-rose-200 leading-tight">
+                          <div key={idx} className={`text-[10px] ${isExtractionError ? 'text-amber-700 bg-amber-100/80 border-amber-200' : 'text-rose-700 bg-rose-100/80 border-rose-200'} px-2 py-1 rounded border leading-tight`}>
                             {displayText}
                           </div>
                         );
