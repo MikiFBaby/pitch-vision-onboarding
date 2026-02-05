@@ -216,8 +216,8 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
 
   const effectiveAutoFailReasons = useMemo(() => {
     // First check top-level column if it's a valid array
-    if (call?.autoFailReasons && Array.isArray(effectiveAutoFailReasons) && effectiveAutoFailReasons.length > 0) {
-      return effectiveAutoFailReasons;
+    if (call?.autoFailReasons && Array.isArray(call.autoFailReasons) && call.autoFailReasons.length > 0) {
+      return call.autoFailReasons;
     }
     // Fallback to call_analysis
     if (call?.call_analysis?.auto_fail_reasons && Array.isArray(call.call_analysis.auto_fail_reasons)) {
