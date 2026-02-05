@@ -652,6 +652,90 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
     });
   }, [call?.checklist, call?.callAnalysis?.checklist]);
 
+  // Frontend phrase detection for flagging potential AI false positives/negatives
+  const transcriptFlags = useMemo(() => {
+    const transcript = (call?.transcript || '').toLowerCase();
+    if (!transcript) return {};
+
+    // Define detection patterns for critical compliance items
+    const detectionPatterns: { [key: string]: { patterns: string[], itemKeys: string[] } } = {
+      recorded_line: {
+        patterns: [
+          'recorded line', 'recorded call', 'call is recorded', 'call is being recorded',
+          'on a recorded', 'this call may be recorded', 'call may be monitored',
+          'recorded for quality', 'recording this call', 'line is recorded'
+        ],
+        itemKeys: ['recorded_line_disclosure', 'recorded line', 'recorded line disclosure']
+      },
+      verbal_consent: {
+        patterns: [
+          'is that okay', 'is that ok', 'sound good', 'sounds good', 'alright with you',
+          'okay with you', 'do you agree', 'do you consent', 'are you okay with',
+          'can i transfer', 'may i transfer', 'ready to speak'
+        ],
+        itemKeys: ['verbal_consent_to_transfer', 'verbal consent', 'transfer consent']
+      },
+      medicare_verification: {
+        patterns: [
+          'part a and b', 'part a and part b', 'parts a and b', 'medicare a and b',
+          'a and b medicare', 'both parts', 'both part a'
+        ],
+        itemKeys: ['medicare_ab_verification', 'medicare part', 'medicare a&b', 'medicare verification']
+      },
+      rwb_card: {
+        patterns: [
+          'red white and blue', 'red, white, and blue', 'red white blue',
+          'rwb card', 'medicare card'
+        ],
+        itemKeys: ['rwb_card_verification', 'rwb card', 'red white blue', 'red, white, blue']
+      }
+    };
+
+    const flags: { [itemKey: string]: { found: boolean, matchedPhrase?: string, position?: number } } = {};
+
+    // Check each pattern group
+    Object.entries(detectionPatterns).forEach(([category, { patterns, itemKeys }]) => {
+      let found = false;
+      let matchedPhrase: string | undefined;
+      let position: number | undefined;
+
+      for (const pattern of patterns) {
+        const idx = transcript.indexOf(pattern);
+        if (idx !== -1) {
+          found = true;
+          matchedPhrase = pattern;
+          position = idx;
+          break;
+        }
+      }
+
+      // Apply to all matching item keys
+      itemKeys.forEach(key => {
+        flags[key.toLowerCase()] = { found, matchedPhrase, position };
+      });
+    });
+
+    return flags;
+  }, [call?.transcript]);
+
+  // Helper to check if an item has a potential false negative flag
+  const getItemFlag = (itemName: string, status: string): { type: 'false_negative' | 'false_positive' | null, phrase?: string } => {
+    const itemKey = itemName.toLowerCase();
+    const isFail = !['met', 'pass', 'yes', 'true'].includes(status.toLowerCase());
+
+    // Check against all flag keys
+    for (const [flagKey, flagData] of Object.entries(transcriptFlags)) {
+      if (itemKey.includes(flagKey) || flagKey.includes(itemKey.split(' ')[0])) {
+        if (isFail && flagData.found) {
+          // AI said FAIL but we found the phrase - potential false negative
+          return { type: 'false_negative', phrase: flagData.matchedPhrase };
+        }
+        // Could add false_positive detection here if needed
+      }
+    }
+    return { type: null };
+  };
+
   const timelineMarkers = useMemo(() => {
     const list: { title: string, time: string, seconds: number, position: number, color: string, type: 'pass' | 'fail' | 'chapter' | 'transfer', isEstimated?: boolean }[] = [];
 
@@ -3200,6 +3284,14 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
 
                       const isPass = ['met', 'pass', 'yes', 'true'].includes(effectiveStatus.toLowerCase());
 
+                      // Check for potential false negative flag
+                      const itemFlag = getItemFlag(itemName, effectiveStatus);
+                      const hasFalseNegativeFlag = itemFlag.type === 'false_negative';
+
+                      // Get AI confidence for this item
+                      const aiConfidence = item.confidence || 0;
+                      const isLowConfidence = aiConfidence < 80;
+
                       // Calculate timestamp for this item (used in header)
                       const validItemTime = item.time &&
                         item.time !== '-1' &&
@@ -3217,11 +3309,17 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                       const displayTimestamp = validItemTime ? item.time : timeSecondsDisplay;
 
                       return (
-                        <div key={idx} className="p-5 flex items-start gap-4 hover:bg-slate-50 transition-colors group">
-                          {/* Status Icon */}
-                          <div className={`mt-1 h-6 w-6 rounded-full flex items-center justify-center shrink-0 ${isPass ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'
-                            }`}>
-                            {isPass ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
+                        <div key={idx} className={`p-5 flex items-start gap-4 hover:bg-slate-50 transition-colors group ${hasFalseNegativeFlag ? 'bg-amber-50/50 border-l-4 border-l-amber-400' : ''}`}>
+                          {/* Status Icon with Confidence Ring */}
+                          <div className="relative mt-1 shrink-0">
+                            <div className={`h-7 w-7 rounded-full flex items-center justify-center ${isPass ? 'bg-emerald-100 text-emerald-600' : 'bg-rose-100 text-rose-600'}`}>
+                              {isPass ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
+                            </div>
+                            {/* Confidence indicator ring */}
+                            <div className={`absolute -bottom-1 -right-1 h-4 w-4 rounded-full flex items-center justify-center text-[8px] font-bold border-2 border-white
+                              ${aiConfidence >= 90 ? 'bg-emerald-500 text-white' : aiConfidence >= 70 ? 'bg-amber-500 text-white' : 'bg-rose-500 text-white'}`}>
+                              {Math.round(aiConfidence / 10)}
+                            </div>
                           </div>
 
                           <div className="flex-1 min-w-0">
@@ -3230,6 +3328,13 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                                 <h5 className={`text-sm font-bold ${isPass ? 'text-slate-800' : 'text-slate-800'}`}>
                                   {itemName}
                                 </h5>
+                                {/* AI Confidence Badge */}
+                                <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded border
+                                  ${aiConfidence >= 90 ? 'text-emerald-700 bg-emerald-50 border-emerald-200' :
+                                    aiConfidence >= 70 ? 'text-amber-700 bg-amber-50 border-amber-200' :
+                                    'text-rose-700 bg-rose-50 border-rose-200'}`}>
+                                  AI: {aiConfidence}%
+                                </span>
                                 {isOverridden && <span className="text-[10px] uppercase font-bold text-amber-500 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">Manual Override</span>}
                                 {/* Timestamp Badge - Always visible next to title */}
                                 {hasValidTimestamp && displayTimestamp ? (
@@ -3268,6 +3373,19 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                             </div>
 
                             <div className="space-y-2">
+                              {/* False Negative Warning */}
+                              {hasFalseNegativeFlag && (
+                                <div className="flex items-start gap-2 p-2.5 bg-amber-100 border border-amber-300 rounded-lg">
+                                  <AlertTriangle size={14} className="text-amber-600 shrink-0 mt-0.5" />
+                                  <div>
+                                    <p className="text-xs font-bold text-amber-800">Possible False Negative</p>
+                                    <p className="text-[11px] text-amber-700">
+                                      AI marked as FAIL, but phrase "<span className="font-semibold">{itemFlag.phrase}</span>" found in transcript. Please verify manually.
+                                    </p>
+                                  </div>
+                                </div>
+                              )}
+
                               {/* Evidence / Quote - Click to Seek */}
                               {item.evidence && (() => {
                                 // Extract timestamp if present [12:30]
