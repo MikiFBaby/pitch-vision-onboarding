@@ -188,6 +188,20 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
   const [autoFailOverride, setAutoFailOverride] = useState(false);
   const [autoFailOverrideReason, setAutoFailOverrideReason] = useState('');
 
+  // Initialize override state from database when call changes
+  useEffect(() => {
+    if (call) {
+      // Check if this call was previously overridden (from database)
+      const wasOverridden = (call as any).autoFailOverridden === true || (call as any).auto_fail_overridden === true;
+      const savedReason = (call as any).autoFailOverrideReason || (call as any).auto_fail_override_reason || '';
+      setAutoFailOverride(wasOverridden);
+      setAutoFailOverrideReason(savedReason);
+    } else {
+      setAutoFailOverride(false);
+      setAutoFailOverrideReason('');
+    }
+  }, [call?.id]);
+
   // Confidence threshold for requiring manual review
   const CONFIDENCE_THRESHOLD = 90;
 
