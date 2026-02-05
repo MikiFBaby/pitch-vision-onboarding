@@ -3,7 +3,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 
 export async function POST(request: NextRequest) {
     try {
-        const { id, status, reviewedBy, notes } = await request.json();
+        const { id, status, reviewedBy, notes, autoFailOverride } = await request.json();
 
         if (!id || !status) {
             return NextResponse.json(
@@ -21,7 +21,7 @@ export async function POST(request: NextRequest) {
             );
         }
 
-        console.log('Updating QA status:', { id, status, reviewedBy });
+        console.log('Updating QA status:', { id, status, reviewedBy, autoFailOverride });
 
         const updateData: Record<string, unknown> = {
             'qa_status': status,
@@ -34,6 +34,15 @@ export async function POST(request: NextRequest) {
 
         if (notes) {
             updateData['qa_notes'] = notes;
+        }
+
+        // Handle auto-fail override - update score and store override info
+        if (autoFailOverride?.overridden) {
+            updateData['compliance_score'] = autoFailOverride.recalculatedScore;
+            updateData['auto_fail_overridden'] = true;
+            updateData['auto_fail_override_reason'] = autoFailOverride.reason;
+            updateData['auto_fail_override_at'] = new Date().toISOString();
+            updateData['auto_fail_override_by'] = reviewedBy;
         }
 
         const { error } = await supabaseAdmin
@@ -51,7 +60,7 @@ export async function POST(request: NextRequest) {
 
         return NextResponse.json({
             success: true,
-            message: `Call ${id} marked as ${status}`
+            message: `Call ${id} marked as ${status}${autoFailOverride?.overridden ? ' (auto-fail overridden)' : ''}`
         });
 
     } catch (e: unknown) {

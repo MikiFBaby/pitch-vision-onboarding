@@ -340,9 +340,9 @@ function QADashboardContent() {
     };
 
     // Handle QA review submission from TranscriptDrawer
-    const handleQASubmit = async (callId: string, reviewerName: string, notes?: string) => {
+    const handleQASubmit = async (callId: string, reviewerName: string, notes?: string, autoFailOverride?: { overridden: boolean; reason: string; originalScore: number; recalculatedScore: number }) => {
         try {
-            console.log('Submitting QA review:', { callId, reviewerName, notes });
+            console.log('Submitting QA review:', { callId, reviewerName, notes, autoFailOverride });
 
             const response = await fetch('/api/qa/update-status', {
                 method: 'POST',
@@ -351,7 +351,8 @@ function QADashboardContent() {
                     id: callId,
                     status: 'approved',
                     notes,
-                    reviewedBy: reviewerName
+                    reviewedBy: reviewerName,
+                    autoFailOverride: autoFailOverride || null
                 })
             });
 
@@ -362,7 +363,7 @@ function QADashboardContent() {
                 throw new Error(result.error || 'Failed to submit review');
             }
 
-            // Update local state
+            // Update local state - if override, update score and mark as overridden
             setCalls(prev => prev.map(c =>
                 c.id === callId
                     ? {
@@ -370,7 +371,13 @@ function QADashboardContent() {
                         qaStatus: 'approved',
                         qaReviewedBy: reviewerName,
                         qaReviewedAt: new Date().toISOString(),
-                        qaNotes: notes
+                        qaNotes: notes,
+                        // If auto-fail was overridden, update the score and add override flag
+                        ...(autoFailOverride?.overridden ? {
+                            complianceScore: autoFailOverride.recalculatedScore,
+                            autoFailOverridden: true,
+                            autoFailOverrideReason: autoFailOverride.reason
+                        } : {})
                     }
                     : c
             ));
@@ -382,7 +389,12 @@ function QADashboardContent() {
                     qaStatus: 'approved',
                     qaReviewedBy: reviewerName,
                     qaReviewedAt: new Date().toISOString(),
-                    qaNotes: notes
+                    qaNotes: notes,
+                    ...(autoFailOverride?.overridden ? {
+                        complianceScore: autoFailOverride.recalculatedScore,
+                        autoFailOverridden: true,
+                        autoFailOverrideReason: autoFailOverride.reason
+                    } : {})
                 } : null);
             }
 

@@ -14,11 +14,18 @@ import { NeonButton } from './ui/NeonButton';
 import { useAuth } from '@/context/AuthContext';
 import { supabase } from '@/lib/supabase-client';
 
+interface AutoFailOverrideData {
+  overridden: boolean;
+  reason: string;
+  originalScore: number;
+  recalculatedScore: number;
+}
+
 interface TranscriptDrawerProps {
   call: CallData | null;
   onClose: () => void;
   onScoreUpdate?: (callId: number | string, newScore: number) => void;
-  onQASubmit?: (callId: string, reviewerName: string, notes?: string) => Promise<void>;
+  onQASubmit?: (callId: string, reviewerName: string, notes?: string, autoFailOverride?: AutoFailOverrideData) => Promise<void>;
 }
 
 const DEEP_INSIGHT_PROMPTS = [
@@ -1419,7 +1426,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
           {/* Metadata Bar - Sleek connected design */}
           <div className="w-full mb-4">
             <div className="flex items-stretch bg-white rounded-xl shadow-sm border border-slate-200 overflow-hidden flex-nowrap">
-              {/* Score - Shows 0 for auto-fail, otherwise computed weighted score */}
+              {/* Score - Shows 0 for auto-fail (unless overridden), otherwise computed weighted score */}
               {(() => {
                 // Check for CRITICAL auto-fail violations (AF-13 "Poor Call Quality" is warning-only, not auto-fail)
                 const warningOnlyCodes = ['AF-13']; // AF-13 is a warning, not a critical auto-fail
@@ -1429,10 +1436,15 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                   return !warningOnlyCodes.includes(code);
                 });
                 const hasAutoFail = criticalViolations.length > 0 || (call.autoFailTriggered && criticalViolations.length > 0);
-                const displayScore = hasAutoFail ? 0 : (calculatedScore || 0);
-                const scoreColorBg = hasAutoFail ? 'bg-rose-50/50' : (displayScore >= 85 ? 'bg-emerald-50/50' : displayScore >= 70 ? 'bg-amber-50/50' : 'bg-rose-50/50');
-                const scoreColorText = hasAutoFail ? 'text-rose-500' : (displayScore >= 85 ? 'text-emerald-500' : displayScore >= 70 ? 'text-amber-500' : 'text-rose-500');
-                const scoreColorValue = hasAutoFail ? 'text-rose-600' : (displayScore >= 85 ? 'text-emerald-600' : displayScore >= 70 ? 'text-amber-600' : 'text-rose-600');
+
+                // If auto-fail is overridden, show the recalculated score
+                const effectiveAutoFail = hasAutoFail && !autoFailOverride;
+                const displayScore = effectiveAutoFail ? 0 : (calculatedScore || 0);
+                const isOverridden = hasAutoFail && autoFailOverride;
+
+                const scoreColorBg = isOverridden ? 'bg-amber-50/50' : (effectiveAutoFail ? 'bg-rose-50/50' : (displayScore >= 85 ? 'bg-emerald-50/50' : displayScore >= 70 ? 'bg-amber-50/50' : 'bg-rose-50/50'));
+                const scoreColorText = isOverridden ? 'text-amber-500' : (effectiveAutoFail ? 'text-rose-500' : (displayScore >= 85 ? 'text-emerald-500' : displayScore >= 70 ? 'text-amber-500' : 'text-rose-500'));
+                const scoreColorValue = isOverridden ? 'text-amber-600' : (effectiveAutoFail ? 'text-rose-600' : (displayScore >= 85 ? 'text-emerald-600' : displayScore >= 70 ? 'text-amber-600' : 'text-rose-600'));
 
                 return (
                   <div className={`shrink-0 py-2 px-3 text-center border-r border-slate-100 min-w-[60px] ${scoreColorBg}`}>
@@ -1441,11 +1453,12 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                       <span className="text-[9px] font-bold uppercase tracking-wider">Score</span>
                     </div>
                     <p className={`text-lg font-black leading-none ${scoreColorValue}`}>{displayScore}</p>
+                    {isOverridden && <span className="text-[8px] text-amber-500 font-bold">(Override)</span>}
                   </div>
                 );
               })()}
 
-              {/* Status - Shows AUTO-FAIL when critical violations exist, otherwise based on score */}
+              {/* Status - Shows AUTO-FAIL when critical violations exist (unless overridden), otherwise based on score */}
               <div className="shrink-0 py-2 px-3 text-center border-r border-slate-100 flex flex-col items-center justify-center min-w-[70px]">
                 <div className="text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">Status</div>
                 {(() => {
@@ -1457,13 +1470,17 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                     return !warningOnlyCodes.includes(code);
                   });
                   const hasAutoFail = criticalViolations.length > 0;
-                  const scoreVal = calculatedScore || 0;
+
+                  // If auto-fail is overridden, use the recalculated score for status
+                  const effectiveAutoFail = hasAutoFail && !autoFailOverride;
+                  const scoreVal = effectiveAutoFail ? 0 : (calculatedScore || 0);
+                  const isOverridden = hasAutoFail && autoFailOverride;
 
                   let status = 'REVIEW';
                   let colorClass = 'text-amber-600 bg-amber-100';
                   let icon = <AlertCircle size={12} />;
 
-                  if (hasAutoFail) {
+                  if (effectiveAutoFail) {
                     status = 'AUTO-FAIL';
                     colorClass = 'text-rose-600 bg-rose-100';
                     icon = <XCircle size={12} />;
@@ -1473,14 +1490,24 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                     icon = <XCircle size={12} />;
                   } else if (scoreVal >= 85) {
                     status = 'PASS';
-                    colorClass = 'text-emerald-600 bg-emerald-100';
-                    icon = <CheckCircle2 size={12} />;
+                    colorClass = isOverridden ? 'text-amber-600 bg-amber-100' : 'text-emerald-600 bg-emerald-100';
+                    icon = isOverridden ? <AlertCircle size={12} /> : <CheckCircle2 size={12} />;
+                  } else if (isOverridden) {
+                    // Score between 50-85 with override - show as REVIEW with amber
+                    status = 'REVIEW';
+                    colorClass = 'text-amber-600 bg-amber-100';
+                    icon = <AlertCircle size={12} />;
                   }
 
                   return (
-                    <div className={`px-2.5 py-1 rounded-full ${colorClass} flex items-center gap-1`}>
-                      {icon}
-                      <span className="text-[10px] font-black">{status}</span>
+                    <div className="flex flex-col items-center gap-0.5">
+                      <div className={`px-2.5 py-1 rounded-full ${colorClass} flex items-center gap-1`}>
+                        {icon}
+                        <span className="text-[10px] font-black">{status}</span>
+                      </div>
+                      {isOverridden && (
+                        <span className="text-[8px] text-amber-500 font-bold">(Override)</span>
+                      )}
                     </div>
                   );
                 })()}
@@ -3372,9 +3399,33 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                             const reviewerName = profile?.first_name && profile?.last_name
                               ? `${profile.first_name} ${profile.last_name}`
                               : user?.displayName || user?.email?.split('@')[0] || 'QA Agent';
-                            await onQASubmit(call.id, reviewerName, qaReviewNotes || undefined);
+
+                            // Check if there's an auto-fail override to include
+                            const warningOnlyCodes = ['AF-13'];
+                            const violations = Array.isArray(call.autoFailReasons) ? call.autoFailReasons : [];
+                            const criticalViolations = violations.filter((v: any) => {
+                              const code = typeof v === 'string' ? v : (v.code || '');
+                              return !warningOnlyCodes.includes(code);
+                            });
+                            const hasAutoFail = criticalViolations.length > 0;
+
+                            // Prepare override data if applicable
+                            let overrideData: AutoFailOverrideData | undefined;
+                            if (hasAutoFail && autoFailOverride) {
+                              const recalculatedScore = totalPossible > 0 ? Math.round((totalEarned / totalPossible) * 100) : 0;
+                              overrideData = {
+                                overridden: true,
+                                reason: autoFailOverrideReason || 'QA determined auto-fail was a false positive',
+                                originalScore: 0,
+                                recalculatedScore
+                              };
+                            }
+
+                            await onQASubmit(call.id, reviewerName, qaReviewNotes || undefined, overrideData);
                             setToast({ message: 'Review submitted successfully!', type: 'success' });
                             setQaReviewNotes('');
+                            setAutoFailOverride(false);
+                            setAutoFailOverrideReason('');
                             setTimeout(() => setToast(null), 3000);
                           } catch (err) {
                             setToast({ message: 'Failed to submit review', type: 'error' });
