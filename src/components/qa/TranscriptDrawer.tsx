@@ -3283,8 +3283,8 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                                     </div>
 
                                     {/* Explicit Timestamp Button if present and valid */}
-                                    {hasTimestamp && displayTime && (
-                                      <div className="mt-2 flex justify-end">
+                                    <div className="mt-2 flex justify-end">
+                                      {hasTimestamp && displayTime ? (
                                         <button
                                           onClick={(e) => {
                                             e.stopPropagation();
@@ -3297,8 +3297,13 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                                           <Play size={8} fill="currentColor" />
                                           Jump to {displayTime}
                                         </button>
-                                      </div>
-                                    )}
+                                      ) : (
+                                        <span className="flex items-center gap-1.5 text-[10px] font-medium text-slate-400 bg-slate-100 px-2 py-1 rounded-md border border-slate-200">
+                                          <Clock size={8} />
+                                          Timestamp: N/A
+                                        </span>
+                                      )}
+                                    </div>
                                   </>
                                 );
                               })()}
