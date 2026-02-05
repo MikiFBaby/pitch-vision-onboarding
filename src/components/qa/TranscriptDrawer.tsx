@@ -2119,15 +2119,18 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                             const isDetailedFormat = typeof scriptData === 'object' && scriptData !== null;
                             const isNumericFormat = typeof scriptData === 'number';
 
-                            // Handle all three formats
+                            // Handle all three formats - but we'll recalculate score below
                             let level: string;
                             let score: number | null;
+                            let apiProvidedScore: number | null = null;
                             if (isDetailedFormat) {
                               level = scriptData.level || 'moderate';
-                              score = scriptData.score ?? scriptData.overall_adherence ?? null;
+                              apiProvidedScore = scriptData.score ?? scriptData.overall_adherence ?? null;
+                              score = apiProvidedScore; // Will be recalculated below if 0
                             } else if (isNumericFormat) {
                               // Number format: 90 = high, 50-89 = moderate, <50 = low
                               score = scriptData;
+                              apiProvidedScore = scriptData;
                               level = scriptData >= 80 ? 'high' : scriptData >= 50 ? 'moderate' : 'low';
                             } else {
                               // String format: "high", "moderate", "low"
@@ -2144,14 +2147,101 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                             const sectionScores = isDetailedFormat ? (scriptData.section_scores || {}) : {};
                             const hasSectionScores = Object.keys(sectionScores).length > 0;
 
-                            // Individual metric scores
-                            const metricScores = isDetailedFormat ? {
-                              key_phrases: scriptData.key_phrases_score,
-                              sequence_order: scriptData.sequence_order_score,
-                              response_handling: scriptData.response_handling_score,
-                              terminology: scriptData.terminology_score
-                            } : {};
-                            const hasMetricScores = Object.values(metricScores).some(v => v !== undefined && v !== null);
+                            // CALCULATE scores from actual data instead of relying on AI-provided zeros
+                            // Key Phrases Score: percentage of required phrases that were found
+                            const totalPhrases = phrasesFound.length + phrasesMissing.length;
+                            const calculatedKeyPhrasesScore = totalPhrases > 0
+                              ? Math.round((phrasesFound.length / totalPhrases) * 100)
+                              : 0;
+
+                            // Sequence Order Score: based on sequence_correct flag
+                            // Also check checklist timestamps to verify order if available
+                            let calculatedSequenceScore = 50; // Default to "minor deviations"
+                            if (sequenceCorrect === true) {
+                              calculatedSequenceScore = 100;
+                            } else if (sequenceCorrect === false) {
+                              calculatedSequenceScore = 50;
+                            } else if (call.checklist && typeof call.checklist === 'object') {
+                              // Try to determine sequence from checklist timestamps
+                              const checklistItems = Object.entries(call.checklist)
+                                .filter(([_, item]: [string, any]) => item && item.time_seconds >= 0)
+                                .sort((a: any, b: any) => (a[1].time_seconds || 0) - (b[1].time_seconds || 0));
+
+                              // Expected order for Medicare
+                              const expectedOrder = [
+                                'client_name_confirmation', 'agent_introduction', 'company_name',
+                                'recorded_line_disclosure', 'food_utility_card_mention', 'medicare_ab_verification',
+                                'rwb_card_verification', 'state_zipcode_confirmation', 'food_benefits_mention',
+                                'verbal_consent_to_transfer', 'cold_transfer'
+                              ];
+
+                              if (checklistItems.length >= 3) {
+                                // Count how many items are in correct relative order
+                                let correctOrderCount = 0;
+                                for (let i = 0; i < checklistItems.length - 1; i++) {
+                                  const currIdx = expectedOrder.indexOf(checklistItems[i][0]);
+                                  const nextIdx = expectedOrder.indexOf(checklistItems[i + 1][0]);
+                                  if (currIdx !== -1 && nextIdx !== -1 && currIdx < nextIdx) {
+                                    correctOrderCount++;
+                                  }
+                                }
+                                const totalPairs = checklistItems.length - 1;
+                                calculatedSequenceScore = totalPairs > 0
+                                  ? Math.round((correctOrderCount / totalPairs) * 100)
+                                  : 50;
+                              }
+                            }
+
+                            // Response Handling Score: based on items requiring customer response
+                            let calculatedResponseHandlingScore = 50;
+                            if (call.checklist && typeof call.checklist === 'object') {
+                              // Items that require customer response
+                              const responseRequiredItems = [
+                                'medicare_ab_verification', 'rwb_card_verification', 'verbal_consent_to_transfer',
+                                'mmw_check_first', 'mmw_check_second'
+                              ];
+                              const checklistObj = call.checklist as Record<string, any>;
+                              const responseItems = responseRequiredItems
+                                .map(key => checklistObj[key])
+                                .filter(item => item !== undefined);
+
+                              if (responseItems.length > 0) {
+                                const passedResponseItems = responseItems.filter((item: any) => item?.passed === true).length;
+                                calculatedResponseHandlingScore = Math.round((passedResponseItems / responseItems.length) * 100);
+                              }
+                            }
+
+                            // Terminology Score: based on issues found (100 if no issues, deduct 20 per issue)
+                            const calculatedTerminologyScore = Math.max(0, 100 - (terminologyIssues.length * 20));
+
+                            // Use calculated scores, fallback to API-provided if they're non-zero
+                            const metricScores = {
+                              key_phrases: (scriptData.key_phrases_score && scriptData.key_phrases_score > 0)
+                                ? scriptData.key_phrases_score : calculatedKeyPhrasesScore,
+                              sequence_order: (scriptData.sequence_order_score && scriptData.sequence_order_score > 0)
+                                ? scriptData.sequence_order_score : calculatedSequenceScore,
+                              response_handling: (scriptData.response_handling_score && scriptData.response_handling_score > 0)
+                                ? scriptData.response_handling_score : calculatedResponseHandlingScore,
+                              terminology: (scriptData.terminology_score && scriptData.terminology_score > 0)
+                                ? scriptData.terminology_score : calculatedTerminologyScore
+                            };
+
+                            // Recalculate overall score if API provided 0 or null
+                            // Weight: Key Phrases 40%, Sequence Order 25%, Response Handling 25%, Terminology 10%
+                            if (!apiProvidedScore || apiProvidedScore === 0) {
+                              const calculatedOverallScore = Math.round(
+                                (metricScores.key_phrases * 0.40) +
+                                (metricScores.sequence_order * 0.25) +
+                                (metricScores.response_handling * 0.25) +
+                                (metricScores.terminology * 0.10)
+                              );
+                              score = calculatedOverallScore;
+                              // Also recalculate level based on new score
+                              level = score >= 80 ? 'high' : score >= 50 ? 'moderate' : 'low';
+                            }
+
+                            // Always show metric scores since we calculate them
+                            const hasMetricScores = totalPhrases > 0 || isDetailedFormat;
 
                             const levelLower = (level || 'moderate').toLowerCase();
                             const colorClass = levelLower === 'high' ? 'text-emerald-600' :
