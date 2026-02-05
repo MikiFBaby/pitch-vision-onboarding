@@ -17,7 +17,6 @@
         "mmwCheck": "Ok not a problem, so it's just for folks who do not have Medicare or Medicaid or work insurance... you don't have any of those correct?",
         "stateConfirm": "You're still living in [STATE] correct?",
         "mmwDoubleCheck": "And just to be sure, you do not have either Medicare, or Medicaid or work insurance?",
-        "taxQuestion": "Have you filed taxes in the past two years?",
         "preTransfer": "OK THAT'S EVERYTHING I NEED FROM YOU. I will now get someone on the line to see what kind of health insurance subsidy you MAY qualify for.",
         "consentRequired": "CUSTOMER MUST SAY 'OK' FOR YOU TO TRANSFER",
         "keyPhrases": [
@@ -27,14 +26,12 @@
           {"phrase": "Medicare or Medicaid or work insurance", "required": true, "order": 4},
           {"phrase": "still living in [STATE]", "required": true, "order": 5},
           {"phrase": "just to be sure", "required": true, "order": 6},
-          {"phrase": "filed taxes", "required": true, "order": 7},
-          {"phrase": "MAY qualify", "required": true, "order": 8}
+          {"phrase": "MAY qualify", "required": true, "order": 7}
         ],
         "expectedResponses": {
           "mmwCheck": "no",
           "stateConfirm": "yes",
           "mmwDoubleCheck": "no",
-          "taxQuestion": "yes",
           "consentToTransfer": ["ok", "okay", "yes", "sure", "alright"]
         }
       },
@@ -190,23 +187,6 @@
         },
         {
           "order": 9,
-          "key": "tax_filing_question",
-          "name": "Tax Filing Question",
-          "description": "Ask: Have you filed taxes in the past two years?",
-          "weight": 8,
-          "required": true,
-          "detectionPatterns": [
-            "filed taxes",
-            "file taxes",
-            "tax return",
-            "past two years",
-            "last two years",
-            "filed your taxes"
-          ],
-          "customerResponseRequired": true
-        },
-        {
-          "order": 10,
           "key": "verbal_consent_to_transfer",
           "name": "Verbal Consent to Transfer",
           "description": "Get verbal consent to transfer (customer MUST say 'okay')",
@@ -225,7 +205,7 @@
           "notes": "Customer MUST verbally agree before transfer"
         },
         {
-          "order": 11,
+          "order": 10,
           "key": "cold_transfer",
           "name": "Cold Transfer Execution",
           "description": "Cold transfer: Do NOT introduce the customer - just wait for them to greet each other, then hang up",
