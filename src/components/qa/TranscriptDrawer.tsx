@@ -575,7 +575,17 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
   };
 
   const fullAuditList = useMemo(() => {
-    const parsed = getChecklistArray(call?.checklist);
+    // Try primary checklist first, fall back to call_analysis.checklist if empty/string
+    let checklistData = call?.checklist;
+
+    // If checklist is a string (broken data) or empty, try call_analysis.checklist
+    if (!checklistData || typeof checklistData === 'string' ||
+        (Array.isArray(checklistData) && checklistData.length === 0) ||
+        (typeof checklistData === 'object' && Object.keys(checklistData).length === 0)) {
+      checklistData = call?.call_analysis?.checklist;
+    }
+
+    const parsed = getChecklistArray(checklistData);
 
     // Helper to parse time strings like "0:18", "1:21", "00:40" to seconds
     const timeToSeconds = (timeStr: string | undefined): number => {
@@ -619,7 +629,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
         confidence: finalConfidence
       };
     });
-  }, [call?.checklist]);
+  }, [call?.checklist, call?.call_analysis?.checklist]);
 
   const timelineMarkers = useMemo(() => {
     const list: { title: string, time: string, seconds: number, position: number, color: string, type: 'pass' | 'fail' | 'chapter' | 'transfer', isEstimated?: boolean }[] = [];
