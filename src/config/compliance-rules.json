@@ -504,14 +504,6 @@
     },
     {
       "code": "AF-02",
-      "name": "Skipping Compliance",
-      "description": "All required compliance steps must be followed",
-      "severity": "critical",
-      "detectionMethod": "checklist_completion",
-      "notes": "Triggered when required checklist items are missing"
-    },
-    {
-      "code": "AF-03",
       "name": "Discussing Money",
       "description": "Do not mention income, expenses, payments, or financial benefits",
       "severity": "critical",
@@ -544,7 +536,7 @@
       "notes": "Use 'benefits' instead of 'money/cash/funds'"
     },
     {
-      "code": "AF-04",
+      "code": "AF-03",
       "name": "Discussing Politics/Religion",
       "description": "Avoid topics like government, presidents, or faith",
       "severity": "critical",
@@ -572,9 +564,9 @@
       }
     },
     {
-      "code": "AF-05",
+      "code": "AF-04",
       "name": "Incorrect Transfers",
-      "description": "Do not transfer gatekeepers or non-English speakers without verified POA",
+      "description": "Do not transfer gatekeepers or non-English speakers without verified POA and the prospect present",
       "severity": "critical",
       "detectionPatterns": {
         "triggers": [
@@ -591,23 +583,15 @@
       "notes": "Must verify POA before transferring someone speaking for the prospect"
     },
     {
-      "code": "AF-06",
-      "name": "Unconfirmed Compliance",
-      "description": "All compliance questions must be answered and confirmed by prospect",
-      "severity": "critical",
-      "detectionMethod": "customer_response_check",
-      "notes": "Customer must verbally confirm each compliance question"
-    },
-    {
-      "code": "AF-07",
-      "name": "Wrong Disposition",
+      "code": "AF-05",
+      "name": "Wrong Disposition/Miscoding",
       "description": "Do not code incorrectly (e.g., AM as transfer)",
       "severity": "critical",
       "detectionMethod": "disposition_validation",
       "notes": "Verify disposition matches call outcome"
     },
     {
-      "code": "AF-08",
+      "code": "AF-06",
       "name": "No-Response Transfer",
       "description": "Do not proceed or transfer without prospect responses",
       "severity": "critical",
@@ -622,7 +606,7 @@
       "notes": "Customer must be actively engaged throughout call"
     },
     {
-      "code": "AF-09",
+      "code": "AF-07",
       "name": "Ignoring DNC Requests",
       "description": "If prospect asks to be Do-Not-Called, end call immediately",
       "severity": "critical",
@@ -641,8 +625,8 @@
       "notes": "Call must end immediately after DNC request"
     },
     {
-      "code": "AF-10",
-      "name": "Transferring DQ Prospects",
+      "code": "AF-08",
+      "name": "Transferring Disqualified Prospects",
       "description": "Do not transfer prospects who are ineligible",
       "severity": "critical",
       "detectionPatterns": {
@@ -672,7 +656,7 @@
       "notes": "Different DQ criteria per campaign"
     },
     {
-      "code": "AF-11",
+      "code": "AF-09",
       "name": "Misrepresenting Affiliation",
       "description": "Do not claim partnership with specific insurance companies",
       "severity": "critical",
@@ -689,9 +673,9 @@
       }
     },
     {
-      "code": "AF-12",
+      "code": "AF-10",
       "name": "Incorrect Insurance Messaging",
-      "description": "'This call is not about insurance' or 'You will not change your insurance'",
+      "description": "Never state: 'This call is not about insurance', 'You will not change your insurance', etc.",
       "severity": "critical",
       "detectionPatterns": {
         "triggers": [
@@ -705,7 +689,7 @@
       "notes": "These statements are misleading - the call IS related to health coverage"
     },
     {
-      "code": "AF-13",
+      "code": "AF-11",
       "name": "Poor Call Quality",
       "description": "Do not transfer if call audio is unclear or breaking up",
       "severity": "warning",
@@ -720,7 +704,7 @@
       "notes": "May require manual review - transcript quality indicates audio quality"
     },
     {
-      "code": "AF-14",
+      "code": "AF-12",
       "name": "Poor Prospect State",
       "description": "Do not proceed if prospect is busy, distracted, angry, or shouting",
       "severity": "critical",
