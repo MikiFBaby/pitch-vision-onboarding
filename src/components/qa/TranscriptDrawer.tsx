@@ -210,9 +210,9 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
     // First check top-level column
     if (call?.autoFailTriggered === true) return true;
     // Fallback to call_analysis
-    if (call?.call_analysis?.auto_fail_triggered === true) return true;
+    if (call?.callAnalysis?.auto_fail_triggered === true) return true;
     return false;
-  }, [call?.autoFailTriggered, call?.call_analysis?.auto_fail_triggered]);
+  }, [call?.autoFailTriggered, call?.callAnalysis?.auto_fail_triggered]);
 
   const effectiveAutoFailReasons = useMemo(() => {
     // First check top-level column if it's a valid array
@@ -220,11 +220,11 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
       return call.autoFailReasons;
     }
     // Fallback to call_analysis
-    if (call?.call_analysis?.auto_fail_reasons && Array.isArray(call.call_analysis.auto_fail_reasons)) {
-      return call.call_analysis.auto_fail_reasons;
+    if (call?.callAnalysis?.auto_fail_reasons && Array.isArray(call.callAnalysis.auto_fail_reasons)) {
+      return call.callAnalysis.auto_fail_reasons;
     }
     return [];
-  }, [call?.autoFailReasons, call?.call_analysis?.auto_fail_reasons]);
+  }, [call?.autoFailReasons, call?.callAnalysis?.auto_fail_reasons]);
 
   // Auto-tagging logic based on score
 
@@ -603,7 +603,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
     if (!checklistData || typeof checklistData === 'string' ||
         (Array.isArray(checklistData) && checklistData.length === 0) ||
         (typeof checklistData === 'object' && Object.keys(checklistData).length === 0)) {
-      checklistData = call?.call_analysis?.checklist;
+      checklistData = call?.callAnalysis?.checklist;
     }
 
     const parsed = getChecklistArray(checklistData);
@@ -650,7 +650,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
         confidence: finalConfidence
       };
     });
-  }, [call?.checklist, call?.call_analysis?.checklist]);
+  }, [call?.checklist, call?.callAnalysis?.checklist]);
 
   const timelineMarkers = useMemo(() => {
     const list: { title: string, time: string, seconds: number, position: number, color: string, type: 'pass' | 'fail' | 'chapter' | 'transfer', isEstimated?: boolean }[] = [];
