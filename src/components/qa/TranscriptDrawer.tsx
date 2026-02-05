@@ -205,6 +205,27 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
   // Confidence threshold for requiring manual review
   const CONFIDENCE_THRESHOLD = 90;
 
+  // Computed auto-fail data with fallback to call_analysis (n8n extraction bug workaround)
+  const effectiveAutoFailTriggered = useMemo(() => {
+    // First check top-level column
+    if (call?.autoFailTriggered === true) return true;
+    // Fallback to call_analysis
+    if (call?.call_analysis?.auto_fail_triggered === true) return true;
+    return false;
+  }, [call?.autoFailTriggered, call?.call_analysis?.auto_fail_triggered]);
+
+  const effectiveAutoFailReasons = useMemo(() => {
+    // First check top-level column if it's a valid array
+    if (call?.autoFailReasons && Array.isArray(effectiveAutoFailReasons) && effectiveAutoFailReasons.length > 0) {
+      return effectiveAutoFailReasons;
+    }
+    // Fallback to call_analysis
+    if (call?.call_analysis?.auto_fail_reasons && Array.isArray(call.call_analysis.auto_fail_reasons)) {
+      return call.call_analysis.auto_fail_reasons;
+    }
+    return [];
+  }, [call?.autoFailReasons, call?.call_analysis?.auto_fail_reasons]);
+
   // Auto-tagging logic based on score
 
 
@@ -751,10 +772,10 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
     }
 
     // Add auto-fail violation markers (AF-01 through AF-14)
-    if (call?.autoFailReasons && Array.isArray(call.autoFailReasons)) {
+    if (call?.autoFailReasons && Array.isArray(effectiveAutoFailReasons)) {
       const warningOnlyCodes = ['AF-13']; // AF-13 is warning-only
 
-      call.autoFailReasons.forEach((reason: any, idx: number) => {
+      effectiveAutoFailReasons.forEach((reason: any, idx: number) => {
         const isString = typeof reason === 'string';
         const code = isString ? `AF-${String(idx + 1).padStart(2, '0')}` : (reason.code || `AF-${String(idx + 1).padStart(2, '0')}`);
         const violation = isString ? reason : (reason.violation || 'Violation');
@@ -1454,12 +1475,12 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
               {(() => {
                 // Check for CRITICAL auto-fail violations (AF-13 "Poor Call Quality" is warning-only, not auto-fail)
                 const warningOnlyCodes = ['AF-13']; // AF-13 is a warning, not a critical auto-fail
-                const violations = Array.isArray(call.autoFailReasons) ? call.autoFailReasons : [];
+                const violations = Array.isArray(effectiveAutoFailReasons) ? effectiveAutoFailReasons : [];
                 const criticalViolations = violations.filter((v: any) => {
                   const code = typeof v === 'string' ? v : (v.code || '');
                   return !warningOnlyCodes.includes(code);
                 });
-                const hasAutoFail = criticalViolations.length > 0 || (call.autoFailTriggered && criticalViolations.length > 0);
+                const hasAutoFail = effectiveAutoFailTriggered || criticalViolations.length > 0;
 
                 // If auto-fail is overridden, show the recalculated score
                 const effectiveAutoFail = hasAutoFail && !autoFailOverride;
@@ -1488,12 +1509,13 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                 {(() => {
                   // Check for CRITICAL auto-fail violations (AF-13 is warning-only)
                   const warningOnlyCodes = ['AF-13'];
-                  const violations = Array.isArray(call.autoFailReasons) ? call.autoFailReasons : [];
+                  const violations = Array.isArray(effectiveAutoFailReasons) ? effectiveAutoFailReasons : [];
                   const criticalViolations = violations.filter((v: any) => {
                     const code = typeof v === 'string' ? v : (v.code || '');
                     return !warningOnlyCodes.includes(code);
                   });
-                  const hasAutoFail = criticalViolations.length > 0;
+                  // Auto-fail if there are critical violations OR if the flag is explicitly true
+                  const hasAutoFail = effectiveAutoFailTriggered || criticalViolations.length > 0;
 
                   // If auto-fail is overridden, use the recalculated score for status
                   const effectiveAutoFail = hasAutoFail && !autoFailOverride;
@@ -1904,9 +1926,9 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
               {/* Talk Time Distribution - Moved from below */}
 
               {/* AUTO-FAIL VIOLATIONS SECTION - Only critical violations */}
-              {call.autoFailReasons && Array.isArray(call.autoFailReasons) && (() => {
+              {effectiveAutoFailReasons && Array.isArray(effectiveAutoFailReasons) && (() => {
                 const warningOnlyCodes = ['AF-13'];
-                const criticalViolations = call.autoFailReasons.filter((v: any) => {
+                const criticalViolations = effectiveAutoFailReasons.filter((v: any) => {
                   const code = typeof v === 'string' ? v : (v.code || '');
                   return !warningOnlyCodes.includes(code);
                 });
@@ -1980,9 +2002,9 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
               })()}
 
               {/* CALL QUALITY NOTES SECTION - Warnings only (AF-13, etc.) */}
-              {call.autoFailReasons && Array.isArray(call.autoFailReasons) && (() => {
+              {effectiveAutoFailReasons && Array.isArray(effectiveAutoFailReasons) && (() => {
                 const warningOnlyCodes = ['AF-13'];
-                const warningViolations = call.autoFailReasons.filter((v: any) => {
+                const warningViolations = effectiveAutoFailReasons.filter((v: any) => {
                   const code = typeof v === 'string' ? v : (v.code || '');
                   return warningOnlyCodes.includes(code);
                 });
@@ -3002,18 +3024,18 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                 </div>
 
                 {/* Auto-Fails */}
-                <div className={`rounded-2xl p-4 text-center border ${call.autoFailTriggered ? 'bg-rose-50 border-rose-100' : 'bg-slate-50 border-slate-100'}`}>
-                  <div className={`flex items-center justify-center gap-2 mb-1.5 ${call.autoFailTriggered ? 'text-rose-600' : 'text-slate-500'}`}>
+                <div className={`rounded-2xl p-4 text-center border ${effectiveAutoFailTriggered ? 'bg-rose-50 border-rose-100' : 'bg-slate-50 border-slate-100'}`}>
+                  <div className={`flex items-center justify-center gap-2 mb-1.5 ${effectiveAutoFailTriggered ? 'text-rose-600' : 'text-slate-500'}`}>
                     <AlertTriangle size={12} />
-                    <span className={`text-[10px] font-bold uppercase tracking-widest ${call.autoFailTriggered ? 'text-rose-600/80' : 'text-slate-400'}`}>Auto-Fails</span>
+                    <span className={`text-[10px] font-bold uppercase tracking-widest ${effectiveAutoFailTriggered ? 'text-rose-600/80' : 'text-slate-400'}`}>Auto-Fails</span>
                   </div>
-                  <p className={`text-xl font-black tracking-tight ${call.autoFailTriggered ? 'text-rose-600' : 'text-slate-400'}`}>
-                    {Array.isArray(call.autoFailReasons) ? call.autoFailReasons.length : 0}
+                  <p className={`text-xl font-black tracking-tight ${effectiveAutoFailTriggered ? 'text-rose-600' : 'text-slate-400'}`}>
+                    {Array.isArray(effectiveAutoFailReasons) ? effectiveAutoFailReasons.length : 0}
                   </p>
                   {/* Display actual auto-fail reasons */}
-                  {call.autoFailReasons && Array.isArray(call.autoFailReasons) && call.autoFailReasons.length > 0 && (
+                  {effectiveAutoFailReasons && Array.isArray(effectiveAutoFailReasons) && effectiveAutoFailReasons.length > 0 && (
                     <div className="mt-2 space-y-1 text-left">
-                      {call.autoFailReasons.map((reason, idx) => {
+                      {effectiveAutoFailReasons.map((reason, idx) => {
                         const isString = typeof reason === 'string';
                         const violation = isString
                           ? reason
@@ -3315,7 +3337,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
 
 
               {/* AUTO-FAIL OVERRIDE SECTION */}
-              {call.autoFailTriggered && call.qaStatus !== 'approved' && (
+              {effectiveAutoFailTriggered && call.qaStatus !== 'approved' && (
                 <div className="space-y-4 mt-6">
                   <div className="flex items-center gap-2 pl-2">
                     <AlertTriangle size={14} className="text-amber-500" />
@@ -3362,10 +3384,10 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                         </div>
 
                         {/* Show auto-fail reasons with full details */}
-                        {call.autoFailReasons && call.autoFailReasons.length > 0 && (
+                        {effectiveAutoFailReasons && effectiveAutoFailReasons.length > 0 && (
                           <div className="mt-4 space-y-2">
                             <p className="text-[10px] font-bold text-slate-500 uppercase mb-2">Triggered Violations:</p>
-                            {call.autoFailReasons.map((reason: any, idx: number) => {
+                            {effectiveAutoFailReasons.map((reason: any, idx: number) => {
                               const isString = typeof reason === 'string';
                               const violation = isString ? reason : (reason.violation || reason.description || 'Violation');
                               const code = isString ? `AF-${String(idx + 1).padStart(2, '0')}` : (reason.code || `AF-${String(idx + 1).padStart(2, '0')}`);
@@ -3516,12 +3538,12 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
 
                             // Check if there's an auto-fail override to include
                             const warningOnlyCodes = ['AF-13'];
-                            const violations = Array.isArray(call.autoFailReasons) ? call.autoFailReasons : [];
+                            const violations = Array.isArray(effectiveAutoFailReasons) ? effectiveAutoFailReasons : [];
                             const criticalViolations = violations.filter((v: any) => {
                               const code = typeof v === 'string' ? v : (v.code || '');
                               return !warningOnlyCodes.includes(code);
                             });
-                            const hasAutoFail = criticalViolations.length > 0;
+                            const hasAutoFail = effectiveAutoFailTriggered || criticalViolations.length > 0;
 
                             // Prepare override data if applicable
                             let overrideData: AutoFailOverrideData | undefined;
