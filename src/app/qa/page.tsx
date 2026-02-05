@@ -888,15 +888,6 @@ function QADashboardContent() {
                                     {/* Queue Toggle Switch */}
                                     <div className="flex bg-black/40 p-1 rounded-xl border border-white/10">
                                         <button
-                                            onClick={() => setReviewQueueTab('pending')}
-                                            className={`px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all duration-300 ${reviewQueueTab === 'pending'
-                                                ? 'bg-rose-500 text-white shadow-lg shadow-rose-500/25'
-                                                : 'text-white/70 hover:text-white hover:bg-white/10'
-                                                }`}
-                                        >
-                                            Pending
-                                        </button>
-                                        <button
                                             onClick={() => setReviewQueueTab('autofail')}
                                             className={`px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all duration-300 ${reviewQueueTab === 'autofail'
                                                 ? 'bg-rose-600 text-white shadow-lg shadow-rose-600/25'
@@ -904,6 +895,15 @@ function QADashboardContent() {
                                                 }`}
                                         >
                                             Auto Fail
+                                        </button>
+                                        <button
+                                            onClick={() => setReviewQueueTab('pending')}
+                                            className={`px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all duration-300 ${reviewQueueTab === 'pending'
+                                                ? 'bg-rose-500 text-white shadow-lg shadow-rose-500/25'
+                                                : 'text-white/70 hover:text-white hover:bg-white/10'
+                                                }`}
+                                        >
+                                            Pending
                                         </button>
                                         <button
                                             onClick={() => setReviewQueueTab('reviewed')}
