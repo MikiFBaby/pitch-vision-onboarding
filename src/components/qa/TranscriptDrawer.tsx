@@ -3200,6 +3200,22 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
 
                       const isPass = ['met', 'pass', 'yes', 'true'].includes(effectiveStatus.toLowerCase());
 
+                      // Calculate timestamp for this item (used in header)
+                      const validItemTime = item.time &&
+                        item.time !== '-1' &&
+                        item.time !== '' &&
+                        item.time !== 'N/A' &&
+                        /^\d{1,2}:\d{2}$/.test(item.time);
+                      const validTimeSeconds = item.time_seconds !== undefined &&
+                        item.time_seconds !== null &&
+                        item.time_seconds >= 0 &&
+                        item.time_seconds !== -1;
+                      const timeSecondsDisplay = validTimeSeconds
+                        ? `${Math.floor(item.time_seconds / 60)}:${String(item.time_seconds % 60).padStart(2, '0')}`
+                        : null;
+                      const hasValidTimestamp = validItemTime || validTimeSeconds;
+                      const displayTimestamp = validItemTime ? item.time : timeSecondsDisplay;
+
                       return (
                         <div key={idx} className="p-5 flex items-start gap-4 hover:bg-slate-50 transition-colors group">
                           {/* Status Icon */}
@@ -3210,16 +3226,36 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
 
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center justify-between gap-4 mb-1">
-                              <h5 className={`text-sm font-bold ${isPass ? 'text-slate-800' : 'text-slate-800'}`}>
-                                {itemName}
-                                {isOverridden && <span className="ml-2 text-[10px] uppercase font-bold text-amber-500 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">Manual Override</span>}
-                              </h5>
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <h5 className={`text-sm font-bold ${isPass ? 'text-slate-800' : 'text-slate-800'}`}>
+                                  {itemName}
+                                </h5>
+                                {isOverridden && <span className="text-[10px] uppercase font-bold text-amber-500 bg-amber-50 px-1.5 py-0.5 rounded border border-amber-200">Manual Override</span>}
+                                {/* Timestamp Badge - Always visible next to title */}
+                                {hasValidTimestamp && displayTimestamp ? (
+                                  <button
+                                    onClick={() => {
+                                      if (validItemTime) handleSeek(parseTimeToSeconds(item.time));
+                                      else if (validTimeSeconds) handleSeek(item.time_seconds);
+                                    }}
+                                    className="flex items-center gap-1 text-[10px] font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded hover:bg-indigo-100 transition-colors border border-indigo-100"
+                                  >
+                                    <Play size={8} fill="currentColor" />
+                                    {displayTimestamp}
+                                  </button>
+                                ) : (
+                                  <span className="flex items-center gap-1 text-[10px] font-medium text-slate-400 bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
+                                    <Clock size={8} />
+                                    N/A
+                                  </span>
+                                )}
+                              </div>
 
                               {/* Override Toggle */}
                               <button
                                 onClick={() => handleToggleOverride(itemName, effectiveStatus)}
                                 className={`
-                                   px-3 py-1.5 rounded-lg text-xs font-bold transition-all border flex items-center gap-1.5
+                                   px-3 py-1.5 rounded-lg text-xs font-bold transition-all border flex items-center gap-1.5 shrink-0
                                    ${isPass
                                     ? 'bg-white border-slate-200 text-slate-500 hover:bg-rose-50 hover:text-rose-600 hover:border-rose-200'
                                     : 'bg-white border-slate-200 text-slate-500 hover:bg-emerald-50 hover:text-emerald-600 hover:border-emerald-200'
