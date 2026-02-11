@@ -21,11 +21,19 @@ interface AutoFailOverrideData {
   recalculatedScore: number;
 }
 
+interface ManualAutoFailData {
+  afCode: string;
+  violation: string;
+  evidence: string;
+  reason: string;
+}
+
 interface TranscriptDrawerProps {
   call: CallData | null;
   onClose: () => void;
   onScoreUpdate?: (callId: number | string, newScore: number) => void;
   onQASubmit?: (callId: string, reviewerName: string, notes?: string, autoFailOverride?: AutoFailOverrideData) => Promise<void>;
+  onManualAutoFail?: (callId: string, data: ManualAutoFailData, reviewerName: string) => Promise<void>;
 }
 
 const DEEP_INSIGHT_PROMPTS = [
@@ -128,7 +136,7 @@ const FormattedCoachResponse = ({ text }: { text: string }) => {
   );
 };
 
-export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClose, onScoreUpdate, onQASubmit }) => {
+export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClose, onScoreUpdate, onQASubmit, onManualAutoFail }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [activeTab, setActiveTab] = useState<'analysis' | 'transcript'>('analysis');
   const [isExpanded, setIsExpanded] = useState(false); // Drawer expansion toggle
@@ -187,6 +195,13 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
   // Auto-fail override state - allows QA to override false positive auto-fails
   const [autoFailOverride, setAutoFailOverride] = useState(false);
   const [autoFailOverrideReason, setAutoFailOverrideReason] = useState('');
+
+  // Manual auto-fail state - allows QA to flag missed auto-fails
+  const [showManualAutoFail, setShowManualAutoFail] = useState(false);
+  const [manualAfCode, setManualAfCode] = useState('AF-01');
+  const [manualAfEvidence, setManualAfEvidence] = useState('');
+  const [manualAfReason, setManualAfReason] = useState('');
+  const [isSubmittingManualAF, setIsSubmittingManualAF] = useState(false);
 
   // Initialize override state from database when call changes
   useEffect(() => {
@@ -3671,6 +3686,138 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                       </div>
                     </div>
                   </div>
+                </div>
+              )}
+
+              {/* MANUAL AUTO-FAIL SECTION */}
+              {onManualAutoFail && call.qaStatus !== 'approved' && !effectiveAutoFailTriggered && (
+                <div className="space-y-4 mt-6">
+                  <div className="flex items-center gap-2 pl-2">
+                    <Flag size={14} className="text-rose-500" />
+                    <h4 className="text-[11px] font-black text-[#8E8E93] uppercase tracking-widest">Manual Auto-Fail</h4>
+                  </div>
+
+                  {!showManualAutoFail ? (
+                    <button
+                      onClick={() => setShowManualAutoFail(true)}
+                      className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-xl border-2 border-dashed border-rose-300 text-rose-600 font-bold text-sm hover:bg-rose-50 hover:border-rose-400 transition-all"
+                    >
+                      <Flag size={14} />
+                      Flag as Auto-Fail (Missed by AI)
+                    </button>
+                  ) : (
+                    <div className="bg-white rounded-2xl border-2 border-rose-200 p-5 shadow-sm space-y-4">
+                      <div className="flex items-center justify-between">
+                        <p className="text-sm font-bold text-rose-700">Flag Auto-Fail Violation</p>
+                        <button
+                          onClick={() => { setShowManualAutoFail(false); setManualAfCode('AF-01'); setManualAfEvidence(''); setManualAfReason(''); }}
+                          className="text-slate-400 hover:text-slate-600 transition-colors"
+                        >
+                          <X size={16} />
+                        </button>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Violation Code</label>
+                        <select
+                          value={manualAfCode}
+                          onChange={(e) => setManualAfCode(e.target.value)}
+                          className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-700 focus:outline-none focus:ring-2 focus:ring-rose-500/30 focus:border-rose-500 bg-white"
+                        >
+                          <option value="AF-01">AF-01 - Making Promises</option>
+                          <option value="AF-02">AF-02 - Discussing Money</option>
+                          <option value="AF-03">AF-03 - Politics/Religion</option>
+                          <option value="AF-04">AF-04 - Incorrect Transfers</option>
+                          <option value="AF-05">AF-05 - Wrong Disposition/Miscoding</option>
+                          <option value="AF-06">AF-06 - No-Response Transfer</option>
+                          <option value="AF-07">AF-07 - Ignoring DNC</option>
+                          <option value="AF-08">AF-08 - Transferring DQ Prospects</option>
+                          <option value="AF-09">AF-09 - Misrepresenting Affiliation</option>
+                          <option value="AF-10">AF-10 - Incorrect Insurance Messaging</option>
+                          <option value="AF-11">AF-11 - Poor Call Quality (Warning)</option>
+                          <option value="AF-12">AF-12 - Poor Prospect State</option>
+                        </select>
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Evidence (Quote from transcript)</label>
+                        <textarea
+                          value={manualAfEvidence}
+                          onChange={(e) => setManualAfEvidence(e.target.value)}
+                          placeholder="Paste the exact quote from the transcript that demonstrates the violation..."
+                          className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-rose-500/30 focus:border-rose-500 resize-none"
+                          rows={2}
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-1.5">Reason (Required)</label>
+                        <textarea
+                          value={manualAfReason}
+                          onChange={(e) => setManualAfReason(e.target.value)}
+                          placeholder="Explain why this should be auto-failed..."
+                          className="w-full px-3 py-2 rounded-lg border border-slate-200 text-sm text-slate-700 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-rose-500/30 focus:border-rose-500 resize-none"
+                          rows={2}
+                        />
+                      </div>
+
+                      <div className="flex items-center justify-between pt-2">
+                        <p className="text-xs text-slate-400">Score will be set to 0</p>
+                        <button
+                          type="button"
+                          disabled={isSubmittingManualAF || !manualAfReason.trim()}
+                          onClick={async () => {
+                            if (!call) return;
+                            setIsSubmittingManualAF(true);
+                            try {
+                              const reviewerName = profile?.first_name && profile?.last_name
+                                ? `${profile.first_name} ${profile.last_name}`
+                                : user?.displayName || user?.email?.split('@')[0] || 'QA Agent';
+
+                              const afViolationNames: Record<string, string> = {
+                                'AF-01': 'Making Promises', 'AF-02': 'Discussing Money', 'AF-03': 'Politics/Religion',
+                                'AF-04': 'Incorrect Transfers', 'AF-05': 'Wrong Disposition/Miscoding', 'AF-06': 'No-Response Transfer',
+                                'AF-07': 'Ignoring DNC', 'AF-08': 'Transferring DQ Prospects', 'AF-09': 'Misrepresenting Affiliation',
+                                'AF-10': 'Incorrect Insurance Messaging', 'AF-11': 'Poor Call Quality', 'AF-12': 'Poor Prospect State'
+                              };
+
+                              await onManualAutoFail!(call.id, {
+                                afCode: manualAfCode,
+                                violation: afViolationNames[manualAfCode] || manualAfCode,
+                                evidence: manualAfEvidence.trim() || 'Manually flagged by QA reviewer',
+                                reason: manualAfReason.trim()
+                              }, reviewerName);
+
+                              setToast({ message: `Auto-fail ${manualAfCode} applied successfully`, type: 'success' });
+                              setShowManualAutoFail(false);
+                              setManualAfCode('AF-01');
+                              setManualAfEvidence('');
+                              setManualAfReason('');
+                              setTimeout(() => setToast(null), 3000);
+                            } catch (err) {
+                              setToast({ message: 'Failed to apply auto-fail', type: 'error' });
+                              setTimeout(() => setToast(null), 3000);
+                            } finally {
+                              setIsSubmittingManualAF(false);
+                            }
+                          }}
+                          className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-gradient-to-r from-rose-500 to-rose-600 text-white font-bold text-sm shadow-lg shadow-rose-500/30 hover:shadow-rose-500/50 hover:scale-[1.02] active:scale-[0.98] transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                        >
+                          {isSubmittingManualAF ? (
+                            <>
+                              <Loader2 size={14} className="animate-spin" />
+                              Applying...
+                            </>
+                          ) : (
+                            <>
+                              <Flag size={14} />
+                              Apply Auto-Fail
+                            </>
+                          )}
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
 

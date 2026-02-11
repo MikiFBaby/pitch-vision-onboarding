@@ -404,6 +404,62 @@ function QADashboardContent() {
         }
     };
 
+    // Handle manual auto-fail from TranscriptDrawer
+    const handleManualAutoFail = async (callId: string, data: { afCode: string; violation: string; evidence: string; reason: string }, reviewerName: string) => {
+        try {
+            const response = await fetch('/api/qa/manual-auto-fail', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    id: callId,
+                    afCode: data.afCode,
+                    violation: data.violation,
+                    evidence: data.evidence,
+                    reason: data.reason,
+                    reviewedBy: reviewerName
+                })
+            });
+
+            const result = await response.json();
+
+            if (!response.ok || !result.success) {
+                throw new Error(result.error || 'Failed to apply auto-fail');
+            }
+
+            // Update local state
+            setCalls(prev => prev.map(c =>
+                c.id === callId
+                    ? {
+                        ...c,
+                        complianceScore: 0,
+                        autoFailTriggered: true,
+                        callStatus: 'auto_fail',
+                        qaStatus: 'rejected',
+                        qaReviewedBy: reviewerName,
+                        qaReviewedAt: new Date().toISOString(),
+                        tag: 'escalated'
+                    }
+                    : c
+            ));
+
+            if (selectedCall && selectedCall.id === callId) {
+                setSelectedCall(prev => prev ? {
+                    ...prev,
+                    complianceScore: 0,
+                    autoFailTriggered: true,
+                    callStatus: 'auto_fail',
+                    qaStatus: 'rejected',
+                    qaReviewedBy: reviewerName,
+                    qaReviewedAt: new Date().toISOString(),
+                    tag: 'escalated'
+                } : null);
+            }
+        } catch (e: any) {
+            console.error('Manual auto-fail error:', e);
+            throw e;
+        }
+    };
+
     // --- Time Range Filtering Logic for Metrics AND Live Feed ---
     const metricsCalls = useMemo(() => {
         // 'all' means no time filter
@@ -1050,6 +1106,7 @@ function QADashboardContent() {
                     onClose={() => setSelectedCall(null)}
                     onScoreUpdate={handleScoreUpdate}
                     onQASubmit={handleQASubmit}
+                    onManualAutoFail={handleManualAutoFail}
                 />
             )}
         </DashboardLayout>
