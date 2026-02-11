@@ -995,20 +995,21 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
                                       const evidence = isObject ? af.evidence : null;
                                       const timestamp = isObject ? af.timestamp : null;
                                       const hasValidTimestamp = timestamp && timestamp !== '-1' && timestamp !== 'N/A' && timestamp !== '';
+                                      const isWarning = isObject && af.severity === 'warning';
                                       return (
-                                        <div key={`af-${i}`} className="flex gap-3 bg-rose-100 p-3 rounded-lg border border-rose-300">
-                                          <XCircle size={14} className="text-rose-600 shrink-0 mt-0.5" />
+                                        <div key={`af-${i}`} className={`flex gap-3 ${isWarning ? 'bg-amber-50 border-amber-300' : 'bg-rose-100 border-rose-300'} p-3 rounded-lg border`}>
+                                          <XCircle size={14} className={`${isWarning ? 'text-amber-600' : 'text-rose-600'} shrink-0 mt-0.5`} />
                                           <div className="flex-1 min-w-0">
                                             <div className="flex items-baseline justify-between gap-2">
-                                              <p className="text-xs text-rose-900 font-black">{code}: {violation}</p>
+                                              <p className={`text-xs ${isWarning ? 'text-amber-900' : 'text-rose-900'} font-black`}>{isWarning ? 'REVIEW' : code}: {violation}</p>
                                               {hasValidTimestamp && (
-                                                <span className="shrink-0 text-[10px] text-rose-600 font-mono bg-rose-200/50 px-1.5 py-0.5 rounded flex items-center gap-1">
+                                                <span className={`shrink-0 text-[10px] ${isWarning ? 'text-amber-600 bg-amber-200/50' : 'text-rose-600 bg-rose-200/50'} font-mono px-1.5 py-0.5 rounded flex items-center gap-1`}>
                                                   <Clock size={8} /> {timestamp}
                                                 </span>
                                               )}
                                             </div>
                                             {evidence && (
-                                              <p className="text-[10px] text-rose-700 mt-1 italic line-clamp-2">"{evidence}"</p>
+                                              <p className={`text-[10px] ${isWarning ? 'text-amber-700' : 'text-rose-700'} mt-1 italic line-clamp-2`}>"{evidence}"</p>
                                             )}
                                           </div>
                                         </div>

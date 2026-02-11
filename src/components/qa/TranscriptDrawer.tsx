@@ -192,8 +192,8 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
   useEffect(() => {
     if (call) {
       // Check if this call was previously overridden (from database)
-      const wasOverridden = (call as any).autoFailOverridden === true || (call as any).auto_fail_overridden === true;
-      const savedReason = (call as any).autoFailOverrideReason || (call as any).auto_fail_override_reason || '';
+      const wasOverridden = call.autoFailOverridden === true;
+      const savedReason = call.autoFailOverrideReason || '';
       setAutoFailOverride(wasOverridden);
       setAutoFailOverrideReason(savedReason);
     } else {
@@ -207,12 +207,23 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
 
   // Computed auto-fail data with fallback to call_analysis (n8n extraction bug workaround)
   const effectiveAutoFailTriggered = useMemo(() => {
-    // First check top-level column
-    if (call?.autoFailTriggered === true) return true;
-    // Fallback to call_analysis
-    if (call?.callAnalysis?.auto_fail_triggered === true) return true;
-    return false;
-  }, [call?.autoFailTriggered, call?.callAnalysis?.auto_fail_triggered]);
+    // Check if auto-fail was triggered
+    const flagged = call?.autoFailTriggered === true || call?.callAnalysis?.auto_fail_triggered === true;
+    if (!flagged) return false;
+
+    // If flagged, verify there are actual (non-warning) auto-fail reasons
+    // This prevents severity:'warning' items (like speaker swap) from triggering auto-fail display
+    const reasons = (call?.autoFailReasons && Array.isArray(call.autoFailReasons) && call.autoFailReasons.length > 0)
+      ? call.autoFailReasons
+      : (call?.callAnalysis?.auto_fail_reasons && Array.isArray(call.callAnalysis.auto_fail_reasons))
+        ? call.callAnalysis.auto_fail_reasons
+        : [];
+    const realAutoFails = reasons.filter((r: any) => typeof r === 'string' || r?.severity !== 'warning');
+    // If the only reasons are warnings, don't treat as auto-fail
+    if (reasons.length > 0 && realAutoFails.length === 0) return false;
+
+    return true;
+  }, [call?.autoFailTriggered, call?.callAnalysis?.auto_fail_triggered, call?.autoFailReasons, call?.callAnalysis?.auto_fail_reasons]);
 
   const effectiveAutoFailReasons = useMemo(() => {
     // First check top-level column if it's a valid array
@@ -864,6 +875,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
         const code = isString ? `AF-${String(idx + 1).padStart(2, '0')}` : (reason.code || `AF-${String(idx + 1).padStart(2, '0')}`);
         const violation = isString ? reason : (reason.violation || 'Violation');
         const timestamp = isString ? null : reason.timestamp;
+        const isSeverityWarning = !isString && reason?.severity === 'warning';
 
         // Skip if no valid timestamp
         if (!timestamp || timestamp === '-1' || timestamp === '' || timestamp === 'N/A') return;
@@ -872,7 +884,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
         const pos = (secs / effectiveDuration) * 100;
 
         if (secs >= MIN_MARKER_TIME_SECONDS && pos <= 100 && !isNaN(pos)) {
-          const isWarning = warningOnlyCodes.includes(code);
+          const isWarning = warningOnlyCodes.includes(code) || isSeverityWarning;
           list.push({
             title: `${code}: ${violation}`,
             time: timestamp,
@@ -1561,6 +1573,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                 const warningOnlyCodes = ['AF-13']; // AF-13 is a warning, not a critical auto-fail
                 const violations = Array.isArray(effectiveAutoFailReasons) ? effectiveAutoFailReasons : [];
                 const criticalViolations = violations.filter((v: any) => {
+                  if (typeof v === 'object' && v?.severity === 'warning') return false;
                   const code = typeof v === 'string' ? v : (v.code || '');
                   return !warningOnlyCodes.includes(code);
                 });
@@ -1595,6 +1608,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                   const warningOnlyCodes = ['AF-13'];
                   const violations = Array.isArray(effectiveAutoFailReasons) ? effectiveAutoFailReasons : [];
                   const criticalViolations = violations.filter((v: any) => {
+                    if (typeof v === 'object' && v?.severity === 'warning') return false;
                     const code = typeof v === 'string' ? v : (v.code || '');
                     return !warningOnlyCodes.includes(code);
                   });
@@ -3114,7 +3128,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                     <span className={`text-[10px] font-bold uppercase tracking-widest ${effectiveAutoFailTriggered ? 'text-rose-600/80' : 'text-slate-400'}`}>Auto-Fails</span>
                   </div>
                   <p className={`text-xl font-black tracking-tight ${effectiveAutoFailTriggered ? 'text-rose-600' : 'text-slate-400'}`}>
-                    {Array.isArray(effectiveAutoFailReasons) ? effectiveAutoFailReasons.length : 0}
+                    {Array.isArray(effectiveAutoFailReasons) ? effectiveAutoFailReasons.filter((r: any) => typeof r === 'string' || r?.severity !== 'warning').length : 0}
                   </p>
                   {/* Display actual auto-fail reasons */}
                   {effectiveAutoFailReasons && Array.isArray(effectiveAutoFailReasons) && effectiveAutoFailReasons.length > 0 && (
@@ -3124,6 +3138,9 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                         const violation = isString
                           ? reason
                           : (typeof reason.violation === 'string' ? reason.violation : (reason.violation ? JSON.stringify(reason.violation) : 'Auto-fail'));
+
+                        // Check if this is a warning (review flag, not a real auto-fail)
+                        const isWarning = !isString && reason?.severity === 'warning';
 
                         // Check if this is an extraction error (not a real compliance auto-fail)
                         const isExtractionError = violation.toLowerCase().includes('extraction') ||
@@ -3135,8 +3152,8 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                           : (typeof reason.code === 'string' ? reason.code : (isExtractionError ? 'ERR' : `AF-${String(idx + 1).padStart(2, '0')}`));
                         const displayText = isString ? reason : `[${code}] ${violation}`;
                         return (
-                          <div key={idx} className={`text-[10px] ${isExtractionError ? 'text-amber-700 bg-amber-100/80 border-amber-200' : 'text-rose-700 bg-rose-100/80 border-rose-200'} px-2 py-1 rounded border leading-tight`}>
-                            {displayText}
+                          <div key={idx} className={`text-[10px] ${isWarning ? 'text-amber-700 bg-amber-50/80 border-amber-200' : isExtractionError ? 'text-amber-700 bg-amber-100/80 border-amber-200' : 'text-rose-700 bg-rose-100/80 border-rose-200'} px-2 py-1 rounded border leading-tight`}>
+                            {isWarning && <span className="font-semibold mr-1">REVIEW:</span>}{displayText}
                           </div>
                         );
                       })}
@@ -3553,6 +3570,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                               const evidence = isString ? null : reason.evidence;
                               const rawTimestamp = isString ? null : (typeof reason.timestamp === 'string' ? reason.timestamp : null);
                               const rawTimeSeconds = isString ? -1 : ((reason as any).time_seconds ?? -1);
+                              const isSeverityWarning = !isString && reason?.severity === 'warning';
 
                               // Determine valid timestamp and seconds
                               let displayTimestamp = rawTimestamp;
@@ -3567,17 +3585,17 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                               const hasValidTimestamp = seekSeconds >= 0 || (displayTimestamp && displayTimestamp !== 'N/A' && displayTimestamp !== '-1');
 
                               return (
-                                <div key={idx} className={`p-3 rounded-lg border ${autoFailOverride ? 'bg-amber-50/50 border-amber-200' : 'bg-rose-50 border-rose-200'}`}>
+                                <div key={idx} className={`p-3 rounded-lg border ${isSeverityWarning ? 'bg-amber-50 border-amber-200' : autoFailOverride ? 'bg-amber-50/50 border-amber-200' : 'bg-rose-50 border-rose-200'}`}>
                                   <div className="flex items-start justify-between gap-2">
                                     <div className="flex items-start gap-2 flex-1 min-w-0">
-                                      <XCircle size={14} className={`${autoFailOverride ? 'text-amber-500' : 'text-rose-500'} mt-0.5 shrink-0`} />
+                                      <XCircle size={14} className={`${isSeverityWarning ? 'text-amber-500' : autoFailOverride ? 'text-amber-500' : 'text-rose-500'} mt-0.5 shrink-0`} />
                                       <div className="flex-1 min-w-0">
-                                        <p className={`text-sm font-bold ${autoFailOverride ? 'text-amber-700 line-through' : 'text-rose-700'}`}>
-                                          <span className={`${autoFailOverride ? 'text-amber-500' : 'text-rose-500'} mr-1`}>[{code}]</span>
+                                        <p className={`text-sm font-bold ${isSeverityWarning ? 'text-amber-700' : autoFailOverride ? 'text-amber-700 line-through' : 'text-rose-700'}`}>
+                                          <span className={`${isSeverityWarning ? 'text-amber-500' : autoFailOverride ? 'text-amber-500' : 'text-rose-500'} mr-1`}>[{isSeverityWarning ? 'REVIEW' : code}]</span>
                                           {violation}
                                         </p>
                                         {evidence && (
-                                          <p className={`text-xs mt-1.5 italic p-2 rounded ${autoFailOverride ? 'bg-amber-100/50 text-amber-600' : 'bg-rose-100 text-rose-600'}`}>
+                                          <p className={`text-xs mt-1.5 italic p-2 rounded ${isSeverityWarning ? 'bg-amber-100 text-amber-600' : autoFailOverride ? 'bg-amber-100/50 text-amber-600' : 'bg-rose-100/50 text-rose-600'}`}>
                                             "{evidence}"
                                           </p>
                                         )}
@@ -3586,7 +3604,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                                     {hasValidTimestamp && (
                                       <button
                                         onClick={() => handleSeek(seekSeconds >= 0 ? seekSeconds : parseTimeToSeconds(displayTimestamp || '0:00'))}
-                                        className={`shrink-0 flex items-center gap-1.5 text-xs font-bold px-2.5 py-1.5 rounded-md transition-colors ${autoFailOverride ? 'text-amber-600 bg-amber-100 hover:bg-amber-200' : 'text-rose-600 bg-rose-100 hover:bg-rose-200'}`}
+                                        className={`shrink-0 flex items-center gap-1.5 text-xs font-bold px-2.5 py-1.5 rounded-md transition-colors ${isSeverityWarning ? 'text-amber-600 bg-amber-100 hover:bg-amber-200' : autoFailOverride ? 'text-amber-600 bg-amber-100 hover:bg-amber-200' : 'text-rose-600 bg-rose-100 hover:bg-rose-200'}`}
                                       >
                                         <Play size={10} fill="currentColor" />
                                         Jump to {displayTimestamp}
