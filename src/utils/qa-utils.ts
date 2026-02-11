@@ -62,20 +62,20 @@ export function transformRow(row: DatabaseCallRow): CallData {
         callDate: row.call_date || "",
         callTime: row.call_time || "",
         status: row.call_status || "",
-        // OVERRIDE: Force all uploads to manual until backend properly sends upload_type
-        // TODO: Restore original logic once n8n webhook sends correct upload_type
-        uploadType: 'manual' as 'manual' | 'automated',
+        // Manual until S3 bucket automation is built (all current uploads via UI "Analyze Call" button)
+        uploadType: (row.upload_type as 'manual' | 'automated') || 'manual',
         // Prefer integer column, fallback to parsing text column
         // CRITICAL: Auto-fail ALWAYS overrides to score of 0
         complianceScore: (() => {
             // Check for auto-fail from TOP-LEVEL column (per schema)
             const autoFailFromColumn = row.auto_fail_triggered === true;
+            const autoFailOverridden = row.auto_fail_overridden === true;
 
             // Check for auto-fail from call_status as backup
             const statusIndicatesAutoFail = (row.call_status || '').toLowerCase().includes('auto_fail');
 
-            // If auto-fail is triggered, score MUST be 0
-            if (autoFailFromColumn || statusIndicatesAutoFail) {
+            // If auto-fail is triggered AND not overridden by QA, score MUST be 0
+            if ((autoFailFromColumn && !autoFailOverridden) || statusIndicatesAutoFail) {
                 return 0;
             }
 
@@ -200,6 +200,12 @@ export function transformRow(row: DatabaseCallRow): CallData {
             return analysis?.auto_fail_reasons || [];
         })(),
 
+        // Auto-fail override fields (for false positive marking by QA)
+        autoFailOverridden: row.auto_fail_overridden ?? false,
+        autoFailOverrideReason: row.auto_fail_override_reason ?? undefined,
+        autoFailOverrideAt: row.auto_fail_override_at ?? undefined,
+        autoFailOverrideBy: row.auto_fail_override_by ?? undefined,
+
         // Speaker turn metrics
         speakerMetrics: (() => {
             const raw = parseJsonField(row.speaker_metrics, null);
@@ -236,7 +242,7 @@ export function transformRow(row: DatabaseCallRow): CallData {
         customerSpeakingTime: row.customer_speaking_time || undefined,
 
         // Tag for escalation/training/audit tracking
-        tag: row.tag as 'escalated' | 'training_review' | 'audit_list' | undefined,
+        tag: row.tag as 'escalated' | 'training' | 'training_review' | 'audit_list' | 'manual_review' | undefined,
 
         // Licensed Agent (LA) detection metadata
         transferDetected: row.transfer_detected ?? undefined,

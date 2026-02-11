@@ -101,6 +101,7 @@ export interface CallData {
 
     timelineMarkers?: {
         time: string;
+        time_seconds?: number;
         event?: string;
         title?: string;
         type?: string;
@@ -108,6 +109,8 @@ export interface CallData {
         evidence?: string;
         item_key?: string;
         confidence?: number;
+        points_earned?: number;
+        points_possible?: number;
     }[];
     criticalMoments?: { auto_fails: any[]; passes: any[]; warnings: any[] };
     autoFailTriggered?: boolean;
@@ -123,6 +126,12 @@ export interface CallData {
         threshold?: number;        // The threshold that triggered it
     }> | string[];  // Keep string[] for backward compatibility
 
+    // Auto-fail override fields (for false positive marking by QA)
+    autoFailOverridden?: boolean;
+    autoFailOverrideReason?: string;
+    autoFailOverrideAt?: string;
+    autoFailOverrideBy?: string;
+
     // Speaker turn metrics
     speakerMetrics?: SpeakerMetrics;
     agentTurnCount?: number;
@@ -131,7 +140,7 @@ export interface CallData {
     customerSpeakingTime?: number;
 
     // Tag for escalation/training/audit tracking
-    tag?: 'escalated' | 'training_review' | 'audit_list';
+    tag?: 'escalated' | 'training' | 'training_review' | 'audit_list' | 'manual_review';
 
     // Licensed Agent (LA) detection metadata
     transferDetected?: boolean;
@@ -209,6 +218,12 @@ export interface DatabaseCallRow {
     auto_fail_triggered: boolean | null;
     auto_fail_reasons: any | null;
     critical_moments: any | null;
+
+    // Auto-fail override columns (for false positive marking)
+    auto_fail_overridden: boolean | null;
+    auto_fail_override_reason: string | null;
+    auto_fail_override_at: string | null;
+    auto_fail_override_by: string | null;
 
     // Licensed Agent (LA) detection columns
     transfer_detected: boolean | null;
