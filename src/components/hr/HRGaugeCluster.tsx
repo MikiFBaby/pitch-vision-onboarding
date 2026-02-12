@@ -2,7 +2,8 @@
 import React, { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase-client';
 import { motion } from 'framer-motion';
-import { TrendingUp, TrendingDown, Users, UserMinus, Calendar, AlertTriangle, Globe, Briefcase } from 'lucide-react';
+import { TrendingUp, TrendingDown, Users, UserMinus, Globe, Briefcase } from 'lucide-react';
+import { deduplicateFired, deduplicateHired } from '@/lib/hr-utils';
 
 interface GaugeData {
     hires: number;
@@ -13,8 +14,6 @@ interface GaugeData {
     usHires: number;
     cadHires: number;
     campaignMix: { name: string; count: number }[];
-    bookedDaysOff: number;
-    nonBookedDaysOff: number;
 }
 
 interface HRGaugeClusterProps {
@@ -72,8 +71,8 @@ const MetricCard = ({
                         <Icon className={`w-4 h-4 ${colors.text}`} />
                     </div>
                     <div>
-                        <h3 className="text-xs font-semibold text-white/80 uppercase tracking-wider">{label}</h3>
-                        <p className="text-[10px] text-white/40">{sublabel}</p>
+                        <h3 className="text-sm font-semibold text-white/90 uppercase tracking-wider">{label}</h3>
+                        <p className="text-xs text-white/70">{sublabel}</p>
                     </div>
                 </div>
 
@@ -111,17 +110,17 @@ const GeoDistributionCard = ({ usHires, cadHires, total, delay }: { usHires: num
                     <Globe className="w-4 h-4 text-violet-400" />
                 </div>
                 <div>
-                    <h3 className="text-xs font-semibold text-white/80 uppercase tracking-wider">Hiring Region</h3>
-                    <p className="text-[10px] text-white/40">Geographic Split</p>
+                    <h3 className="text-sm font-semibold text-white/90 uppercase tracking-wider">Hiring Region</h3>
+                    <p className="text-xs text-white/70">Geographic Split</p>
                 </div>
             </div>
 
             <div className="space-y-4">
                 {/* USA */}
                 <div>
-                    <div className="flex justify-between text-xs mb-1.5">
-                        <span className="font-medium text-white/80">USA</span>
-                        <span className="text-white/50">{usHires}</span>
+                    <div className="flex justify-between text-sm mb-1.5">
+                        <span className="font-medium text-white/90">USA</span>
+                        <span className="text-white/70">{usHires}</span>
                     </div>
                     <div className="h-2 w-full bg-white/5 rounded-full overflow-hidden">
                         <motion.div
@@ -135,9 +134,9 @@ const GeoDistributionCard = ({ usHires, cadHires, total, delay }: { usHires: num
 
                 {/* Canada */}
                 <div>
-                    <div className="flex justify-between text-xs mb-1.5">
-                        <span className="font-medium text-white/80">Canada</span>
-                        <span className="text-white/50">{cadHires}</span>
+                    <div className="flex justify-between text-sm mb-1.5">
+                        <span className="font-medium text-white/90">Canada</span>
+                        <span className="text-white/70">{cadHires}</span>
                     </div>
                     <div className="h-2 w-full bg-white/5 rounded-full overflow-hidden">
                         <motion.div
@@ -169,18 +168,18 @@ const CampaignMixCard = ({ campaigns, total, delay }: { campaigns: { name: strin
                     <Briefcase className="w-4 h-4 text-indigo-400" />
                 </div>
                 <div>
-                    <h3 className="text-xs font-semibold text-white/80 uppercase tracking-wider">Top Campaigns</h3>
-                    <p className="text-[10px] text-white/40">By Volume</p>
+                    <h3 className="text-sm font-semibold text-white/90 uppercase tracking-wider">Top Campaigns</h3>
+                    <p className="text-xs text-white/70">By Volume</p>
                 </div>
             </div>
 
             <div className="space-y-3">
                 {campaigns.length === 0 ? (
-                    <div className="text-xs text-white/30 italic">No data available</div>
+                    <div className="text-xs text-white/60 italic">No data available</div>
                 ) : (
                     campaigns.map((c, i) => (
                         <div key={c.name} className="flex items-center justify-between">
-                            <span className="text-xs font-medium text-white/70 truncate max-w-[100px]" title={c.name}>
+                            <span className="text-sm font-medium text-white/90 truncate max-w-[100px]" title={c.name}>
                                 {c.name}
                             </span>
                             <div className="flex items-center gap-2">
@@ -192,7 +191,7 @@ const CampaignMixCard = ({ campaigns, total, delay }: { campaigns: { name: strin
                                         transition={{ duration: 0.8, delay: delay + 0.1 * i }}
                                     />
                                 </div>
-                                <span className="text-xs text-white/50 w-4 text-right">{c.count}</span>
+                                <span className="text-sm text-white/70 w-4 text-right">{c.count}</span>
                             </div>
                         </div>
                     ))
@@ -202,17 +201,33 @@ const CampaignMixCard = ({ campaigns, total, delay }: { campaigns: { name: strin
     </motion.div>
 );
 
+/** Local YYYY-MM-DD (avoids UTC timezone shift from toISOString) */
+function toLocalDateString(date: Date): string {
+    return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
+/** Effective working day — weekends roll back to last Friday */
+function getEffectiveToday(): Date {
+    const now = new Date();
+    const jsDay = now.getDay();
+    if (jsDay === 0) now.setDate(now.getDate() - 2); // Sun → Fri
+    if (jsDay === 6) now.setDate(now.getDate() - 1); // Sat → Fri
+    return now;
+}
+
 export default function HRGaugeCluster({ dateRange }: HRGaugeClusterProps) {
-    const getStartDate = () => {
-        const now = new Date();
-        const start = new Date(now);
+    const getDateRange = () => {
+        const effectiveToday = getEffectiveToday();
+        const endDate = toLocalDateString(effectiveToday);
+
+        const start = new Date(effectiveToday);
         switch (dateRange) {
-            case 'daily': start.setHours(0, 0, 0, 0); break;
-            case 'weekly': start.setDate(now.getDate() - 7); break;
-            case '30d': start.setDate(now.getDate() - 30); break;
-            case '90d': start.setDate(now.getDate() - 90); break;
+            case 'daily': break; // start = same as end (just today / effective today)
+            case 'weekly': start.setDate(start.getDate() - 7); break;
+            case '30d': start.setDate(start.getDate() - 30); break;
+            case '90d': start.setDate(start.getDate() - 90); break;
         }
-        return start;
+        return { startDate: toLocalDateString(start), endDate };
     };
 
     const [data, setData] = useState<GaugeData>({
@@ -224,47 +239,29 @@ export default function HRGaugeCluster({ dateRange }: HRGaugeClusterProps) {
         usHires: 0,
         cadHires: 0,
         campaignMix: [],
-        bookedDaysOff: 0,
-        nonBookedDaysOff: 0
     });
 
     const fetchData = async () => {
-        const startDate = getStartDate();
-        const startDateOnly = startDate.toISOString().split('T')[0];
+        const { startDate: startDateOnly, endDate: endDateOnly } = getDateRange();
 
-        const { count: totalHires } = await supabase
-            .from('HR Hired')
-            .select('*', { count: 'exact', head: true });
+        // Fetch all-time totals (actual data for dedup, not head count)
+        const [allHiresRes, allFiresRes, hiresRes, firesRes] = await Promise.all([
+            supabase.from('HR Hired').select('"Agent Name", "Hire Date"'),
+            supabase.from('HR Fired').select('"Agent Name", "Termination Date"'),
+            supabase.from('HR Hired').select('"Agent Name", "Hire Date", "Canadian/American", Campaign').gte('"Hire Date"', startDateOnly).lte('"Hire Date"', endDateOnly),
+            supabase.from('HR Fired').select('"Agent Name", "Termination Date"').gte('"Termination Date"', startDateOnly).lte('"Termination Date"', endDateOnly),
+        ]);
 
-        const { count: totalFires } = await supabase
-            .from('HR Fired')
-            .select('*', { count: 'exact', head: true });
-
-        const { data: hires } = await supabase
-            .from('HR Hired')
-            .select('"Hire Date", "Canadian/American", Campaign')
-            .gte('"Hire Date"', startDateOnly);
-
-        const { data: fires } = await supabase
-            .from('HR Fired')
-            .select('"Termination Date"')
-            .gte('"Termination Date"', startDateOnly);
-
-        const { data: booked } = await supabase
-            .from('Booked Days Off')
-            .select('Date')
-            .gte('Date', startDateOnly);
-
-        const { data: nonBooked } = await supabase
-            .from('Non Booked Days Off')
-            .select('Date')
-            .gte('Date', startDateOnly);
+        const totalHires = deduplicateHired(allHiresRes.data || []).length;
+        const totalFires = deduplicateFired(allFiresRes.data || []).length;
+        const hires = deduplicateHired(hiresRes.data || []);
+        const fires = deduplicateFired(firesRes.data || []);
 
         let us = 0;
         let cad = 0;
         const campaigns: Record<string, number> = {};
 
-        hires?.forEach((h: any) => {
+        hires.forEach((h: any) => {
             const loc = h['Canadian/American']?.toLowerCase() || '';
             if (loc.includes('us') || loc.includes('american') || loc.includes('usa')) us++;
             else if (loc.includes('can') || loc.includes('cad')) cad++;
@@ -279,16 +276,14 @@ export default function HRGaugeCluster({ dateRange }: HRGaugeClusterProps) {
             .slice(0, 3);
 
         setData({
-            hires: totalHires || 0,
-            fires: totalFires || 0,
-            netChange: (hires?.length || 0) - (fires?.length || 0),
-            hiresThisMonth: hires?.length || 0,
-            firesThisMonth: fires?.length || 0,
+            hires: totalHires,
+            fires: totalFires,
+            netChange: hires.length - fires.length,
+            hiresThisMonth: hires.length,
+            firesThisMonth: fires.length,
             usHires: us,
             cadHires: cad,
             campaignMix: sortedCampaigns,
-            bookedDaysOff: booked?.length || 0,
-            nonBookedDaysOff: nonBooked?.length || 0
         });
     };
 
@@ -298,8 +293,6 @@ export default function HRGaugeCluster({ dateRange }: HRGaugeClusterProps) {
         const channels = [
             supabase.channel('hr_dashboard_hires').on('postgres_changes', { event: '*', schema: 'public', table: 'HR Hired' }, () => fetchData()).subscribe(),
             supabase.channel('hr_dashboard_fires').on('postgres_changes', { event: '*', schema: 'public', table: 'HR Fired' }, () => fetchData()).subscribe(),
-            supabase.channel('hr_dashboard_booked').on('postgres_changes', { event: '*', schema: 'public', table: 'Booked Days Off' }, () => fetchData()).subscribe(),
-            supabase.channel('hr_dashboard_nonbooked').on('postgres_changes', { event: '*', schema: 'public', table: 'Non Booked Days Off' }, () => fetchData()).subscribe(),
         ];
 
         return () => {
@@ -351,26 +344,6 @@ export default function HRGaugeCluster({ dateRange }: HRGaugeClusterProps) {
                 campaigns={data.campaignMix}
                 total={data.hiresThisMonth}
                 delay={0.4}
-            />
-
-            <MetricCard
-                icon={Calendar}
-                label="Booked Time Off"
-                sublabel="Planned Absences"
-                value={data.bookedDaysOff}
-                accentColor="indigo"
-                delay={0.5}
-            />
-
-            <MetricCard
-                icon={AlertTriangle}
-                label="Unplanned Absence"
-                sublabel="No-Shows / Emergency"
-                value={data.nonBookedDaysOff}
-                trend={data.nonBookedDaysOff > 0 ? 'down' : null}
-                trendLabel={data.nonBookedDaysOff > 0 ? 'Attention needed' : undefined}
-                accentColor="amber"
-                delay={0.6}
             />
         </div>
     );

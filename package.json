@@ -47,6 +47,7 @@
     "react": "19.2.3",
     "react-dom": "19.2.3",
     "recharts": "^3.6.0",
+    "server-only": "^0.0.1",
     "tailwind-merge": "^3.4.0",
     "three": "^0.182.0",
     "vercel": "^50.4.5"

@@ -1,6 +1,8 @@
 @import "tailwindcss";
 
 @theme inline {
+  --animate-shimmer-slide: shimmer-slide var(--speed) ease-in-out infinite alternate;
+  --animate-spin-around: spin-around calc(var(--speed) * 2) infinite linear;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -223,6 +225,59 @@ body {
 
 .animate-delay-1400 {
   animation-delay: 1400ms;
+}
+
+/* Shimmer Button animations */
+@keyframes shimmer-slide {
+  to {
+    transform: translate(calc(100cqw - 100%), 0);
+  }
+}
+
+@keyframes spin-around {
+  0% {
+    transform: translateZ(0) rotate(0);
+  }
+  15%, 35% {
+    transform: translateZ(0) rotate(90deg);
+  }
+  65%, 85% {
+    transform: translateZ(0) rotate(270deg);
+  }
+  100% {
+    transform: translateZ(0) rotate(360deg);
+  }
+}
+
+/* Onboarding stat card glow */
+@keyframes border-pulse {
+  0%, 100% {
+    border-color: rgba(255, 255, 255, 0.08);
+    box-shadow: 0 0 0 0 rgba(255, 255, 255, 0);
+  }
+  50% {
+    border-color: rgba(255, 255, 255, 0.15);
+    box-shadow: 0 0 20px -4px rgba(255, 255, 255, 0.04);
+  }
+}
+
+@keyframes search-glow {
+  0%, 100% {
+    border-color: rgba(124, 58, 237, 0.3);
+    box-shadow: 0 0 0 0 rgba(124, 58, 237, 0);
+  }
+  50% {
+    border-color: rgba(124, 58, 237, 0.5);
+    box-shadow: 0 0 12px -2px rgba(124, 58, 237, 0.15);
+  }
+}
+
+.animate-border-pulse {
+  animation: border-pulse 4s ease-in-out infinite;
+}
+
+.search-focus-glow:focus {
+  animation: search-glow 2s ease-in-out infinite;
 }
 
 /* Custom checkbox styling */

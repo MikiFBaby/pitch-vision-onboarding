@@ -26,6 +26,7 @@ export default function AgentSchedulePage() {
     const [weeklyHours, setWeeklyHours] = useState("0");
     const [avgAgentHours, setAvgAgentHours] = useState("0");
     const [coverageData, setCoverageData] = useState<any[]>([]);
+    const [hoursContext, setHoursContext] = useState("This Week");
 
     useEffect(() => {
         const fetchData = async () => {
@@ -54,75 +55,111 @@ export default function AgentSchedulePage() {
         };
     }, []);
 
+    const parseTime = (t: string): number => {
+        let s = t.toLowerCase().replace(/\./g, '').replace(/\s+/g, '');
+        const hasPM = s.includes('p');
+        const hasAM = s.includes('a');
+        // Remove all letters
+        s = s.replace(/[a-z]/g, '');
+        // Replace dashes with colons for typos like "6-00"
+        s = s.replace(/-/g, ':');
+        const parts = s.split(':').filter(Boolean);
+        let hours = parseInt(parts[0]) || 0;
+        const minutes = parseInt(parts[1]) || 0;
+
+        // Standard AM/PM conversion
+        if (hasPM && hours < 12) hours += 12;
+        if (hasAM && hours === 12) hours = 0;
+
+        // Work schedule sanity: data entry errors like "12:00 a.m" (meant noon)
+        // or "11:00 p.m" (meant 11 AM). Clamp to 7AM-8PM range.
+        if (hours < 7) hours += 12;
+        if (hours > 20) hours -= 12;
+
+        return hours + minutes / 60;
+    };
+
     const parseDuration = (timeStr: string): number => {
         try {
             if (!timeStr || timeStr.toLowerCase().includes('off')) return 0;
-            const parts = timeStr.toLowerCase().split('-');
-            if (parts.length !== 2) return 0; // Strict: No fallback to 8
+            // Split on the separator dash (has whitespace before it), not dashes in times like "6-00"
+            const parts = timeStr.split(/\s+-\s*/);
+            if (parts.length !== 2) return 0;
 
             const start = parseTime(parts[0]);
             const end = parseTime(parts[1]);
 
-            let diff = end - start;
-            if (diff < 0) diff += 24;
+            const diff = end - start;
             return diff > 0 ? diff : 0;
         } catch (e) {
             return 0;
         }
     };
 
-    const parseTime = (t: string): number => {
-        const clean = t.replace(/[^0-9:amp]/g, '');
-        const isPM = clean.includes('p');
-        let [hours, minutes] = clean.replace(/[amp]/g, '').split(':').map(Number);
-        if (isPM && hours !== 12) hours += 12;
-        if (!isPM && hours === 12) hours = 0;
-        return hours + (minutes || 0) / 60;
-    };
-
     const calculateMetrics = (data: any[]) => {
-        const days = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
+        const allDays = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'];
         const todayDay = new Date().toLocaleDateString('en-US', { weekday: 'long' });
+        const dayOfWeek = new Date().getDay(); // 0=Sun, 1=Mon, ... 5=Fri, 6=Sat
 
-        // 1. Agents Scheduled Today
-        const workingToday = data.filter(agent => {
+        // Determine which days to count for weekly hours (through today)
+        // Sun(0) = 0 days, Mon(1) = 1 day, Tue(2) = 2 days, ... Fri(5) = 5 days, Sat(6) = 5 days (full week done)
+        const daysToCount = dayOfWeek === 0 ? 0 : dayOfWeek >= 6 ? 5 : dayOfWeek;
+        const countedDays = allDays.slice(0, daysToCount);
+
+        // Context label
+        if (dayOfWeek === 0) setHoursContext("Week starts Mon");
+        else if (dayOfWeek === 6) setHoursContext("Full Week");
+        else setHoursContext(`Through ${todayDay}`);
+
+        // 1. Agents Scheduled Today (0 on weekends)
+        const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
+        const workingToday = isWeekday ? data.filter(agent => {
             const schedule = agent[todayDay];
-            // Must have a valid time string (numbers present) and not be "OFF"
             return schedule && /[0-9]/.test(schedule) && !schedule.toLowerCase().includes('off');
-        }).length;
+        }).length : 0;
         setAgentsToday(workingToday);
 
-        // 2. Weekly Coverage & Total Hours
-        let totalHours = 0;
+        // 2. Weekly hours through today + full week coverage chart
+        let totalHoursToDate = 0;
         let agentsWithHours = 0;
         const dailyCounts: Record<string, number> = { Monday: 0, Tuesday: 0, Wednesday: 0, Thursday: 0, Friday: 0 };
+        const dailyHours: Record<string, number> = { Monday: 0, Tuesday: 0, Wednesday: 0, Thursday: 0, Friday: 0 };
 
         data.forEach(agent => {
-            let agentWeeklyHours = 0;
-            days.forEach(day => {
+            let agentHoursToDate = 0;
+
+            // Calculate all 5 days for coverage chart
+            allDays.forEach(day => {
                 const timeStr = agent[day];
                 if (timeStr && /[0-9]/.test(timeStr) && !timeStr.toLowerCase().includes('off')) {
                     dailyCounts[day]++;
-                    agentWeeklyHours += parseDuration(timeStr);
+                    const hrs = parseDuration(timeStr);
+                    dailyHours[day] += hrs;
                 }
             });
 
-            if (agentWeeklyHours > 0) {
+            // Only accumulate hours for days through today
+            countedDays.forEach(day => {
+                const timeStr = agent[day];
+                if (timeStr && /[0-9]/.test(timeStr) && !timeStr.toLowerCase().includes('off')) {
+                    agentHoursToDate += parseDuration(timeStr);
+                }
+            });
+
+            if (agentHoursToDate > 0) {
                 agentsWithHours++;
-                totalHours += agentWeeklyHours;
+                totalHoursToDate += agentHoursToDate;
             }
         });
 
-        // Weekly Hours formatted
-        setWeeklyHours(totalHours.toLocaleString(undefined, { maximumFractionDigits: 0 }));
+        setWeeklyHours(totalHoursToDate.toLocaleString(undefined, { maximumFractionDigits: 0 }));
 
-        // Average Weekly Hours per Agent (only counting those who actually work)
-        const avgWeekly = agentsWithHours > 0 ? totalHours / agentsWithHours : 0;
+        const avgWeekly = agentsWithHours > 0 ? totalHoursToDate / agentsWithHours : 0;
         setAvgAgentHours(avgWeekly.toFixed(1));
 
-        // Prepare Chart Data
-        const chartData = days.map(day => ({
-            name: day.substring(0, 3), // Mon, Tue...
+        // Chart data shows full week (Mon-Fri) agent counts
+        const chartData = allDays.map(day => ({
+            name: day.substring(0, 3),
             agents: dailyCounts[day],
             fullDate: day
         }));
@@ -200,11 +237,11 @@ export default function AgentSchedulePage() {
                         index={0}
                     />
                     <StatsCard
-                        title="Total Weekly Hours"
+                        title="Weekly Hours"
                         value={`${weeklyHours}h`}
                         icon={<Clock size={18} />}
                         trend="up"
-                        trendValue="Est."
+                        trendValue={hoursContext}
                         index={1}
                     />
                     <StatsCard
@@ -212,7 +249,7 @@ export default function AgentSchedulePage() {
                         value={`${avgAgentHours}h`}
                         icon={<Activity size={18} />}
                         trend="neutral"
-                        trendValue="Weekly"
+                        trendValue={hoursContext}
                         index={2}
                     />
                     {/* Placeholder for Coverage Graph in a small card or keep 3 columns and full width graph below */}

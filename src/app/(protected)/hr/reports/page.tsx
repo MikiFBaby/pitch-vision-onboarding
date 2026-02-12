@@ -15,9 +15,9 @@ export default function HRReportsPage() {
                             <FileBarChart className="w-8 h-8 text-indigo-400" />
                         </div>
                         <div>
-                            <h1 className="text-4xl font-bold tracking-tight text-white">HR Reports</h1>
+                            <h1 className="text-4xl font-bold tracking-tight text-white">Reports</h1>
                             <p className="text-white/50 text-lg">
-                                Executive workforce analytics with real-time data
+                                Generate and export workforce reports for leadership
                             </p>
                         </div>
                     </div>

@@ -24,7 +24,9 @@ import {
     TrendingUp,
     FolderOpen,
     GraduationCap,
-    FileBarChart
+    FileBarChart,
+    UserPlus,
+    Coins
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { PitchVisionLogo } from "@/components/ui/pitch-vision-logo";
@@ -214,6 +216,7 @@ export function SidebarInner() {
             return [
                 ...commonItems.slice(0, 1),
                 { href: "/manager/team", icon: <Users size={20} />, label: "Team Performance" },
+                { href: "/manager/pitch-points", icon: <Coins size={20} />, label: "Pitch Points" },
                 ...commonItems.slice(1)
             ];
         }
@@ -291,11 +294,13 @@ export function SidebarInner() {
         if (role === 'hr') {
             return [
                 { href: "/hr", icon: <LayoutDashboard size={20} />, label: "Dashboard" },
-                { href: "/hr/directory", icon: <Users size={20} />, label: "Directory" },
-                { href: "/hr/calendar", icon: <Calendar size={20} />, label: "Calendar" },
+                { href: "/hr/onboarding", icon: <UserPlus size={20} />, label: "Agent Onboarding" },
+                { href: "/hr/directory", icon: <Users size={20} />, label: "Employee Directory" },
+                { href: "/hr/calendar", icon: <Calendar size={20} />, label: "Training Calendar" },
                 { href: "/hr/schedule", icon: <Clock size={20} />, label: "Agent Schedule" },
                 { href: "/hr/reports", icon: <FileBarChart size={20} />, label: "Reports" },
-                ...commonItems.slice(1)
+                { href: "/hr/pitch-points", icon: <Coins size={20} />, label: "Pitch Points" },
+                { href: "/hr/settings", icon: <Settings size={20} />, label: "Settings" },
             ];
         }
 
@@ -305,6 +310,7 @@ export function SidebarInner() {
             { href: "/agent/education", icon: <GraduationCap size={20} />, label: "Education" },
             { href: "/agent/calls", icon: <FileText size={20} />, label: "My Calls" },
             { href: "/agent/resources", icon: <FolderOpen size={20} />, label: "Resource Hub" },
+            { href: "/agent/rewards", icon: <Coins size={20} />, label: "Pitch Points" },
             ...commonItems.slice(1)
         ];
     };

@@ -58,7 +58,7 @@ export async function POST(req: Request) {
 
         // Send mail
         const info = await transporter.sendMail({
-            from: `"Aura AI" <${process.env.SMTP_USER}>`,
+            from: `"${finalSenderName}" <${process.env.SMTP_USER}>`,
             to,
             cc,
             subject: finalSubject,

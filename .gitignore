@@ -45,3 +45,5 @@ next-env.d.ts
 # secrets and credentials
 .config/
 docs/n8n*.js
+.mcp.json
+firebase-debug.log

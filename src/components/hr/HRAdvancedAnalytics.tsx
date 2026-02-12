@@ -1,16 +1,18 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { motion } from "framer-motion";
 import { supabase } from "@/lib/supabase-client";
 import {
     BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-    ResponsiveContainer, PieChart, Pie, Cell, Legend
+    ResponsiveContainer, PieChart, Pie, Cell, Legend,
+    AreaChart, Area, ReferenceLine
 } from "recharts";
 import {
     Clock, Users, MapPin, Briefcase, Calendar, TrendingDown,
-    AlertTriangle, CheckCircle2
+    AlertTriangle, CheckCircle2, Activity
 } from "lucide-react";
+import { deduplicateFired, deduplicateHired, deduplicateUnplannedOff, deduplicateBookedOff } from '@/lib/hr-utils';
 
 interface TenureData {
     type: string;
@@ -25,7 +27,15 @@ interface AbsenceAgentData {
 
 interface DayOfWeekData {
     day: string;
-    count: number;
+    booked: number;
+    unplanned: number;
+}
+
+interface AttendanceTimelineData {
+    date: string;
+    rate: number;
+    absent: number;
+    scheduled: number;
 }
 
 interface CampaignData {
@@ -47,6 +57,7 @@ export default function HRAdvancedAnalytics() {
     const [dayOfWeekAbsences, setDayOfWeekAbsences] = useState<DayOfWeekData[]>([]);
     const [campaignAttrition, setCampaignAttrition] = useState<CampaignData[]>([]);
     const [geoAttrition, setGeoAttrition] = useState<GeoData[]>([]);
+    const [attendanceTimeline, setAttendanceTimeline] = useState<AttendanceTimelineData[]>([]);
     const [loading, setLoading] = useState(true);
     const [hiresCount, setHiresCount] = useState(0);
     const [terminationsCount, setTerminationsCount] = useState(0);
@@ -63,6 +74,7 @@ export default function HRAdvancedAnalytics() {
                 fetch90DaySurvival(),
                 fetchAbsenceByAgent(),
                 fetchDayOfWeekAbsences(),
+                fetchAttendanceTimeline(),
                 fetchCampaignAttrition(),
                 fetchGeoAttrition()
             ]);
@@ -75,8 +87,9 @@ export default function HRAdvancedAnalytics() {
 
     // 1. Tenure Analysis
     const fetchTenureAnalysis = async () => {
-        const { data: fired } = await supabase.from('HR Fired').select('*');
-        if (!fired) return;
+        const { data: rawFired } = await supabase.from('HR Fired').select('*');
+        const fired = deduplicateFired(rawFired || []);
+        if (fired.length === 0) return;
 
         const tenureByType: Record<string, { totalDays: number; count: number }> = {
             'Terminated': { totalDays: 0, count: 0 },
@@ -109,10 +122,13 @@ export default function HRAdvancedAnalytics() {
 
     // 2. 90-Day Survival Rate
     const fetch90DaySurvival = async () => {
-        const { data: hired } = await supabase.from('HR Hired').select('*');
-        const { data: fired } = await supabase.from('HR Fired').select('*');
+        const { data: rawHired } = await supabase.from('HR Hired').select('*');
+        const { data: rawFired } = await supabase.from('HR Fired').select('*');
 
-        if (!hired || !fired) return;
+        const hired = deduplicateHired(rawHired || []);
+        const fired = deduplicateFired(rawFired || []);
+
+        if (hired.length === 0) return;
 
         setHiresCount(hired.length);
         setTerminationsCount(fired.length);
@@ -138,12 +154,13 @@ export default function HRAdvancedAnalytics() {
 
     // 3. Absence Frequency by Agent
     const fetchAbsenceByAgent = async () => {
-        const { data: absences } = await supabase.from('Non Booked Days Off').select('*');
-        if (!absences) return;
+        const { data: rawAbsences } = await supabase.from('Non Booked Days Off').select('*');
+        const absences = deduplicateUnplannedOff(rawAbsences || []);
+        if (absences.length === 0) return;
 
         const agentCounts: Record<string, number> = {};
         absences.forEach(item => {
-            const name = `${item['First Name'] || ''} ${item['Last Name'] || ''}`.trim();
+            const name = (item['Agent Name'] || '').trim();
             if (name) {
                 agentCounts[name] = (agentCounts[name] || 0) + 1;
             }
@@ -157,37 +174,143 @@ export default function HRAdvancedAnalytics() {
         setAbsenceByAgent(sorted);
     };
 
-    // 4. Day-of-Week Absence Patterns
+    // 4. Day-of-Week Absence Patterns (both booked + unplanned)
     const fetchDayOfWeekAbsences = async () => {
-        const { data: absences } = await supabase.from('Non Booked Days Off').select('*');
-        if (!absences) return;
+        const [{ data: rawUnplanned }, { data: rawBooked }] = await Promise.all([
+            supabase.from('Non Booked Days Off').select('*'),
+            supabase.from('Booked Days Off').select('*'),
+        ]);
 
-        const dayCounts: Record<string, number> = {
-            'Mon': 0, 'Tue': 0, 'Wed': 0, 'Thu': 0, 'Fri': 0
-        };
+        const unplanned = deduplicateUnplannedOff(rawUnplanned || []);
+        const booked = deduplicateBookedOff(rawBooked || []);
+
         const dayNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+        const bookedCounts: Record<string, number> = { 'Mon': 0, 'Tue': 0, 'Wed': 0, 'Thu': 0, 'Fri': 0 };
+        const unplannedCounts: Record<string, number> = { 'Mon': 0, 'Tue': 0, 'Wed': 0, 'Thu': 0, 'Fri': 0 };
 
-        absences.forEach(item => {
-            const dateStr = item['Date'];
-            if (dateStr) {
-                const date = new Date(dateStr);
-                if (!isNaN(date.getTime())) {
-                    const dayName = dayNames[date.getDay()];
-                    if (dayCounts[dayName] !== undefined) {
-                        dayCounts[dayName]++;
-                    }
-                }
-            }
+        const parseDateDay = (dateStr: string) => {
+            if (!dateStr) return null;
+            const parts = dateStr.split('-');
+            const date = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
+            return !isNaN(date.getTime()) ? dayNames[date.getDay()] : null;
+        };
+
+        booked.forEach(item => {
+            const dayName = parseDateDay(item['Date']);
+            if (dayName && bookedCounts[dayName] !== undefined) bookedCounts[dayName]++;
         });
 
-        const result = Object.entries(dayCounts).map(([day, count]) => ({ day, count }));
+        unplanned.forEach(item => {
+            const dayName = parseDateDay(item['Date']);
+            if (dayName && unplannedCounts[dayName] !== undefined) unplannedCounts[dayName]++;
+        });
+
+        const result: DayOfWeekData[] = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'].map(day => ({
+            day,
+            booked: bookedCounts[day],
+            unplanned: unplannedCounts[day],
+        }));
+
         setDayOfWeekAbsences(result);
+    };
+
+    // 4b. Attendance Rate Timeline (last 30 weekdays)
+    const fetchAttendanceTimeline = async () => {
+        const [{ data: rawBooked }, { data: rawUnplanned }, { data: employeeData }] = await Promise.all([
+            supabase.from('Booked Days Off').select('"Agent Name", Date'),
+            supabase.from('Non Booked Days Off').select('"Agent Name", Date'),
+            supabase.from('employee_directory').select('first_name, last_name').eq('employee_status', 'Active').eq('role', 'Agent'),
+        ]);
+
+        const booked = deduplicateBookedOff(rawBooked || []);
+        const unplanned = deduplicateUnplannedOff(rawUnplanned || []);
+
+        // Fetch all schedule pages
+        let allSchedules: any[] = [];
+        let from = 0;
+        const PAGE_SIZE = 1000;
+        while (true) {
+            const { data: page } = await supabase.from('Agent Schedule').select('*').range(from, from + PAGE_SIZE - 1);
+            if (!page || page.length === 0) break;
+            allSchedules = allSchedules.concat(page);
+            if (page.length < PAGE_SIZE) break;
+            from += PAGE_SIZE;
+        }
+
+        // Build active employee keys
+        const activeKeys = new Set(
+            (employeeData || []).map(e =>
+                `${(e.first_name || '').trim().toLowerCase()} ${(e.last_name || '').trim().toLowerCase()}`
+            )
+        );
+
+        // Pre-compute scheduled counts per day of week
+        const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+        const scheduledPerDay: Record<string, number> = {};
+        for (const day of dayNames) {
+            const seen = new Set<string>();
+            let count = 0;
+            allSchedules.forEach(agent => {
+                const key = `${(agent['First Name'] || '').trim().toLowerCase()} ${(agent['Last Name'] || '').trim().toLowerCase()}`;
+                const shift = agent[day];
+                if (activeKeys.has(key) && !seen.has(key) && shift && shift.trim() !== '' && shift.trim().toLowerCase() !== 'off') {
+                    seen.add(key);
+                    count++;
+                }
+            });
+            scheduledPerDay[day] = count;
+        }
+
+        // Calculate daily attendance rate for last 30 days (weekdays only)
+        const endDate = new Date();
+        endDate.setHours(23, 59, 59, 999);
+        const startDate = new Date();
+        startDate.setDate(startDate.getDate() - 30);
+        startDate.setHours(0, 0, 0, 0);
+
+        const formatDateKey = (d: Date) => d.toLocaleDateString('en-CA');
+        const data: AttendanceTimelineData[] = [];
+        const loopDate = new Date(startDate);
+
+        while (loopDate <= endDate) {
+            const jsDay = loopDate.getDay();
+            if (jsDay !== 0 && jsDay !== 6) {
+                const dateStr = formatDateKey(loopDate);
+                const dayName = dayNames[jsDay];
+                const scheduled = scheduledPerDay[dayName] || 0;
+
+                const bookedNames = new Set(
+                    booked.filter(b => b.Date === dateStr).map(b => (b['Agent Name'] || '').trim().toLowerCase())
+                );
+                const unplannedNames = new Set<string>();
+                unplanned.filter(nb => nb.Date === dateStr).forEach(nb => {
+                    const name = (nb['Agent Name'] || '').trim().toLowerCase();
+                    if (!bookedNames.has(name)) unplannedNames.add(name);
+                });
+                const totalAbsent = bookedNames.size + unplannedNames.size;
+
+                const rate = scheduled > 0
+                    ? Math.round(((scheduled - totalAbsent) / scheduled) * 100)
+                    : 100;
+
+                data.push({
+                    date: loopDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
+                    rate: Math.max(0, Math.min(100, rate)),
+                    absent: totalAbsent,
+                    scheduled,
+                });
+            }
+            loopDate.setDate(loopDate.getDate() + 1);
+        }
+
+        setAttendanceTimeline(data);
     };
 
     // 5. Campaign-Level Attrition
     const fetchCampaignAttrition = async () => {
-        const { data: fired } = await supabase.from('HR Fired').select('*');
-        if (!fired) return;
+        const { data: rawFired } = await supabase.from('HR Fired').select('*');
+        const fired = deduplicateFired(rawFired || []);
+        if (fired.length === 0) return;
 
         const campaignCounts: Record<string, number> = {};
         fired.forEach(emp => {
@@ -205,8 +328,9 @@ export default function HRAdvancedAnalytics() {
 
     // 6. Geographic Attrition
     const fetchGeoAttrition = async () => {
-        const { data: fired } = await supabase.from('HR Fired').select('*');
-        if (!fired) return;
+        const { data: rawFired } = await supabase.from('HR Fired').select('*');
+        const fired = deduplicateFired(rawFired || []);
+        if (fired.length === 0) return;
 
         const geoCounts: Record<string, number> = { 'Canadian': 0, 'American': 0, 'Other': 0 };
         fired.forEach(emp => {
@@ -253,7 +377,7 @@ export default function HRAdvancedAnalytics() {
                     </div>
                     <div>
                         <h3 className="text-lg font-semibold text-white">Tenure Analysis</h3>
-                        <p className="text-xs text-white/50">Avg days before departure</p>
+                        <p className="text-sm text-white/70">Avg days before departure</p>
                     </div>
                 </div>
 
@@ -273,7 +397,7 @@ export default function HRAdvancedAnalytics() {
                     </ResponsiveContainer>
                 </div>
 
-                <div className="flex justify-center gap-6 mt-2 text-xs text-white/50">
+                <div className="flex justify-center gap-6 mt-2 text-sm text-white/70">
                     {tenureData.map(t => (
                         <span key={t.type}>{t.type}: {t.count} employees</span>
                     ))}
@@ -295,7 +419,7 @@ export default function HRAdvancedAnalytics() {
                     </div>
                     <div>
                         <h3 className="text-lg font-semibold text-white">90-Day Survival Rate</h3>
-                        <p className="text-xs text-white/50">New hire retention after 90 days</p>
+                        <p className="text-sm text-white/70">New hire retention after 90 days</p>
                     </div>
                 </div>
 
@@ -325,7 +449,7 @@ export default function HRAdvancedAnalytics() {
                             <span className="text-4xl font-bold text-white">{survivalRate}%</span>
                         </div>
                     </div>
-                    <div className="mt-4 flex gap-4 text-xs text-white/50">
+                    <div className="mt-4 flex gap-4 text-sm text-white/70">
                         <span>Total Hires: {hiresCount}</span>
                         <span>•</span>
                         <span>Total Departures: {terminationsCount}</span>
@@ -348,7 +472,7 @@ export default function HRAdvancedAnalytics() {
                     </div>
                     <div>
                         <h3 className="text-lg font-semibold text-white">Top Absence Frequency</h3>
-                        <p className="text-xs text-white/50">Agents with most unplanned absences</p>
+                        <p className="text-sm text-white/70">Agents with most unplanned absences</p>
                     </div>
                 </div>
 
@@ -356,7 +480,7 @@ export default function HRAdvancedAnalytics() {
                     <div className="space-y-2">
                         {absenceByAgent.slice(0, 10).map((agent, i) => (
                             <div key={agent.name} className="flex items-center gap-3">
-                                <span className="text-xs text-white/40 w-4">{i + 1}</span>
+                                <span className="text-sm text-white/60 w-4">{i + 1}</span>
                                 <div className="flex-1">
                                     <div className="flex justify-between text-sm mb-1">
                                         <span className="text-white/80 truncate max-w-[140px]">{agent.name}</span>
@@ -375,7 +499,85 @@ export default function HRAdvancedAnalytics() {
                 </div>
             </motion.div>
 
-            {/* 4. Day-of-Week Absence Patterns */}
+            {/* 4a. Attendance Rate Timeline */}
+            <motion.div
+                initial={{ opacity: 0, y: 20 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.25 }}
+                className="relative p-6 rounded-2xl bg-gradient-to-br from-white/[0.08] to-white/[0.02] border border-white/10 overflow-hidden col-span-1 lg:col-span-2 xl:col-span-3"
+            >
+                <div className="absolute inset-0 bg-gradient-to-tr from-emerald-500/5 to-transparent pointer-events-none" />
+
+                <div className="flex items-center gap-3 mb-1">
+                    <div className="p-2 rounded-xl bg-emerald-500/20">
+                        <Activity className="w-5 h-5 text-emerald-400" />
+                    </div>
+                    <div>
+                        <h3 className="text-lg font-semibold text-white">Attendance Rate Timeline</h3>
+                        <p className="text-sm text-white/50">
+                            Daily workforce attendance over the last 30 days (weekdays only)
+                        </p>
+                    </div>
+                </div>
+                <div className="mb-3 px-3 py-2.5 rounded-lg bg-white/[0.04] border border-white/10">
+                    <p className="text-sm text-white/90 leading-relaxed">
+                        <strong className="text-white">How to read this chart:</strong> Each point shows what percentage of scheduled agents actually showed up that day. For example, if 400 agents were scheduled and 20 were absent (booked off or unplanned), the rate is <span className="text-emerald-400 font-medium">95%</span>. Higher is better. The dashed yellow line marks the <span className="text-amber-400 font-medium">90% target</span> — dips below it signal days with above-normal absences.
+                    </p>
+                    <p className="text-xs text-white/70 mt-1.5">
+                        Data sources: Agent Schedule (who&apos;s scheduled) + Booked Days Off + Non Booked Days Off (who was absent)
+                    </p>
+                </div>
+
+                <div className="h-56">
+                    {attendanceTimeline.length > 0 ? (
+                        <ResponsiveContainer width="100%" height="100%">
+                            <AreaChart data={attendanceTimeline}>
+                                <defs>
+                                    <linearGradient id="advAttendanceGradient" x1="0" y1="0" x2="0" y2="1">
+                                        <stop offset="5%" stopColor="#10b981" stopOpacity={0.3} />
+                                        <stop offset="95%" stopColor="#10b981" stopOpacity={0} />
+                                    </linearGradient>
+                                </defs>
+                                <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" vertical={false} />
+                                <XAxis dataKey="date" tick={{ fill: 'rgba(255,255,255,0.5)', fontSize: 11 }} tickLine={false} axisLine={false} />
+                                <YAxis tick={{ fill: 'rgba(255,255,255,0.5)', fontSize: 11 }} tickLine={false} axisLine={false} domain={[60, 100]} tickFormatter={(v) => `${v}%`} />
+                                <Tooltip
+                                    contentStyle={{ backgroundColor: '#1a1a1a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px' }}
+                                    labelStyle={{ color: '#888' }}
+                                    formatter={(value: number, name: string) => {
+                                        if (name === 'Attendance') return [`${value}%`, name];
+                                        return [value, name];
+                                    }}
+                                />
+                                <ReferenceLine y={90} stroke="#f59e0b" strokeDasharray="4 4" strokeOpacity={0.6} label={{ value: '90% target', fill: '#f59e0b', fontSize: 10, position: 'insideTopRight' }} />
+                                <Area
+                                    type="monotone"
+                                    dataKey="rate"
+                                    name="Attendance"
+                                    stroke="#10b981"
+                                    strokeWidth={2.5}
+                                    fill="url(#advAttendanceGradient)"
+                                    dot={false}
+                                    activeDot={{ r: 5, fill: '#10b981' }}
+                                />
+                            </AreaChart>
+                        </ResponsiveContainer>
+                    ) : (
+                        <div className="h-full flex items-center justify-center text-white/40 text-sm">
+                            No attendance data available
+                        </div>
+                    )}
+                </div>
+                {attendanceTimeline.length > 0 && (
+                    <div className="flex items-center justify-between mt-3 text-sm text-white/90 px-1">
+                        <span>Avg: <strong className="text-white">{Math.round(attendanceTimeline.reduce((s, d) => s + d.rate, 0) / attendanceTimeline.length)}%</strong></span>
+                        <span>Weekdays only &bull; Dashed line = 90% target</span>
+                        <span>Low: <strong className="text-white">{Math.min(...attendanceTimeline.map(d => d.rate))}%</strong> &bull; High: <strong className="text-white">{Math.max(...attendanceTimeline.map(d => d.rate))}%</strong></span>
+                    </div>
+                )}
+            </motion.div>
+
+            {/* 4b. Day-of-Week Absence Patterns */}
             <motion.div
                 initial={{ opacity: 0, y: 20 }}
                 animate={{ opacity: 1, y: 0 }}
@@ -389,8 +591,8 @@ export default function HRAdvancedAnalytics() {
                         <Calendar className="w-5 h-5 text-cyan-400" />
                     </div>
                     <div>
-                        <h3 className="text-lg font-semibold text-white">Day-of-Week Patterns</h3>
-                        <p className="text-xs text-white/50">When unplanned absences occur</p>
+                        <h3 className="text-lg font-semibold text-white">Absence Patterns by Day</h3>
+                        <p className="text-sm text-white/70">Booked vs unplanned absences by weekday</p>
                     </div>
                 </div>
 
@@ -404,7 +606,12 @@ export default function HRAdvancedAnalytics() {
                                 contentStyle={{ backgroundColor: '#1a1a1a', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px' }}
                                 labelStyle={{ color: 'white' }}
                             />
-                            <Bar dataKey="count" fill="#06b6d4" radius={[4, 4, 0, 0]} />
+                            <Legend
+                                wrapperStyle={{ fontSize: '11px' }}
+                                formatter={(value) => <span className="text-white/70">{value}</span>}
+                            />
+                            <Bar dataKey="booked" name="Booked" fill="#6366f1" radius={[4, 4, 0, 0]} />
+                            <Bar dataKey="unplanned" name="Unplanned" fill="#f43f5e" radius={[4, 4, 0, 0]} />
                         </BarChart>
                     </ResponsiveContainer>
                 </div>
@@ -425,7 +632,7 @@ export default function HRAdvancedAnalytics() {
                     </div>
                     <div>
                         <h3 className="text-lg font-semibold text-white">Attrition by Campaign</h3>
-                        <p className="text-xs text-white/50">Which campaigns have highest turnover</p>
+                        <p className="text-sm text-white/70">Which campaigns have highest turnover</p>
                     </div>
                 </div>
 
@@ -474,7 +681,7 @@ export default function HRAdvancedAnalytics() {
                     </div>
                     <div>
                         <h3 className="text-lg font-semibold text-white">Geographic Attrition</h3>
-                        <p className="text-xs text-white/50">Canada vs USA departures</p>
+                        <p className="text-sm text-white/70">Canada vs USA departures</p>
                     </div>
                 </div>
 
@@ -497,7 +704,7 @@ export default function HRAdvancedAnalytics() {
                                     >
                                         <div className="text-center">
                                             <div className="text-3xl font-bold text-white">{geo.count}</div>
-                                            <div className="text-xs text-white/50">{percentage}%</div>
+                                            <div className="text-sm text-white/70">{percentage}%</div>
                                         </div>
                                     </div>
                                     <span className="text-sm text-white/70">{geo.region}</span>

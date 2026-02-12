@@ -208,3 +208,68 @@ export function getWeekDateRange(weekOffset: number = 0): {
 export function getTodayISO(): string {
     return new Date().toISOString().split('T')[0];
 }
+
+// ============================================
+// DATA DEDUPLICATION
+// Google Sheets → Supabase sync creates 2-3x
+// duplicate rows. These helpers remove them.
+// ============================================
+
+/**
+ * Generic row deduplication using a composite key function.
+ * Keeps the first occurrence of each unique key.
+ */
+export function deduplicateRows<T = any>(rows: T[], keyFn: (row: T) => string): T[] {
+    const seen = new Set<string>();
+    return rows.filter(row => {
+        const key = keyFn(row);
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
+
+/** Deduplicate HR Fired rows. Only counts complete rows (Name + Termination Date). */
+export function deduplicateFired(rows: any[]): any[] {
+    return deduplicateRows(
+        rows.filter(r =>
+            (r['Agent Name'] || '').trim() &&
+            (r['Termination Date'] || '').trim()
+        ),
+        (r) => `${(r['Agent Name'] || '').trim().toLowerCase()}|${r['Termination Date'] || ''}`
+    );
+}
+
+/** Deduplicate HR Hired rows. Only counts complete rows (Name + Hire Date). */
+export function deduplicateHired(rows: any[]): any[] {
+    return deduplicateRows(
+        rows.filter(r =>
+            (r['Agent Name'] || '').trim() &&
+            (r['Hire Date'] || '').trim()
+        ),
+        (r) => `${(r['Agent Name'] || '').trim().toLowerCase()}|${r['Hire Date'] || ''}`
+    );
+}
+
+/** Deduplicate Booked Days Off. Only counts complete rows (Name + Date). */
+export function deduplicateBookedOff(rows: any[]): any[] {
+    return deduplicateRows(
+        rows.filter(r =>
+            (r['Agent Name'] || '').trim() &&
+            (r['Date'] || '').trim()
+        ),
+        (r) => `${(r['Agent Name'] || '').trim().toLowerCase()}|${r['Date'] || ''}`
+    );
+}
+
+/** Deduplicate Non Booked Days Off. Only counts complete rows (Name + Reason + Date). */
+export function deduplicateUnplannedOff(rows: any[]): any[] {
+    return deduplicateRows(
+        rows.filter(r =>
+            (r['Agent Name'] || '').trim() &&
+            (r['Reason'] || '').trim() &&
+            (r['Date'] || '').trim()
+        ),
+        (r) => `${(r['Agent Name'] || '').trim().toLowerCase()}|${r['Date'] || ''}`
+    );
+}

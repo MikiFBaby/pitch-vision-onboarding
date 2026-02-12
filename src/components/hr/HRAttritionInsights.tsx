@@ -8,6 +8,7 @@ import { supabase } from "@/lib/supabase-client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { TrendingDown, UserMinus, LogOut } from "lucide-react";
+import { deduplicateFired } from '@/lib/hr-utils';
 
 interface HRAttritionInsightsProps {
     dateRange: 'daily' | 'weekly' | '30d' | '90d';
@@ -57,12 +58,14 @@ export default function HRAttritionInsights({ dateRange }: HRAttritionInsightsPr
         const startIso = startDate.toLocaleDateString('en-CA');
 
         try {
-            const { data: departures } = await supabase
+            const { data: rawDepartures } = await supabase
                 .from('HR Fired')
                 .select('*')
                 .gte('Termination Date', startIso);
 
-            if (!departures || departures.length === 0) {
+            const departures = deduplicateFired(rawDepartures || []);
+
+            if (departures.length === 0) {
                 setFiredQuitData([]);
                 setReasonsData([]);
                 setCampaignData([]);

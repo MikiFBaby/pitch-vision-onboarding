@@ -3,6 +3,7 @@ import React, { useEffect, useState } from 'react';
 import { supabase } from '@/lib/supabase-client';
 import { TrendingUp, TrendingDown } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { deduplicateFired, deduplicateHired } from '@/lib/hr-utils';
 
 interface FeedItem {
     id: string;
@@ -20,28 +21,26 @@ export default function HRLiveFeed() {
 
     const fetchFeedData = async () => {
         // Fetch recent hires
-        const { data: hires, error: hiresError } = await supabase
+        const { data: hires } = await supabase
             .from('HR Hired')
             .select('*')
             .order('created_at', { ascending: false })
-            .limit(10);
-
-        console.log('Hires data:', hires);
-        console.log('Hires error:', hiresError);
+            .limit(30);
 
         // Fetch recent fires
-        const { data: fires, error: firesError } = await supabase
+        const { data: rawFires } = await supabase
             .from('HR Fired')
             .select('*')
             .order('created_at', { ascending: false })
-            .limit(10);
+            .limit(30);
 
-        console.log('Fires data:', fires);
-        console.log('Fires error:', firesError);
+        // Deduplicate sync duplicates
+        const dedupedHires = deduplicateHired(hires || []);
+        const fires = deduplicateFired(rawFires || []);
 
         // Combine and format with correct column names
         const combinedFeed: FeedItem[] = [
-            ...(hires || []).map(h => ({
+            ...dedupedHires.map(h => ({
                 id: h['Agent Name'] + h.created_at, // Use Agent Name + timestamp as unique id
                 agent_name: h['Agent Name'],
                 date: h['Hire Date'],

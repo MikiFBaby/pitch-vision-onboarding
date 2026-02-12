@@ -4,11 +4,12 @@ import { useAuth } from "@/context/AuthContext";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import HRGaugeCluster from "@/components/hr/HRGaugeCluster";
 import HRTrendsAnalytics from "@/components/hr/HRTrendsAnalytics";
-import HRAttritionInsights from "@/components/hr/HRAttritionInsights";
 import HRWorkforceOverview from "@/components/hr/HRWorkforceOverview";
 import HRAttendanceWatchList from "@/components/hr/HRAttendanceWatchList";
 import AttritionKnowledgeGraph from "@/components/hr/AttritionKnowledgeGraph";
 import NetGrowthTrendChart from "@/components/hr/NetGrowthTrendChart";
+
+import HRAbsenceHeatmap from "@/components/hr/HRAbsenceHeatmap";
 
 export default function HRDashboard() {
     const { user, profile } = useAuth();
@@ -52,19 +53,19 @@ export default function HRDashboard() {
                 {/* Section 2: Key Metrics Gauges */}
                 <HRGaugeCluster dateRange={dateRange} />
 
-                {/* Section 2.5: Net Growth Trend Line Chart */}
-                <NetGrowthTrendChart dateRange={dateRange} />
+                {/* Section 3: Net Growth Trend (own date filter) */}
+                <NetGrowthTrendChart />
 
-                {/* Section 3: Attrition Insights + Attendance Watch List (Side by Side) */}
+                {/* Section 4: Absence Patterns + Attendance Watch List (Side by Side) */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                    <HRAttritionInsights dateRange={dateRange} />
+                    <HRAbsenceHeatmap />
                     <HRAttendanceWatchList />
                 </div>
 
-                {/* Section 4: Trends & Charts */}
-                <HRTrendsAnalytics dateRange={dateRange} />
+                {/* Section 5: Trends & Charts */}
+                <HRTrendsAnalytics />
 
-                {/* Section 5: Attrition Knowledge Graph */}
+                {/* Section 7: Attrition Knowledge Graph */}
                 <AttritionKnowledgeGraph />
             </div>
         </DashboardLayout>
