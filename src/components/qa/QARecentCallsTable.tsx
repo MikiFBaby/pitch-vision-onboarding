@@ -818,7 +818,7 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
                         <td className="px-4 py-5 text-center">
                           {(() => {
                             const isEscalated = call.tag === 'escalated';
-                            const isTraining = call.tag === 'training_review' && call.complianceScore >= 90;
+                            const isTraining = call.tag === 'training' || call.tag === 'training_review';
 
                             if (!isEscalated && !isTraining) {
                               return <span className="text-slate-300 text-xs">—</span>;
