@@ -1261,6 +1261,10 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
     const syncScoreToDatabase = async () => {
       if (!call || calculatedScore === 0 || totalPossible === 0) return;
 
+      // NEVER auto-sync scores on active auto-fail calls — QA must explicitly override
+      const hasActiveAutoFail = effectiveAutoFailTriggered && !autoFailOverride;
+      if (hasActiveAutoFail) return;
+
       // Only sync if there's a meaningful difference (more than rounding error)
       const storedScore = call.complianceScore || 0;
       if (Math.abs(calculatedScore - storedScore) < 1) return;
@@ -1293,7 +1297,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
     // Debounce to avoid multiple updates
     const timer = setTimeout(syncScoreToDatabase, 1000);
     return () => clearTimeout(timer);
-  }, [call?.id, calculatedScore, totalPossible, onScoreUpdate]);
+  }, [call?.id, calculatedScore, totalPossible, onScoreUpdate, effectiveAutoFailTriggered, autoFailOverride]);
 
   useEffect(() => {
     if (call) {

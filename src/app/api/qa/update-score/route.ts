@@ -48,14 +48,39 @@ export async function POST(request: NextRequest) {
         }
         // else stays Non-Compliant / High
 
-        // Update the database - use snake_case column names
+        // Check if this call has an active auto-fail that needs overriding
+        const { data: current } = await supabaseAdmin
+            .from('QA Results')
+            .select('auto_fail_triggered, auto_fail_overridden')
+            .eq('id', numericId)
+            .maybeSingle();
+
+        const hasActiveAutoFail = current?.auto_fail_triggered === true
+            && current?.auto_fail_overridden !== true;
+
+        // Build update payload
+        const updatePayload: Record<string, unknown> = {
+            'compliance_score': score,
+            'call_status': newStatus,
+            'risk_level': newRiskLevel
+        };
+
+        // If manually setting score > 0 on an auto-fail call, mark it as overridden
+        if (hasActiveAutoFail && score > 0) {
+            updatePayload['auto_fail_overridden'] = true;
+            updatePayload['auto_fail_override_reason'] = reason || 'Score manually corrected by QA';
+            updatePayload['auto_fail_override_at'] = new Date().toISOString();
+        }
+
+        // If manually setting score to 0, ensure auto-fail state is consistent
+        if (score === 0 && !current?.auto_fail_triggered) {
+            updatePayload['call_status'] = 'auto_fail';
+        }
+
+        // Update the database
         const { error: updateError, data: updateData } = await supabaseAdmin
             .from('QA Results')
-            .update({
-                'compliance_score': score,
-                'call_status': newStatus,
-                'risk_level': newRiskLevel
-            })
+            .update(updatePayload)
             .eq('id', numericId)
             .select();
 
