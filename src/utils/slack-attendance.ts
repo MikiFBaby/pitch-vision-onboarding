@@ -1,4 +1,3 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { namesMatch, postSlackMessage, updateSlackMessage, getSlackUserProfile, postTeamsWebhook } from '@/utils/slack-helpers';
 
@@ -87,13 +86,13 @@ export async function isAuthorizedForAttendance(slackUserId: string): Promise<bo
 }
 
 // ---------------------------------------------------------------------------
-// AI Parsing with Gemini
+// AI Parsing with OpenRouter
 // ---------------------------------------------------------------------------
 
 export async function parseAttendanceMessage(text: string): Promise<ParsedAttendanceEvent[]> {
-    const apiKey = process.env.GEMINI_API_KEY;
+    const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
-        console.error('[Attendance] GEMINI_API_KEY not configured');
+        console.error('[Attendance] OPENROUTER_API_KEY not configured');
         return [];
     }
 
@@ -103,7 +102,7 @@ export async function parseAttendanceMessage(text: string): Promise<ParsedAttend
     yesterday.setDate(yesterday.getDate() - 1);
     const yesterdayStr = yesterday.toISOString().split('T')[0];
 
-    const prompt = `You are an attendance event parser for a call center. Extract structured attendance events from natural language HR messages.
+    const systemPrompt = `You are an attendance event parser for a call center. Extract structured attendance events from natural language HR messages.
 
 Today's date is ${todayStr}. Yesterday was ${yesterdayStr}.
 
@@ -118,7 +117,7 @@ For each event found, extract:
 - minutes: For late/early_leave, the number of minutes if mentioned. "15 min late" = 15, "an hour late" = 60, "half hour" = 30. If not specified, null.
 - reason: The reason if given (e.g., "sick", "car trouble", "doctor appointment", "family emergency"). If not specified, null.
 
-Return a JSON array of events. If you cannot parse any valid events from the message, return an empty array [].
+Return ONLY a JSON array of events. If you cannot parse any valid events from the message, return an empty array [].
 
 Examples:
 Input: "Sarah called out sick today"
@@ -128,26 +127,47 @@ Input: "John was 15 min late, and Mike left early at 3pm due to a doctor appoint
 Output: [{"agent_name":"John","event_type":"late","date":"${todayStr}","minutes":15,"reason":null},{"agent_name":"Mike","event_type":"early_leave","date":"${todayStr}","minutes":null,"reason":"doctor appointment"}]
 
 Input: "NCNS for David Brown yesterday"
-Output: [{"agent_name":"David Brown","event_type":"no_show","date":"${yesterdayStr}","minutes":null,"reason":null}]
-
-Now parse this message:
-"${text}"`;
+Output: [{"agent_name":"David Brown","event_type":"no_show","date":"${yesterdayStr}","minutes":null,"reason":null}]`;
 
     try {
-        const genAI = new GoogleGenerativeAI(apiKey);
-        const model = genAI.getGenerativeModel({
-            model: 'gemini-2.0-flash',
-            generationConfig: {
-                responseMimeType: 'application/json',
+        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json',
             },
+            body: JSON.stringify({
+                model: 'google/gemini-2.0-flash-001',
+                messages: [
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: text },
+                ],
+                response_format: { type: 'json_object' },
+            }),
         });
 
-        const result = await model.generateContent(prompt);
-        const response = result.response;
-        const jsonText = response.text();
+        if (!response.ok) {
+            const errBody = await response.text();
+            console.error(`[Attendance] OpenRouter error ${response.status}:`, errBody);
+            return [];
+        }
 
-        const parsed = JSON.parse(jsonText);
-        if (!Array.isArray(parsed)) return [];
+        const data = await response.json();
+        const content = data.choices?.[0]?.message?.content;
+        if (!content) {
+            console.error('[Attendance] No content in OpenRouter response');
+            return [];
+        }
+
+        let parsed = JSON.parse(content);
+        // Handle both direct array and wrapped { events: [...] } formats
+        if (!Array.isArray(parsed)) {
+            if (parsed.events && Array.isArray(parsed.events)) {
+                parsed = parsed.events;
+            } else {
+                return [];
+            }
+        }
 
         // Validate and clean events
         return parsed.filter((e: any) =>
@@ -162,7 +182,7 @@ Now parse this message:
             reason: e.reason ? String(e.reason).trim() : null,
         }));
     } catch (err) {
-        console.error('[Attendance] Gemini parsing error:', err);
+        console.error('[Attendance] OpenRouter parsing error:', err);
         return [];
     }
 }
