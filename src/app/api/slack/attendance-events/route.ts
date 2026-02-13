@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { after } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { verifySlackSignature } from '@/utils/slack-helpers';
 import {
@@ -51,14 +52,17 @@ export async function POST(request: NextRequest) {
     if (payload.type === 'event_callback') {
         const event = payload.event;
 
-        // Handle DM messages
+        // Handle DM messages — respond to Slack immediately, process in background
+        // Slack requires a response within 3 seconds; AI parsing takes longer
         if (event.type === 'message' && event.channel_type === 'im') {
             if (!event.bot_id && !event.subtype) {
-                try {
-                    await handleAttendanceDM(event);
-                } catch (err) {
-                    console.error('[Attendance Events] handleAttendanceDM error:', err);
-                }
+                after(async () => {
+                    try {
+                        await handleAttendanceDM(event);
+                    } catch (err) {
+                        console.error('[Attendance Events] handleAttendanceDM error:', err);
+                    }
+                });
             }
             return NextResponse.json({ ok: true });
         }
