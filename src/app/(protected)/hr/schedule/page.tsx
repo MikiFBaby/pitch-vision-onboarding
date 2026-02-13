@@ -377,10 +377,9 @@ export default function AgentSchedulePage() {
 
                             {/* Search Bar */}
                             <div className="relative w-full md:w-72 group">
-                                <div className="absolute -inset-[1px] rounded-lg bg-gradient-to-r from-rose-500/0 via-rose-500/0 to-rose-500/0 group-focus-within:from-rose-500/60 group-focus-within:via-pink-500/60 group-focus-within:to-rose-500/60 transition-all duration-500 blur-[2px]" />
-                                <div className="absolute -inset-[1px] rounded-lg bg-gradient-to-r from-rose-500/0 via-rose-500/0 to-rose-500/0 group-focus-within:from-rose-500/40 group-focus-within:via-pink-500/40 group-focus-within:to-rose-500/40 transition-all duration-500 animate-[border-glow_3s_ease-in-out_infinite]" />
+                                <div className="absolute -inset-[1px] rounded-lg bg-gradient-to-r from-rose-500/20 via-white/10 to-rose-500/20 group-focus-within:from-rose-500/70 group-focus-within:via-pink-500/70 group-focus-within:to-rose-500/70 transition-all duration-500 blur-[2px]" />
                                 <div className="relative">
-                                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/40 group-focus-within:text-rose-400 transition-colors duration-300" />
+                                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/50 group-focus-within:text-rose-400 transition-colors duration-300" />
                                     <Input
                                         placeholder="Search agents..."
                                         value={searchQuery}
@@ -388,7 +387,7 @@ export default function AgentSchedulePage() {
                                             setSearchQuery(e.target.value);
                                             setCurrentPage(1);
                                         }}
-                                        className="pl-9 bg-black/30 border-white/20 text-white placeholder:text-white/40 focus:border-rose-500/70 focus:ring-1 focus:ring-rose-500/30 transition-all duration-300"
+                                        className="pl-9 bg-black/40 border border-white/30 text-white placeholder:text-white/50 focus:border-rose-500/80 focus:ring-1 focus:ring-rose-500/40 transition-all duration-300"
                                     />
                                 </div>
                             </div>
