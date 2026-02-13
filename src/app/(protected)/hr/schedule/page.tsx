@@ -74,12 +74,24 @@ export default function AgentSchedulePage() {
                         .then(res => res.data || []),
                 ]);
 
-                // Build active name set for filtering
-                const activeNames = new Set(
-                    activeEmployees.map((e: any) =>
-                        `${(e.first_name || '').trim().toLowerCase()} ${(e.last_name || '').trim().toLowerCase()}`
-                    )
-                );
+                // Build multiple match keys per active employee for fuzzy matching
+                // Handles: middle names in first_name, hyphenated last names, etc.
+                const activeNameKeys = new Set<string>();
+                activeEmployees.forEach((e: any) => {
+                    const fn = (e.first_name || '').trim().toLowerCase();
+                    const ln = (e.last_name || '').trim().toLowerCase();
+                    // Full match
+                    activeNameKeys.add(`${fn} ${ln}`);
+                    // First word of first_name + full last_name (handles middle names in first_name)
+                    const fnFirst = fn.split(/\s+/)[0];
+                    if (fnFirst !== fn) activeNameKeys.add(`${fnFirst} ${ln}`);
+                    // Full first_name + last word of last_name (handles hyphenated/compound last names)
+                    const lnParts = ln.split(/[\s-]+/);
+                    const lnLast = lnParts[lnParts.length - 1];
+                    if (lnLast !== ln) activeNameKeys.add(`${fn} ${lnLast}`);
+                    // First word + last word (handles both)
+                    if (fnFirst !== fn || lnLast !== ln) activeNameKeys.add(`${fnFirst} ${lnLast}`);
+                });
 
                 const filterActiveDedup = (rows: any[]) => {
                     const seen = new Set<string>();
@@ -87,7 +99,15 @@ export default function AgentSchedulePage() {
                         const fn = (row["First Name"] || '').trim().toLowerCase();
                         const ln = (row["Last Name"] || '').trim().toLowerCase();
                         const key = `${fn} ${ln}`;
-                        if (!activeNames.has(key) || seen.has(key)) return false;
+                        // Try multiple match strategies
+                        const fnFirst = fn.split(/\s+/)[0];
+                        const lnParts = ln.split(/[\s-]+/);
+                        const lnLast = lnParts[lnParts.length - 1];
+                        const matched = activeNameKeys.has(key)
+                            || activeNameKeys.has(`${fnFirst} ${ln}`)
+                            || activeNameKeys.has(`${fn} ${lnLast}`)
+                            || activeNameKeys.has(`${fnFirst} ${lnLast}`);
+                        if (!matched || seen.has(key)) return false;
                         seen.add(key);
                         return true;
                     });
@@ -356,17 +376,21 @@ export default function AgentSchedulePage() {
                             </TabsList>
 
                             {/* Search Bar */}
-                            <div className="relative w-full md:w-72">
-                                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/40" />
-                                <Input
-                                    placeholder="Search agents..."
-                                    value={searchQuery}
-                                    onChange={(e) => {
-                                        setSearchQuery(e.target.value);
-                                        setCurrentPage(1); // Reset page on search
-                                    }}
-                                    className="pl-9 bg-black/20 border-white/10 text-white placeholder:text-white/30 focus:border-rose-500/50 transition-colors"
-                                />
+                            <div className="relative w-full md:w-72 group">
+                                <div className="absolute -inset-[1px] rounded-lg bg-gradient-to-r from-rose-500/0 via-rose-500/0 to-rose-500/0 group-focus-within:from-rose-500/60 group-focus-within:via-pink-500/60 group-focus-within:to-rose-500/60 transition-all duration-500 blur-[2px]" />
+                                <div className="absolute -inset-[1px] rounded-lg bg-gradient-to-r from-rose-500/0 via-rose-500/0 to-rose-500/0 group-focus-within:from-rose-500/40 group-focus-within:via-pink-500/40 group-focus-within:to-rose-500/40 transition-all duration-500 animate-[border-glow_3s_ease-in-out_infinite]" />
+                                <div className="relative">
+                                    <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/40 group-focus-within:text-rose-400 transition-colors duration-300" />
+                                    <Input
+                                        placeholder="Search agents..."
+                                        value={searchQuery}
+                                        onChange={(e) => {
+                                            setSearchQuery(e.target.value);
+                                            setCurrentPage(1);
+                                        }}
+                                        className="pl-9 bg-black/30 border-white/20 text-white placeholder:text-white/40 focus:border-rose-500/70 focus:ring-1 focus:ring-rose-500/30 transition-all duration-300"
+                                    />
+                                </div>
                             </div>
                         </div>
 
