@@ -406,25 +406,28 @@ export default function HRCalendar() {
                     --fc-today-bg-color: rgba(124, 58, 237, 0.1);
                 }
 
-                .fc {
-                    color: white;
-                    font-family: inherit;
-                    background: transparent;
-                }
-
-                .fc-view-harness {
-                    background: transparent;
-                }
-
-                .fc .fc-scrollgrid {
-                    background: transparent;
-                    border-color: var(--fc-border-color);
-                }
-
+                .fc,
+                .fc-view-harness,
+                .fc .fc-scrollgrid,
+                .fc .fc-scroller,
+                .fc .fc-scroller-liquid-absolute,
+                .fc .fc-scrollgrid-section,
+                .fc .fc-scrollgrid-section > *,
+                .fc .fc-scrollgrid-sync-table,
+                .fc .fc-daygrid,
                 .fc .fc-daygrid-body,
                 .fc .fc-daygrid-day,
                 .fc .fc-daygrid-day-frame {
-                    background: transparent;
+                    background: transparent !important;
+                }
+
+                .fc {
+                    color: white;
+                    font-family: inherit;
+                }
+
+                .fc .fc-scrollgrid {
+                    border-color: var(--fc-border-color);
                 }
 
                 .fc .fc-button {
