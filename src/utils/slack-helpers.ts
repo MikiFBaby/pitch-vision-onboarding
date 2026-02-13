@@ -48,8 +48,8 @@ export interface SlackProfile {
 /**
  * Fetches a Slack user's profile using the users.info API.
  */
-export async function getSlackUserProfile(userId: string): Promise<SlackProfile | null> {
-    const token = process.env.SLACK_BOT_TOKEN;
+export async function getSlackUserProfile(userId: string, botToken?: string): Promise<SlackProfile | null> {
+    const token = botToken || process.env.SLACK_BOT_TOKEN;
     if (!token) throw new Error('SLACK_BOT_TOKEN is not set');
 
     const res = await fetch(`https://slack.com/api/users.info?user=${userId}`, {
@@ -122,6 +122,127 @@ export function normalizeName(name: string): string {
  * Checks if two names are a match. Handles "First Last" vs "Last, First" formats
  * and partial matches where one might have a middle name.
  */
+// ---------------------------------------------------------------------------
+// Slack Messaging
+// ---------------------------------------------------------------------------
+
+/**
+ * Posts a message to a Slack channel or DM.
+ * Returns the response including `ts` for later updates.
+ */
+export async function postSlackMessage(
+    channel: string,
+    text: string,
+    blocks?: any[],
+    botToken?: string
+): Promise<{ ok: boolean; ts?: string } | null> {
+    const token = botToken || process.env.SLACK_BOT_TOKEN;
+    if (!token) throw new Error('SLACK_BOT_TOKEN is not set');
+
+    const body: Record<string, any> = { channel, text };
+    if (blocks) body.blocks = blocks;
+
+    const res = await fetch('https://slack.com/api/chat.postMessage', {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+    });
+
+    const data = await res.json();
+    if (!data.ok) {
+        console.error('[Slack] chat.postMessage failed:', data.error);
+        return null;
+    }
+    return { ok: true, ts: data.ts };
+}
+
+/**
+ * Updates an existing Slack message (e.g., to replace buttons with a result).
+ */
+export async function updateSlackMessage(
+    channel: string,
+    ts: string,
+    text: string,
+    blocks?: any[],
+    botToken?: string
+): Promise<boolean> {
+    const token = botToken || process.env.SLACK_BOT_TOKEN;
+    if (!token) throw new Error('SLACK_BOT_TOKEN is not set');
+
+    const body: Record<string, any> = { channel, ts, text };
+    if (blocks) body.blocks = blocks;
+
+    const res = await fetch('https://slack.com/api/chat.update', {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+    });
+
+    const data = await res.json();
+    if (!data.ok) {
+        console.error('[Slack] chat.update failed:', data.error);
+        return false;
+    }
+    return true;
+}
+
+/**
+ * Posts an Adaptive Card message to a Microsoft Teams channel via Incoming Webhook.
+ * Used to mirror attendance summaries to the Teams attendance channel.
+ */
+export async function postTeamsWebhook(
+    title: string,
+    text: string,
+    facts?: { name: string; value: string }[]
+): Promise<boolean> {
+    const webhookUrl = process.env.TEAMS_ATTENDANCE_WEBHOOK_URL;
+    if (!webhookUrl) {
+        console.warn('[Teams] TEAMS_ATTENDANCE_WEBHOOK_URL not set, skipping Teams post');
+        return false;
+    }
+
+    const card: Record<string, any> = {
+        '@type': 'MessageCard',
+        '@context': 'http://schema.org/extensions',
+        themeColor: '0076D7',
+        summary: title,
+        sections: [
+            {
+                activityTitle: title,
+                text,
+                ...(facts && facts.length > 0 ? { facts } : {}),
+            },
+        ],
+    };
+
+    try {
+        const res = await fetch(webhookUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(card),
+        });
+
+        if (!res.ok) {
+            console.error('[Teams] Webhook failed:', res.status, await res.text());
+            return false;
+        }
+        return true;
+    } catch (err) {
+        console.error('[Teams] Webhook error:', err);
+        return false;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Name Matching
+// ---------------------------------------------------------------------------
+
 export function namesMatch(a: string, b: string): boolean {
     const na = normalizeName(a);
     const nb = normalizeName(b);

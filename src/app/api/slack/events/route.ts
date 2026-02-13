@@ -48,7 +48,7 @@ export async function POST(request: NextRequest) {
     if (payload.type === 'event_callback') {
         const event = payload.event;
 
-        // Only process events for the configured channel
+        // Only process channel events for the configured channel
         if (CHANNEL_ID && event.channel !== CHANNEL_ID) {
             return NextResponse.json({ ok: true });
         }
@@ -307,3 +307,4 @@ async function matchHiredRecord(profile: {
 
     return null;
 }
+

@@ -44,6 +44,7 @@
  *   "Terminated"           -> Supabase "HR Fired" table
  *   "Agent Break Schedule" -> Supabase "Agent Break Schedule" table
  *   "Agent Attendance Watch List" -> Supabase "Agent Attendance Watch List" table
+ *   "Attendance Events"           -> Supabase "Attendance Events" table
  *
  * POST-SYNC HOOKS:
  *   After "Hired" sync     -> Creates employee_directory entries for new hires
@@ -62,7 +63,8 @@ var SHEET_TABLE_MAP = {
   'Hired': 'HR Hired',
   'Terminated': 'HR Fired',
   'Agent Break Schedule': 'Agent Break Schedule',
-  'Agent Attendance Watch List': 'Agent Attendance Watch List'
+  'Agent Attendance Watch List': 'Agent Attendance Watch List',
+  'Attendance Events': 'Attendance Events'
 };
 
 var BATCH_SIZE = 50;               // Rows per insert batch
@@ -330,6 +332,7 @@ function syncSheetInternal(sheetName) {
       case 'Terminated':           syncTerminated();          break;
       case 'Agent Break Schedule': syncAgentBreakSchedule();  break;
       case 'Agent Attendance Watch List': syncAgentAttendanceWatchList(); break;
+      case 'Attendance Events':          syncAttendanceEvents();           break;
     }
     return true;
   } catch (err) {
@@ -553,6 +556,38 @@ function syncAgentAttendanceWatchList() {
       rows.push({
         'Agent Name': trimVal(row[0]),
         'COUNTA of Reason': count
+      });
+    }
+    atomicReplaceSync(tableName, rows, sheetName);
+  } catch (err) { logToSheet(sheetName, 'ERROR', err.message); throw err; }
+}
+
+/**
+ * Attendance Events tab -> "Attendance Events" table
+ * Columns: Agent Name(A), Event Type(B), Date(C), Minutes(D), Reason(E), Reported By(F)
+ * Date format: D Mon YYYY -> ISO
+ *
+ * Created by the Attendance Slack Bot (doPost). Synced to Supabase like other tabs.
+ */
+function syncAttendanceEvents() {
+  var sheetName = 'Attendance Events';
+  var tableName = SHEET_TABLE_MAP[sheetName];
+  try {
+    var data = getSheetData(sheetName);
+    if (!data || data.length === 0) { logToSheet(sheetName, 'WARN', 'No data rows. Skipping.'); return; }
+    var rows = [];
+    for (var i = 0; i < data.length; i++) {
+      var row = data[i];
+      if (isBlank(row[0])) continue;
+      var parsedDate = parseDateDDMonYYYY(row[2]);
+      var minutes = parseInt(row[3], 10);
+      rows.push({
+        'Agent Name': trimVal(row[0]),
+        'Event Type': trimVal(row[1]),
+        'Date': parsedDate || trimVal(row[2]),
+        'Minutes': isNaN(minutes) ? null : minutes,
+        'Reason': trimVal(row[4]),
+        'Reported By': trimVal(row[5])
       });
     }
     atomicReplaceSync(tableName, rows, sheetName);
@@ -1256,6 +1291,7 @@ function onOpen() {
     .addItem('Sync Terminated', 'syncTerminated')
     .addItem('Sync Break Schedule', 'syncAgentBreakSchedule')
     .addItem('Sync Attendance Watch List', 'syncAgentAttendanceWatchList')
+    .addItem('Sync Attendance Events', 'syncAttendanceEvents')
     .addSeparator()
     .addItem('Setup Supabase Key', 'setup')
     .addItem('Verify API Key', 'verifyApiKey')
