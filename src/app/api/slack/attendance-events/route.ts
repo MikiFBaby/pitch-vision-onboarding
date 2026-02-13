@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { after } from 'next/server';
+import { waitUntil } from '@vercel/functions';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { verifySlackSignature } from '@/utils/slack-helpers';
 import {
@@ -12,6 +12,9 @@ import {
     postAttendanceBotMessage,
     UNDO_WINDOW_MINUTES,
 } from '@/utils/slack-attendance';
+
+// Force Node.js runtime (not edge) for background processing support
+export const runtime = 'nodejs';
 
 // ---------------------------------------------------------------------------
 // POST /api/slack/attendance-events — Attendance Bot Events API webhook
@@ -54,15 +57,14 @@ export async function POST(request: NextRequest) {
 
         // Handle DM messages — respond to Slack immediately, process in background
         // Slack requires a response within 3 seconds; AI parsing takes longer
+        // waitUntil keeps the function alive after the response is sent
         if (event.type === 'message' && event.channel_type === 'im') {
             if (!event.bot_id && !event.subtype) {
-                after(async () => {
-                    try {
-                        await handleAttendanceDM(event);
-                    } catch (err) {
-                        console.error('[Attendance Events] handleAttendanceDM error:', err);
-                    }
-                });
+                waitUntil(
+                    handleAttendanceDM(event).catch(err =>
+                        console.error('[Attendance Events] handleAttendanceDM error:', err)
+                    )
+                );
             }
             return NextResponse.json({ ok: true });
         }
