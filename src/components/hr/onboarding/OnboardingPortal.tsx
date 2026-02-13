@@ -34,17 +34,30 @@ import {
     Video,
     Headphones,
     MonitorPlay,
-    PackageCheck
+    PackageCheck,
+    Building2,
+    SkipForward,
+    Keyboard,
+    ShieldCheck,
+    ShieldAlert,
+    RotateCcw,
+    X
 } from "lucide-react";
 import { supabase } from "@/lib/supabase-client";
 import { ShimmerButton } from "@/components/ui/shimmer-button";
+import {
+    validateSSN, validateSIN,
+    formatSSN, formatSIN,
+    maskSSN, maskSIN
+} from "@/utils/ssn-sin-validation";
+import { DocusealForm } from "@docuseal/react";
 
 interface ChecklistItem {
     id: string;
     progressId: string;
     title: string;
     description: string | null;
-    category: "documents" | "training" | "setup";
+    category: "documents" | "training" | "setup" | "compliance";
     sort_order: number;
     status: "completed" | "in_progress" | "pending";
     completedAt?: string;
@@ -65,6 +78,8 @@ interface NewHire {
     hourlyWage: number | null;
     signedContractUrl: string | null;
     slackId: string | null;
+    attestationStatus: "not_sent" | "sent" | "opened" | "signed" | "declined";
+    attestationSignedUrl: string | null;
     checklist: ChecklistItem[];
 }
 
@@ -72,6 +87,11 @@ const CONTRACT_CHECKLIST_ITEM_ID = "c0a80121-0001-4000-8000-000000000001";
 const MATERIALS_SENT_ITEM_ID = "c0a80121-0002-4000-8000-000000000001";
 const PORTAL_TRAINING_ITEM_ID = "c0a80121-0002-4000-8000-000000000004";
 const SLACK_SETUP_ITEM_ID = "c0a80121-0003-4000-8000-000000000001";
+const RESUME_ITEM_ID = "abab08a3-8a10-4f01-9b1d-ad57e0013da4";
+const SSN_ITEM_ID = "8a2fcd14-1595-4421-bb4d-ab50135163dc";
+const SIN_ITEM_ID = "2efe0756-a759-4527-8b63-8ce9e2713b44";
+const PAYROLL_USA_ITEM_ID = "c0a80121-0002-4000-8000-000000000005";
+const PAYROLL_CANADA_ITEM_ID = "c0a80121-0002-4000-8000-000000000006";
 
 const categoryConfig = {
     documents: {
@@ -89,6 +109,14 @@ const categoryConfig = {
         accent: "#a78bfa",
         bg: "bg-violet-500/10",
         border: "border-violet-500/20"
+    },
+    compliance: {
+        label: "Compliance",
+        icon: ShieldCheck,
+        color: "text-indigo-300",
+        accent: "#818cf8",
+        bg: "bg-indigo-500/10",
+        border: "border-indigo-500/20"
     },
     setup: {
         label: "Setup",
@@ -278,6 +306,8 @@ export default function OnboardingPortal({ onAddNewHire }: OnboardingPortalProps
                     hourlyWage: employee?.hourly_wage ?? null,
                     signedContractUrl: employee?.signed_contract_url || null,
                     slackId: employee?.slack_user_id || null,
+                    attestationStatus: (hire.attestation_status || "not_sent") as NewHire["attestationStatus"],
+                    attestationSignedUrl: hire.attestation_signed_url || null,
                     checklist
                 };
             });
@@ -397,6 +427,12 @@ export default function OnboardingPortal({ onAddNewHire }: OnboardingPortalProps
     const [checkingContractId, setCheckingContractId] = useState<string | null>(null);
     const [slackIdInputs, setSlackIdInputs] = useState<Record<string, string>>({});
     const [savingSlackId, setSavingSlackId] = useState<string | null>(null);
+    const [ssnSinInputs, setSsnSinInputs] = useState<Record<string, string>>({});
+    const [ssnSinValidation, setSsnSinValidation] = useState<Record<string, { valid: boolean; error?: string }>>({});
+    const [savingSsnSin, setSavingSsnSin] = useState<string | null>(null);
+    const [skippingResume, setSkippingResume] = useState<string | null>(null);
+    const [sendingAttestation, setSendingAttestation] = useState<string | null>(null);
+    const [attestationModal, setAttestationModal] = useState<{ hireId: string; slug: string; hireName: string } | null>(null);
 
     const handleSaveSlackId = async (hire: NewHire) => {
         if (!hire.employeeId) return;
@@ -417,6 +453,153 @@ export default function OnboardingPortal({ onAddNewHire }: OnboardingPortalProps
             console.error("Error saving Slack ID:", error);
         } finally {
             setSavingSlackId(null);
+        }
+    };
+
+    const handleSkipResume = async (hire: NewHire) => {
+        setSkippingResume(hire.id);
+        try {
+            const { data: existing } = await supabase
+                .from("onboarding_progress")
+                .select("id")
+                .eq("new_hire_id", hire.id)
+                .eq("checklist_item_id", RESUME_ITEM_ID)
+                .maybeSingle();
+
+            if (existing) {
+                await supabase
+                    .from("onboarding_progress")
+                    .update({
+                        status: "completed",
+                        notes: "N/A — Not required",
+                        completed_at: new Date().toISOString(),
+                        updated_at: new Date().toISOString()
+                    })
+                    .eq("id", existing.id);
+            } else {
+                await supabase
+                    .from("onboarding_progress")
+                    .insert({
+                        new_hire_id: hire.id,
+                        checklist_item_id: RESUME_ITEM_ID,
+                        status: "completed",
+                        notes: "N/A — Not required",
+                        completed_at: new Date().toISOString()
+                    });
+            }
+
+            await updateNewHireStatus(hire.id);
+            fetchNewHires();
+        } catch (error) {
+            console.error("Error skipping resume:", error);
+        } finally {
+            setSkippingResume(null);
+        }
+    };
+
+    const handleSendAttestation = async (hire: NewHire) => {
+        setSendingAttestation(hire.id);
+        try {
+            const res = await fetch("/api/docuseal/send-attestation", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    newHireId: hire.id,
+                    employeeName: `${hire.firstName} ${hire.lastName}`,
+                    country: hire.country
+                })
+            });
+            const result = await res.json();
+            if (!res.ok) {
+                alert(result.error || "Failed to send attestation");
+                return;
+            }
+            // Open the embedded signing form with the slug
+            if (result.slug) {
+                setAttestationModal({
+                    hireId: hire.id,
+                    slug: result.slug,
+                    hireName: `${hire.firstName} ${hire.lastName}`
+                });
+            }
+            fetchNewHires();
+        } catch (error) {
+            console.error("Error sending attestation:", error);
+            alert("Failed to send attestation. Please try again.");
+        } finally {
+            setSendingAttestation(null);
+        }
+    };
+
+    const handleAttestationComplete = async (data: any) => {
+        console.log("[Attestation] Signed inline:", data);
+
+        // Update DB immediately — don't wait for webhook (race condition)
+        if (attestationModal) {
+            await supabase
+                .from("onboarding_new_hires")
+                .update({
+                    attestation_status: "signed",
+                    attestation_signed_at: new Date().toISOString(),
+                })
+                .eq("id", attestationModal.hireId);
+        }
+
+        // Close modal and refresh to pick up updated status
+        setAttestationModal(null);
+        fetchNewHires();
+    };
+
+    const handleSaveSsnSin = async (hire: NewHire, itemId: string) => {
+        const key = `${hire.id}_${itemId}`;
+        const value = ssnSinInputs[key]?.trim();
+        if (!value) return;
+
+        // Validate before saving
+        const validation = itemId === SSN_ITEM_ID ? validateSSN(value) : validateSIN(value);
+        if (!validation.valid) return;
+
+        setSavingSsnSin(key);
+        try {
+            const { data: existing } = await supabase
+                .from("onboarding_progress")
+                .select("id, document_url")
+                .eq("new_hire_id", hire.id)
+                .eq("checklist_item_id", itemId)
+                .maybeSingle();
+
+            // Only mark completed if BOTH number and document exist
+            const hasDocument = !!existing?.document_url;
+            const newStatus = hasDocument ? "completed" : "in_progress";
+
+            if (existing) {
+                await supabase
+                    .from("onboarding_progress")
+                    .update({
+                        status: newStatus,
+                        notes: value,
+                        completed_at: newStatus === "completed" ? new Date().toISOString() : null,
+                        updated_at: new Date().toISOString()
+                    })
+                    .eq("id", existing.id);
+            } else {
+                await supabase
+                    .from("onboarding_progress")
+                    .insert({
+                        new_hire_id: hire.id,
+                        checklist_item_id: itemId,
+                        status: newStatus,
+                        notes: value,
+                        completed_at: newStatus === "completed" ? new Date().toISOString() : null
+                    });
+            }
+
+            await updateNewHireStatus(hire.id);
+            fetchNewHires();
+        } catch (error) {
+            console.error("Error saving SSN/SIN:", error);
+        } finally {
+            setSavingSsnSin(null);
         }
     };
 
@@ -442,13 +625,27 @@ export default function OnboardingPortal({ onAddNewHire }: OnboardingPortalProps
 
             const publicUrl = urlData.publicUrl;
 
+            // For SSN/SIN items: only mark completed if number (notes) also exists
+            const isSsnSin = item.id === SSN_ITEM_ID || item.id === SIN_ITEM_ID;
+            let newStatus: "completed" | "in_progress" = "completed";
+
+            if (isSsnSin) {
+                const { data: progress } = await supabase
+                    .from("onboarding_progress")
+                    .select("notes")
+                    .eq("new_hire_id", newHireId)
+                    .eq("checklist_item_id", item.id)
+                    .maybeSingle();
+                newStatus = progress?.notes ? "completed" : "in_progress";
+            }
+
             if (item.progressId) {
                 await supabase
                     .from("onboarding_progress")
                     .update({
                         document_url: publicUrl,
-                        status: "completed",
-                        completed_at: new Date().toISOString(),
+                        status: newStatus,
+                        completed_at: newStatus === "completed" ? new Date().toISOString() : null,
                         updated_at: new Date().toISOString()
                     })
                     .eq("id", item.progressId);
@@ -926,11 +1123,16 @@ export default function OnboardingPortal({ onAddNewHire }: OnboardingPortalProps
                                                 )}
 
                                                 {/* Category Progress Overview */}
-                                                <div className="grid grid-cols-3 gap-3 mt-5">
+                                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5">
                                                     {(Object.keys(categoryConfig) as Array<keyof typeof categoryConfig>).map((category, catIdx) => {
                                                         const catConfig = categoryConfig[category];
                                                         const CategoryIcon = catConfig.icon;
-                                                        const { completed, total } = getCategoryProgress(hire.checklist, category);
+                                                        // Compliance: count attestation as virtual item
+                                                        const dbProgress = getCategoryProgress(hire.checklist, category);
+                                                        const isComplianceCat = category === "compliance";
+                                                        const attestationDone = hire.attestationStatus === "signed" ? 1 : 0;
+                                                        const completed = isComplianceCat ? dbProgress.completed + attestationDone : dbProgress.completed;
+                                                        const total = isComplianceCat ? dbProgress.total + 1 : dbProgress.total;
                                                         const catProgress = total > 0 ? Math.round((completed / total) * 100) : 0;
 
                                                         return (
@@ -970,8 +1172,10 @@ export default function OnboardingPortal({ onAddNewHire }: OnboardingPortalProps
                                                         const catConfig = categoryConfig[category];
                                                         const CategoryIcon = catConfig.icon;
                                                         const items = hire.checklist.filter(item => item.category === category);
+                                                        const isCompliance = category === "compliance";
 
-                                                        if (items.length === 0) return null;
+                                                        // For compliance: always show (attestation row is virtual), for others need items
+                                                        if (!isCompliance && items.length === 0) return null;
 
                                                         return (
                                                             <div key={category} className="rounded-xl bg-white/[0.03] border border-white/[0.07] p-4">
@@ -980,17 +1184,130 @@ export default function OnboardingPortal({ onAddNewHire }: OnboardingPortalProps
                                                                         <CategoryIcon className={`w-4 h-4 ${catConfig.color}`} />
                                                                     </div>
                                                                     <h3 className={`font-bold text-sm tracking-wide ${catConfig.color}`}>{catConfig.label}</h3>
-                                                                    <span className="text-[11px] text-zinc-500 ml-auto font-medium" style={{ fontVariantNumeric: "tabular-nums" }}>
-                                                                        {items.filter(i => i.status === "completed").length}/{items.length}
-                                                                    </span>
+                                                                    {!isCompliance && (
+                                                                        <span className="text-[11px] text-zinc-500 ml-auto font-medium" style={{ fontVariantNumeric: "tabular-nums" }}>
+                                                                            {items.filter(i => i.status === "completed").length}/{items.length}
+                                                                        </span>
+                                                                    )}
                                                                 </div>
+
+                                                                {/* ── Compliance: ID Attestation row (virtual — not from DB) ── */}
+                                                                {isCompliance && (
+                                                                    <div className="mb-3">
+                                                                        <div className={`flex items-center gap-3 p-3 rounded-lg transition-all duration-200 ${
+                                                                            hire.attestationStatus === "signed"
+                                                                                ? "bg-emerald-500/[0.06] border border-emerald-500/[0.12]"
+                                                                                : hire.attestationStatus === "declined"
+                                                                                ? "bg-red-500/[0.06] border border-red-500/[0.12]"
+                                                                                : "bg-white/[0.03] border border-white/[0.06]"
+                                                                        }`}>
+                                                                            {/* Status icon */}
+                                                                            <div className={`flex-shrink-0 w-6 h-6 rounded-full flex items-center justify-center ${
+                                                                                hire.attestationStatus === "signed"
+                                                                                    ? "bg-emerald-500/20"
+                                                                                    : hire.attestationStatus === "declined"
+                                                                                    ? "bg-red-500/20"
+                                                                                    : hire.attestationStatus === "sent" || hire.attestationStatus === "opened"
+                                                                                    ? "bg-amber-500/20"
+                                                                                    : "bg-white/[0.08]"
+                                                                            }`}>
+                                                                                {hire.attestationStatus === "signed" ? (
+                                                                                    <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                                                                                ) : hire.attestationStatus === "declined" ? (
+                                                                                    <XCircle className="w-3.5 h-3.5 text-red-400" />
+                                                                                ) : hire.attestationStatus === "sent" || hire.attestationStatus === "opened" ? (
+                                                                                    <Loader2 className="w-3.5 h-3.5 text-amber-400 animate-spin" />
+                                                                                ) : (
+                                                                                    <ShieldAlert className="w-3.5 h-3.5 text-zinc-500" />
+                                                                                )}
+                                                                            </div>
+
+                                                                            {/* Label + description */}
+                                                                            <div className="flex-1 min-w-0">
+                                                                                <span className="font-semibold text-sm text-white">
+                                                                                    Identification Attestation
+                                                                                </span>
+                                                                                <p className="text-xs text-zinc-400 mt-0.5 truncate">
+                                                                                    {hire.attestationStatus === "signed" ? "Signed by Payroll Specialist" :
+                                                                                     hire.attestationStatus === "opened" ? "Opened — awaiting signature" :
+                                                                                     hire.attestationStatus === "sent" ? "Awaiting signature from Payroll Specialist" :
+                                                                                     hire.attestationStatus === "declined" ? "Declined — resend required" :
+                                                                                     "Payroll Specialist must verify identity documents"}
+                                                                                </p>
+                                                                            </div>
+
+                                                                            {/* Action buttons */}
+                                                                            <div className="flex items-center gap-2 flex-shrink-0 ml-3">
+                                                                                {hire.attestationSignedUrl && (
+                                                                                    <a
+                                                                                        href={hire.attestationSignedUrl}
+                                                                                        target="_blank"
+                                                                                        rel="noopener noreferrer"
+                                                                                        onClick={(e) => e.stopPropagation()}
+                                                                                        className="flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-emerald-500/10 text-emerald-300 text-xs font-medium hover:bg-emerald-500/15 border border-emerald-500/15 transition-all duration-200"
+                                                                                    >
+                                                                                        <Download className="w-3 h-3" />
+                                                                                        View
+                                                                                    </a>
+                                                                                )}
+                                                                                {hire.attestationStatus === "not_sent" ? (
+                                                                                    <button
+                                                                                        onClick={(e) => {
+                                                                                            e.stopPropagation();
+                                                                                            handleSendAttestation(hire);
+                                                                                        }}
+                                                                                        disabled={sendingAttestation === hire.id}
+                                                                                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-indigo-500/10 text-indigo-300 text-xs font-semibold hover:bg-indigo-500/20 border border-indigo-500/20 hover:border-indigo-500/30 transition-all duration-200 disabled:opacity-50"
+                                                                                    >
+                                                                                        {sendingAttestation === hire.id ? (
+                                                                                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                                                                        ) : (
+                                                                                            <ShieldAlert className="w-3.5 h-3.5" />
+                                                                                        )}
+                                                                                        Generate Attestation
+                                                                                    </button>
+                                                                                ) : hire.attestationStatus === "declined" ? (
+                                                                                    <button
+                                                                                        onClick={(e) => {
+                                                                                            e.stopPropagation();
+                                                                                            handleSendAttestation(hire);
+                                                                                        }}
+                                                                                        disabled={sendingAttestation === hire.id}
+                                                                                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-red-500/10 text-red-300 text-xs font-medium hover:bg-red-500/20 border border-red-500/20 transition-all duration-200 disabled:opacity-50"
+                                                                                    >
+                                                                                        {sendingAttestation === hire.id ? (
+                                                                                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                                                                        ) : (
+                                                                                            <RotateCcw className="w-3.5 h-3.5" />
+                                                                                        )}
+                                                                                        Resend
+                                                                                    </button>
+                                                                                ) : hire.attestationStatus === "signed" ? (
+                                                                                    <span className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium border bg-emerald-500/10 text-emerald-300 border-emerald-500/15">
+                                                                                        <CheckCircle2 className="w-3 h-3" /> Verified
+                                                                                    </span>
+                                                                                ) : (
+                                                                                    <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-amber-500/10 text-amber-300 text-xs font-medium border border-amber-500/20">
+                                                                                        <Loader2 className="w-3 h-3 animate-spin" />
+                                                                                        Pending
+                                                                                    </span>
+                                                                                )}
+                                                                            </div>
+                                                                        </div>
+                                                                    </div>
+                                                                )}
+
                                                                 <div className="space-y-1.5">
                                                                     {items.map((item) => {
                                                                         const isContractItem = item.id === CONTRACT_CHECKLIST_ITEM_ID;
                                                                         const isMaterialsSent = item.id === MATERIALS_SENT_ITEM_ID;
                                                                         const isPortalTraining = item.id === PORTAL_TRAINING_ITEM_ID;
                                                                         const isSlackSetup = item.id === SLACK_SETUP_ITEM_ID;
-                                                                        const isAutoManaged = isContractItem || isMaterialsSent;
+                                                                        const isResumeItem = item.id === RESUME_ITEM_ID;
+                                                                        const isSsnSinItem = item.id === SSN_ITEM_ID || item.id === SIN_ITEM_ID;
+                                                                        const isPayrollItem = item.id === PAYROLL_USA_ITEM_ID || item.id === PAYROLL_CANADA_ITEM_ID;
+                                                                        const isAutoManaged = isContractItem || isMaterialsSent || isPayrollItem || isSsnSinItem;
+                                                                        const payrollProvider = item.id === PAYROLL_USA_ITEM_ID ? "DecisionHR" : "Payworks";
 
                                                                         // Icon for each special item type
                                                                         const getItemIcon = () => {
@@ -998,6 +1315,7 @@ export default function OnboardingPortal({ onAddNewHire }: OnboardingPortalProps
                                                                             if (isMaterialsSent) return PackageCheck;
                                                                             if (isPortalTraining) return MonitorPlay;
                                                                             if (isSlackSetup) return MessageSquare;
+                                                                            if (isPayrollItem) return Building2;
                                                                             if (item.title.includes("Zoom")) return Video;
                                                                             if (item.title.includes("Supervised")) return Headphones;
                                                                             return null;
@@ -1021,7 +1339,7 @@ export default function OnboardingPortal({ onAddNewHire }: OnboardingPortalProps
                                                                             <div className="flex items-center gap-3 min-w-0">
                                                                                 {isAutoManaged ? (
                                                                                     /* Auto-managed items - non-clickable status */
-                                                                                    <div className="flex-shrink-0" title={isContractItem ? "Auto-managed via DocuSeal" : "Auto-completed when email is sent"}>
+                                                                                    <div className="flex-shrink-0" title={isContractItem ? "Auto-managed via DocuSeal" : isPayrollItem ? `Push to ${payrollProvider}` : isSsnSinItem ? "Requires validated number + document" : "Auto-completed when email is sent"}>
                                                                                         {item.status === "completed" ? (
                                                                                             <CheckCircle2 className="w-5 h-5 text-emerald-400" />
                                                                                         ) : item.status === "in_progress" ? (
@@ -1091,9 +1409,38 @@ export default function OnboardingPortal({ onAddNewHire }: OnboardingPortalProps
                                                                                         <p className="text-xs text-violet-300/40 mt-0.5 truncate">
                                                                                             Video series, quizzes & certificate — under development
                                                                                         </p>
+                                                                                    ) : isPayrollItem ? (
+                                                                                        <p className="text-xs text-zinc-400 mt-0.5 truncate">
+                                                                                            {item.status === "completed"
+                                                                                                ? `Pushed to ${payrollProvider}`
+                                                                                                : hire.attestationStatus === "signed"
+                                                                                                ? `Ready to push to ${payrollProvider}`
+                                                                                                : `Complete ID attestation above first`}
+                                                                                        </p>
                                                                                     ) : isSlackSetup ? (
                                                                                         <p className="text-xs text-zinc-400 mt-0.5 truncate">
                                                                                             {hire.slackId ? `@${hire.slackId}` : "Enter Slack ID to complete"}
+                                                                                        </p>
+                                                                                    ) : isSsnSinItem ? (
+                                                                                        <p className="text-xs text-zinc-400 mt-0.5 truncate">
+                                                                                            {item.status === "completed"
+                                                                                                ? "Number verified + document on file"
+                                                                                                : (
+                                                                                                    <span className="flex items-center gap-2">
+                                                                                                        <span className={item.notes ? "text-emerald-400" : ""}>
+                                                                                                            {item.notes ? "\u2713 Number" : "\u2022 Number required"}
+                                                                                                        </span>
+                                                                                                        <span className={item.documentUrl ? "text-emerald-400" : ""}>
+                                                                                                            {item.documentUrl ? "\u2713 Document" : "\u2022 Document required"}
+                                                                                                        </span>
+                                                                                                    </span>
+                                                                                                )}
+                                                                                        </p>
+                                                                                    ) : isResumeItem ? (
+                                                                                        <p className="text-xs text-zinc-400 mt-0.5 truncate">
+                                                                                            {item.status === "completed"
+                                                                                                ? (item.notes === "N/A — Not required" ? "Skipped" : "Uploaded")
+                                                                                                : "Upload resume or skip if not available"}
                                                                                         </p>
                                                                                     ) : item.description ? (
                                                                                         <p className="text-xs text-zinc-400 mt-0.5 truncate">{item.description}</p>
@@ -1149,34 +1496,97 @@ export default function OnboardingPortal({ onAddNewHire }: OnboardingPortalProps
                                                                                     <span className="inline-flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium border bg-violet-500/[0.06] text-violet-300/60 border-violet-500/[0.12]">
                                                                                         <Lock className="w-3 h-3" /> Locked
                                                                                     </span>
-                                                                                ) : item.category === "documents" ? (
-                                                                                    <label
-                                                                                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer transition-all duration-200 border ${
-                                                                                            uploadingItemId === item.id
-                                                                                                ? "bg-purple-500/15 text-purple-200 border-purple-500/20"
-                                                                                                : "bg-purple-500/[0.08] text-purple-200 hover:bg-purple-500/15 border-purple-500/15 hover:border-purple-500/25"
-                                                                                        }`}
-                                                                                    >
-                                                                                        {uploadingItemId === item.id ? (
-                                                                                            <Loader2 className="w-3 h-3 animate-spin" />
+                                                                                ) : isPayrollItem && item.status !== "completed" ? (
+                                                                                    <div className="flex items-center gap-2">
+                                                                                        {hire.attestationStatus === "signed" ? (
+                                                                                            <button
+                                                                                                onClick={(e) => {
+                                                                                                    e.stopPropagation();
+                                                                                                    alert(`Push to ${payrollProvider} — API integration coming soon`);
+                                                                                                }}
+                                                                                                className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-emerald-500/10 text-emerald-300 text-xs font-semibold hover:bg-emerald-500/20 border border-emerald-500/20 hover:border-emerald-500/30 transition-all duration-200"
+                                                                                            >
+                                                                                                <Building2 className="w-3.5 h-3.5" />
+                                                                                                Push to {payrollProvider}
+                                                                                            </button>
                                                                                         ) : (
-                                                                                            <Upload className="w-3 h-3" />
+                                                                                            <span className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-500/10 text-zinc-400 text-xs font-medium border border-zinc-500/20">
+                                                                                                <ShieldCheck className="w-3 h-3" />
+                                                                                                Attestation Required
+                                                                                            </span>
                                                                                         )}
-                                                                                        {item.documentUrl ? "Replace" : "Upload"}
-                                                                                        <input
-                                                                                            type="file"
-                                                                                            className="hidden"
-                                                                                            accept=".pdf,.jpg,.jpeg,.png,.doc,.docx"
-                                                                                            disabled={uploadingItemId === item.id}
-                                                                                            onChange={(e) => {
-                                                                                                const file = e.target.files?.[0];
-                                                                                                if (file) {
-                                                                                                    handleDocumentUpload(hire.id, item, file);
-                                                                                                }
-                                                                                                e.target.value = "";
-                                                                                            }}
-                                                                                        />
-                                                                                    </label>
+                                                                                    </div>
+                                                                                ) : item.category === "documents" ? (
+                                                                                    <div className="flex items-center gap-1.5">
+                                                                                        {/* Resume skip button */}
+                                                                                        {isResumeItem && item.status !== "completed" && (
+                                                                                            <button
+                                                                                                onClick={(e) => {
+                                                                                                    e.stopPropagation();
+                                                                                                    handleSkipResume(hire);
+                                                                                                }}
+                                                                                                disabled={skippingResume === hire.id}
+                                                                                                className="flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium cursor-pointer transition-all duration-200 border bg-zinc-500/[0.08] text-zinc-300 hover:bg-zinc-500/15 border-zinc-500/15 hover:border-zinc-500/25 disabled:opacity-50"
+                                                                                            >
+                                                                                                {skippingResume === hire.id ? (
+                                                                                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                                                                                ) : (
+                                                                                                    <SkipForward className="w-3 h-3" />
+                                                                                                )}
+                                                                                                Skip
+                                                                                            </button>
+                                                                                        )}
+                                                                                        {/* Upload button */}
+                                                                                        <label
+                                                                                            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-semibold cursor-pointer transition-all duration-200 border ${
+                                                                                                uploadingItemId === item.id
+                                                                                                    ? "bg-purple-500/15 text-purple-200 border-purple-500/20"
+                                                                                                    : "bg-purple-500/[0.08] text-purple-200 hover:bg-purple-500/15 border-purple-500/15 hover:border-purple-500/25"
+                                                                                            }`}
+                                                                                        >
+                                                                                            {uploadingItemId === item.id ? (
+                                                                                                <Loader2 className="w-3 h-3 animate-spin" />
+                                                                                            ) : (
+                                                                                                <Upload className="w-3 h-3" />
+                                                                                            )}
+                                                                                            {item.documentUrl ? "Replace" : "Upload"}
+                                                                                            <input
+                                                                                                type="file"
+                                                                                                className="hidden"
+                                                                                                accept=".pdf,.jpg,.jpeg,.png,.doc,.docx"
+                                                                                                disabled={uploadingItemId === item.id}
+                                                                                                onChange={(e) => {
+                                                                                                    const file = e.target.files?.[0];
+                                                                                                    if (file) {
+                                                                                                        handleDocumentUpload(hire.id, item, file);
+                                                                                                    }
+                                                                                                    e.target.value = "";
+                                                                                                }}
+                                                                                            />
+                                                                                        </label>
+                                                                                        {/* SSN/SIN number input toggle — show only when number not yet saved */}
+                                                                                        {isSsnSinItem && !item.notes && (
+                                                                                            <button
+                                                                                                onClick={(e) => {
+                                                                                                    e.stopPropagation();
+                                                                                                    const key = `${hire.id}_${item.id}`;
+                                                                                                    setSsnSinInputs(prev => {
+                                                                                                        if (prev[key] !== undefined) {
+                                                                                                            const next = { ...prev };
+                                                                                                            delete next[key];
+                                                                                                            return next;
+                                                                                                        }
+                                                                                                        return { ...prev, [key]: "" };
+                                                                                                    });
+                                                                                                }}
+                                                                                                className="flex items-center gap-1 px-2.5 py-1.5 rounded-md text-xs font-medium cursor-pointer transition-all duration-200 border bg-cyan-500/[0.08] text-cyan-300 hover:bg-cyan-500/15 border-cyan-500/15 hover:border-cyan-500/25"
+                                                                                                title="Enter number manually"
+                                                                                            >
+                                                                                                <Keyboard className="w-3 h-3" />
+                                                                                                #
+                                                                                            </button>
+                                                                                        )}
+                                                                                    </div>
                                                                                 ) : null}
                                                                                 {item.completedAt && (
                                                                                     <span className="text-[11px] text-zinc-400 hidden sm:inline font-medium" style={{ fontVariantNumeric: "tabular-nums" }}>
@@ -1222,6 +1632,96 @@ export default function OnboardingPortal({ onAddNewHire }: OnboardingPortalProps
                                                                                     <span className="inline-flex items-center gap-1 text-xs text-emerald-300/70">
                                                                                         <Hash className="w-3 h-3" />
                                                                                         {hire.slackId}
+                                                                                    </span>
+                                                                                </div>
+                                                                            )}
+                                                                            {/* SSN/SIN number inline input with validation */}
+                                                                            {isSsnSinItem && !item.notes && ssnSinInputs[`${hire.id}_${item.id}`] !== undefined && (() => {
+                                                                                const inputKey = `${hire.id}_${item.id}`;
+                                                                                const inputValue = ssnSinInputs[inputKey] || "";
+                                                                                const validation = ssnSinValidation[inputKey];
+                                                                                const digits = inputValue.replace(/\D/g, "");
+                                                                                const showValidation = digits.length === 9;
+                                                                                const isValid = showValidation && validation?.valid;
+                                                                                const isInvalid = showValidation && !validation?.valid;
+
+                                                                                return (
+                                                                                <div className="mt-2.5 pl-8 space-y-1">
+                                                                                    <div className="flex items-center gap-2">
+                                                                                        <div className="relative flex-1 max-w-[240px]">
+                                                                                            <Hash className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-zinc-500" />
+                                                                                            <input
+                                                                                                type="text"
+                                                                                                placeholder={item.id === SSN_ITEM_ID ? "XXX-XX-XXXX" : "XXX-XXX-XXX"}
+                                                                                                value={inputValue}
+                                                                                                onChange={(e) => {
+                                                                                                    const isSSN = item.id === SSN_ITEM_ID;
+                                                                                                    const formatted = isSSN ? formatSSN(e.target.value) : formatSIN(e.target.value);
+                                                                                                    setSsnSinInputs(prev => ({ ...prev, [inputKey]: formatted }));
+                                                                                                    const strippedDigits = formatted.replace(/\D/g, "");
+                                                                                                    if (strippedDigits.length === 9) {
+                                                                                                        const result = isSSN ? validateSSN(formatted) : validateSIN(formatted);
+                                                                                                        setSsnSinValidation(prev => ({ ...prev, [inputKey]: result }));
+                                                                                                    } else {
+                                                                                                        setSsnSinValidation(prev => {
+                                                                                                            const next = { ...prev };
+                                                                                                            delete next[inputKey];
+                                                                                                            return next;
+                                                                                                        });
+                                                                                                    }
+                                                                                                }}
+                                                                                                onClick={(e) => e.stopPropagation()}
+                                                                                                maxLength={item.id === SSN_ITEM_ID ? 11 : 11}
+                                                                                                className={`w-full pl-8 pr-8 py-1.5 rounded-lg bg-white/[0.05] text-white text-xs placeholder-zinc-500 focus:outline-none focus:bg-white/[0.07] transition-all border ${
+                                                                                                    isValid ? "border-emerald-500/40 focus:border-emerald-500/60" :
+                                                                                                    isInvalid ? "border-red-500/40 focus:border-red-500/60" :
+                                                                                                    "border-white/[0.08] focus:border-cyan-500/30"
+                                                                                                }`}
+                                                                                            />
+                                                                                            {isValid && (
+                                                                                                <CheckCircle2 className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-emerald-400" />
+                                                                                            )}
+                                                                                            {isInvalid && (
+                                                                                                <XCircle className="absolute right-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-red-400" />
+                                                                                            )}
+                                                                                        </div>
+                                                                                        <button
+                                                                                            onClick={(e) => {
+                                                                                                e.stopPropagation();
+                                                                                                handleSaveSsnSin(hire, item.id);
+                                                                                            }}
+                                                                                            disabled={!isValid || savingSsnSin === inputKey}
+                                                                                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-300 text-xs font-medium hover:bg-emerald-500/20 border border-emerald-500/20 transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed"
+                                                                                        >
+                                                                                            {savingSsnSin === inputKey ? (
+                                                                                                <Loader2 className="w-3 h-3 animate-spin" />
+                                                                                            ) : (
+                                                                                                <CheckCircle2 className="w-3 h-3" />
+                                                                                            )}
+                                                                                            Save
+                                                                                        </button>
+                                                                                    </div>
+                                                                                    {isInvalid && validation?.error && (
+                                                                                        <p className="text-[11px] text-red-400 pl-1">{validation.error}</p>
+                                                                                    )}
+                                                                                </div>
+                                                                                );
+                                                                            })()}
+                                                                            {/* Show masked SSN/SIN number when saved */}
+                                                                            {isSsnSinItem && item.notes && (
+                                                                                <div className="mt-1.5 pl-8">
+                                                                                    <span className="inline-flex items-center gap-1 text-xs text-emerald-300/70">
+                                                                                        <Hash className="w-3 h-3" />
+                                                                                        {item.id === SSN_ITEM_ID ? "SSN" : "SIN"}: {item.id === SSN_ITEM_ID ? maskSSN(item.notes) : maskSIN(item.notes)}
+                                                                                    </span>
+                                                                                </div>
+                                                                            )}
+                                                                            {/* Show resume skip note */}
+                                                                            {isResumeItem && item.status === "completed" && item.notes === "N/A — Not required" && (
+                                                                                <div className="mt-1.5 pl-8">
+                                                                                    <span className="inline-flex items-center gap-1 text-xs text-zinc-400">
+                                                                                        <SkipForward className="w-3 h-3" />
+                                                                                        Skipped — Not required
                                                                                     </span>
                                                                                 </div>
                                                                             )}
@@ -1325,6 +1825,57 @@ export default function OnboardingPortal({ onAddNewHire }: OnboardingPortalProps
                                         )}
                                     </button>
                                 </div>
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            {/* ── Embedded DocuSeal Attestation Signing Modal ──────────────── */}
+            <AnimatePresence>
+                {attestationModal && (
+                    <motion.div
+                        className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        onClick={() => setAttestationModal(null)}
+                    >
+                        <motion.div
+                            initial={{ scale: 0.95, opacity: 0 }}
+                            animate={{ scale: 1, opacity: 1 }}
+                            exit={{ scale: 0.95, opacity: 0 }}
+                            transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
+                            onClick={(e) => e.stopPropagation()}
+                            className="w-full max-w-3xl max-h-[90vh] mx-4 bg-zinc-900 rounded-2xl border border-white/[0.08] shadow-2xl overflow-hidden flex flex-col"
+                        >
+                            {/* Header */}
+                            <div className="flex items-center justify-between px-6 py-4 border-b border-white/[0.06]">
+                                <div className="flex items-center gap-3">
+                                    <div className="p-2 rounded-xl bg-indigo-500/10 border border-indigo-500/15">
+                                        <ShieldCheck className="w-5 h-5 text-indigo-400" />
+                                    </div>
+                                    <div>
+                                        <h3 className="text-base font-bold text-white">Identification Attestation</h3>
+                                        <p className="text-xs text-zinc-500 mt-0.5">Sign attestation for {attestationModal.hireName}</p>
+                                    </div>
+                                </div>
+                                <button
+                                    onClick={() => setAttestationModal(null)}
+                                    className="p-2 rounded-lg hover:bg-white/[0.06] text-zinc-400 hover:text-white transition-colors"
+                                >
+                                    <X className="w-5 h-5" />
+                                </button>
+                            </div>
+
+                            {/* DocuSeal Embedded Form */}
+                            <div className="flex-1 overflow-y-auto p-1 bg-white rounded-b-2xl">
+                                <DocusealForm
+                                    src={`https://docuseal.com/s/${attestationModal.slug}`}
+                                    onComplete={handleAttestationComplete}
+                                    withTitle={false}
+                                    withSendCopyButton={false}
+                                />
                             </div>
                         </motion.div>
                     </motion.div>

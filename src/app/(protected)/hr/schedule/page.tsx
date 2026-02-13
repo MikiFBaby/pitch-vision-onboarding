@@ -15,6 +15,20 @@ import { motion, AnimatePresence } from "framer-motion";
 import ScheduleAIChat from "@/components/hr/schedule/ScheduleAIChat";
 import EmployeeProfileDrawer from "@/components/hr/EmployeeProfileDrawer";
 
+function formatBreakTime(raw: string | null | undefined): string {
+    if (!raw || raw.trim() === '-' || !raw.trim()) return '-';
+    const val = raw.trim();
+    const parsed = new Date(val);
+    if (!isNaN(parsed.getTime()) && val.length > 10) {
+        const h = parsed.getHours();
+        const m = parsed.getMinutes();
+        const ampm = h >= 12 ? 'PM' : 'AM';
+        const h12 = h % 12 || 12;
+        return `${h12}:${m.toString().padStart(2, '0')} ${ampm}`;
+    }
+    return val;
+}
+
 export default function AgentSchedulePage() {
     const [scheduleData, setScheduleData] = useState<any[]>([]);
     const [breakData, setBreakData] = useState<any[]>([]);
@@ -29,14 +43,62 @@ export default function AgentSchedulePage() {
     const [hoursContext, setHoursContext] = useState("This Week");
 
     useEffect(() => {
+        const fetchAllRows = async (table: string) => {
+            const PAGE_SIZE = 1000;
+            let all: any[] = [];
+            let offset = 0;
+            while (true) {
+                const { data: page } = await supabase
+                    .from(table)
+                    .select('*')
+                    .range(offset, offset + PAGE_SIZE - 1);
+                if (!page || page.length === 0) break;
+                all = all.concat(page);
+                if (page.length < PAGE_SIZE) break;
+                offset += PAGE_SIZE;
+            }
+            return all;
+        };
+
         const fetchData = async () => {
             setLoading(true);
             try {
-                const { data: schedules } = await supabase.from('Agent Schedule').select('*');
-                const { data: breaks } = await supabase.from('Agent Break Schedule').select('*');
-                setScheduleData(schedules || []);
-                setBreakData(breaks || []);
-                calculateMetrics(schedules || []);
+                const [schedules, breaks, activeEmployees] = await Promise.all([
+                    fetchAllRows('Agent Schedule'),
+                    fetchAllRows('Agent Break Schedule'),
+                    supabase
+                        .from('employee_directory')
+                        .select('first_name, last_name')
+                        .eq('employee_status', 'Active')
+                        .eq('role', 'Agent')
+                        .then(res => res.data || []),
+                ]);
+
+                // Build active name set for filtering
+                const activeNames = new Set(
+                    activeEmployees.map((e: any) =>
+                        `${(e.first_name || '').trim().toLowerCase()} ${(e.last_name || '').trim().toLowerCase()}`
+                    )
+                );
+
+                const filterActiveDedup = (rows: any[]) => {
+                    const seen = new Set<string>();
+                    return rows.filter(row => {
+                        const fn = (row["First Name"] || '').trim().toLowerCase();
+                        const ln = (row["Last Name"] || '').trim().toLowerCase();
+                        const key = `${fn} ${ln}`;
+                        if (!activeNames.has(key) || seen.has(key)) return false;
+                        seen.add(key);
+                        return true;
+                    });
+                };
+
+                const activeSchedules = filterActiveDedup(schedules);
+                const activeBreaks = filterActiveDedup(breaks);
+
+                setScheduleData(activeSchedules);
+                setBreakData(activeBreaks);
+                calculateMetrics(activeSchedules);
             } catch (error) {
                 console.error("Error fetching schedule data:", error);
             } finally {
@@ -48,10 +110,12 @@ export default function AgentSchedulePage() {
 
         const sub1 = supabase.channel('schedule-changes').on('postgres_changes', { event: '*', schema: 'public', table: 'Agent Schedule' }, () => fetchData()).subscribe();
         const sub2 = supabase.channel('break-changes').on('postgres_changes', { event: '*', schema: 'public', table: 'Agent Break Schedule' }, () => fetchData()).subscribe();
+        const sub3 = supabase.channel('directory-schedule').on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'employee_directory' }, () => fetchData()).subscribe();
 
         return () => {
             sub1.unsubscribe();
             sub2.unsubscribe();
+            sub3.unsubscribe();
         };
     }, []);
 
@@ -414,14 +478,14 @@ export default function AgentSchedulePage() {
                                                                 {row["First Name"]} {row["Last Name"]}
                                                             </td>
                                                             <td className="px-6 py-4 flex items-center gap-2 text-gray-300 group-hover:text-white transition-colors">
-                                                                {row["First Break"] && <Clock size={14} className="text-rose-400" />}
-                                                                {row["First Break"] || '-'}
+                                                                {row["First Break"] && row["First Break"].trim() !== '-' && <Clock size={14} className="text-rose-400" />}
+                                                                {formatBreakTime(row["First Break"])}
                                                             </td>
                                                             <td className="px-6 py-4 text-gray-300 group-hover:text-white transition-colors">
-                                                                {row["Lunch Break"] || '-'}
+                                                                {formatBreakTime(row["Lunch Break"])}
                                                             </td>
                                                             <td className="px-6 py-4 text-gray-300 group-hover:text-white transition-colors">
-                                                                {row["Second Break"] || '-'}
+                                                                {formatBreakTime(row["Second Break"])}
                                                             </td>
                                                             <td className="px-6 py-4 text-white/50 italic group-hover:text-white/80 transition-colors">{row.Notes}</td>
                                                         </motion.tr>

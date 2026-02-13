@@ -785,11 +785,37 @@ function createEmployeeDirectoryEntries(hiredRows, logSource) {
 
   // Step 1: Bulk-fetch all existing employees (id, first_name, last_name)
   var existingEmployees = getAllEmployeeDirectory(config);
-  var existingSet = {};
+
+  // Normalize: strip apostrophes/accents, replace hyphens with spaces for word splitting
+  function normalizeName(s) {
+    return (s || '').trim().toLowerCase().replace(/[''`]/g, '').replace(/[-]/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+
+  // Build multiple lookup keys per employee to handle middle names & hyphenated surnames
+  //   "Alexus McCully" → keys: "alexus|mccully", "alexus|mccully" (lastWord same)
+  //   When HR sheet says "Alexus McCully-Couture", firstName+lastWord = "alexus|couture"
+  //   But we also check if existing lastName is CONTAINED in the hired lastName
+  var existingExactSet = {};    // normalized firstName|fullLastName
+  var existingLastWordSet = {}; // normalized firstName|lastWordOfLastName
+  var existingFirstNames = {};  // normalized firstName → count (for first-name-only fallback)
+
   for (var e = 0; e < existingEmployees.length; e++) {
-    var key = (existingEmployees[e].first_name || '').trim().toLowerCase()
-      + '|' + (existingEmployees[e].last_name || '').trim().toLowerCase();
-    existingSet[key] = true;
+    var exFirst = normalizeName(existingEmployees[e].first_name);
+    var exLast = normalizeName(existingEmployees[e].last_name);
+    if (!exFirst) continue;
+
+    existingExactSet[exFirst + '|' + exLast] = true;
+
+    var exLastWords = exLast.split(/\s+/);
+    var exLastWord = exLastWords[exLastWords.length - 1] || exLast;
+    existingLastWordSet[exFirst + '|' + exLastWord] = true;
+
+    // Also index by first word of last name (handles "McCully" matching "McCully-Couture")
+    if (exLastWords.length > 0) {
+      existingLastWordSet[exFirst + '|' + exLastWords[0]] = true;
+    }
+
+    existingFirstNames[exFirst] = (existingFirstNames[exFirst] || 0) + 1;
   }
 
   // Step 2: Filter to only new hires not already in directory
@@ -809,15 +835,29 @@ function createEmployeeDirectoryEntries(hiredRows, logSource) {
     }
     var firstName = parts[0];
     var lastName = parts.slice(1).join(' ');
-    var lookupKey = firstName.toLowerCase() + '|' + lastName.toLowerCase();
+    var normFirst = normalizeName(firstName);
+    var normLast = normalizeName(lastName);
+    var normLastWords = normLast.split(/\s+/);
+    var normLastWord = normLastWords[normLastWords.length - 1] || normLast;
+    var normLastFirstWord = normLastWords[0] || normLast;
 
-    if (existingSet[lookupKey]) {
+    // Match strategy (in order):
+    //   1. Exact normalized firstName|fullLastName
+    //   2. firstName + last word of lastName (handles middle names: "Angel Francis Wright" → "angel|wright")
+    //   3. firstName + first word of lastName (handles hyphenated: "McCully-Couture" first word = "mccully")
+    var matched = existingExactSet[normFirst + '|' + normLast]
+      || existingLastWordSet[normFirst + '|' + normLastWord]
+      || existingLastWordSet[normFirst + '|' + normLastFirstWord];
+
+    if (matched) {
       alreadyExists++;
       continue;
     }
 
     // Mark as seen so we don't create duplicates within the same batch
-    existingSet[lookupKey] = true;
+    existingExactSet[normFirst + '|' + normLast] = true;
+    existingLastWordSet[normFirst + '|' + normLastWord] = true;
+    existingLastWordSet[normFirst + '|' + normLastFirstWord] = true;
 
     var newEmployee = {
       'first_name': firstName,

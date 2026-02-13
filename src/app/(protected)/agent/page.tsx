@@ -1,17 +1,29 @@
 "use client";
-import React from "react";
+import React, { useState, useEffect } from "react";
 import StatsCard from "@/components/dashboard/StatsCard";
 import RecentCallsTable from "@/components/dashboard/RecentCallsTable";
 import InteractiveChart from "@/components/dashboard/InteractiveChart";
 import VoiceTrainingAgent from "@/components/dashboard/VoiceTrainingAgent";
 import { getAgentStats } from "@/lib/mock-data";
 import { useAuth } from "@/context/AuthContext";
-import { CheckCircle, Clock, Trophy, TrendingUp, Phone, DollarSign, Gift, BarChart2 } from "lucide-react";
+import { CheckCircle, Clock, Trophy, TrendingUp, Phone, DollarSign, Gift, BarChart2, Coins } from "lucide-react";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 
 export default function AgentDashboard() {
     const { user, profile } = useAuth();
     const stats = getAgentStats();
+    const [pitchPoints, setPitchPoints] = useState<number | null>(null);
+
+    useEffect(() => {
+        if (profile?.id) {
+            fetch(`/api/pitch-points/balance?userId=${profile.id}`)
+                .then(r => r.json())
+                .then(data => {
+                    if (data.success) setPitchPoints(data.balance.current_balance);
+                })
+                .catch(() => {});
+        }
+    }, [profile?.id]);
 
     // Get dynamic time-of-day greeting
     const getGreeting = () => {
@@ -85,11 +97,11 @@ export default function AgentDashboard() {
                     />
                     <StatsCard
                         index={5}
-                        title={`Bonus (${stats.payPeriod})`}
-                        value={`$${stats.bonusPay.toLocaleString()}`}
+                        title="Pitch Points"
+                        value={pitchPoints !== null ? pitchPoints.toLocaleString() : "—"}
                         trend="up"
-                        trendValue="$85"
-                        icon={<Gift size={18} />}
+                        trendValue="rewards"
+                        icon={<Coins size={18} />}
                     />
                     <StatsCard
                         index={6}

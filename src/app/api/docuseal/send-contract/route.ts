@@ -67,13 +67,13 @@ export async function POST(req: Request) {
         const templateData = await templateResponse.json();
         const templateId = templateData.id;
 
-        // Step 2: Create a submission from the template and send to employee
+        // Step 2: Create a submission — send_email: false, we send via our own SMTP
         const submissionResponse = await fetch(`${DOCUSEAL_API_URL}/submissions`, {
             method: "POST",
             headers,
             body: JSON.stringify({
                 template_id: templateId,
-                send_email: true,
+                send_email: false,
                 submitters: [
                     {
                         role: "First Party",
@@ -101,15 +101,20 @@ export async function POST(req: Request) {
 
         const submissionData = await submissionResponse.json();
 
-        // Extract the submission ID
-        const submissionId = Array.isArray(submissionData)
-            ? submissionData[0]?.submission_id
-            : submissionData.id || submissionData.submission_id;
+        // Extract submission ID and signing slug
+        const submitters = Array.isArray(submissionData) ? submissionData : [submissionData];
+        const firstSubmitter = submitters[0];
+        const submissionId = firstSubmitter?.submission_id || firstSubmitter?.id;
+        const signingSlug = firstSubmitter?.slug;
+
+        console.log(`[send-contract] Contract created for ${firstName} ${lastName} (submission=${submissionId}, slug=${signingSlug})`);
 
         return NextResponse.json({
             success: true,
             submissionId,
-            message: `${country} contract sent to ${email} for signing`
+            slug: signingSlug,
+            signingUrl: signingSlug ? `https://docuseal.com/s/${signingSlug}` : null,
+            message: `${country} contract created for ${email}`
         });
     } catch (error) {
         console.error("Error sending contract:", error);

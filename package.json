@@ -9,6 +9,7 @@
     "lint": "eslint"
   },
   "dependencies": {
+    "@docuseal/react": "^1.0.71",
     "@elevenlabs/react": "^0.13.0",
     "@fullcalendar/core": "^6.1.20",
     "@fullcalendar/daygrid": "^6.1.20",

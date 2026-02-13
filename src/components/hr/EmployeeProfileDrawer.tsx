@@ -72,7 +72,7 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
             fetchWriteUps(employee.id);
             fetchSchedule(employee.first_name, employee.last_name);
         }
-    }, [employee]);
+    }, [employee, isOpen]);
 
     // Auto-poll DocuSeal for pending contracts as a failsafe against webhook failures
     useEffect(() => {
@@ -631,15 +631,29 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                                     { label: 'Lunch Break', key: 'Lunch Break' },
                                     { label: 'Second Break', key: 'Second Break' },
                                 ].map(({ label, key }) => {
-                                    const value = breakSchedule[key];
-                                    const hasValue = value && value.trim() && value.trim() !== '-';
+                                    const raw = breakSchedule[key];
+                                    // Parse time from Google Sheets date string (e.g. "Sat Dec 30 1899 11:00:00 GMT-0500 ...")
+                                    let displayTime = '';
+                                    if (raw && raw.trim() && raw.trim() !== '-') {
+                                        const parsed = new Date(raw);
+                                        if (!isNaN(parsed.getTime())) {
+                                            const h = parsed.getHours();
+                                            const m = parsed.getMinutes();
+                                            const ampm = h >= 12 ? 'PM' : 'AM';
+                                            const h12 = h % 12 || 12;
+                                            displayTime = `${h12}:${m.toString().padStart(2, '0')} ${ampm}`;
+                                        } else {
+                                            displayTime = raw.trim();
+                                        }
+                                    }
+                                    const hasValue = displayTime.length > 0;
                                     return (
                                         <div key={key} className={`flex items-center justify-between px-3 py-2 rounded-lg ${hasValue ? 'bg-amber-50/50' : 'bg-gray-50'}`}>
                                             <span className={`text-sm font-medium ${hasValue ? 'text-gray-700' : 'text-gray-400'}`}>
                                                 {label}
                                             </span>
                                             <span className={`text-sm ${hasValue ? 'text-gray-800 font-medium' : 'text-gray-400 italic'}`}>
-                                                {hasValue ? value.trim() : '—'}
+                                                {hasValue ? displayTime : '—'}
                                             </span>
                                         </div>
                                     );

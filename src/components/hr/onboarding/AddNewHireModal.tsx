@@ -17,9 +17,6 @@ interface TerminatedEmployee {
     country: string | null;
     role: string | null;
     terminated_at: string | null;
-    reason: string | null;
-    firedOrQuit: string | null;
-    source: 'directory' | 'hr_fired';
 }
 
 interface AddNewHireModalProps {
@@ -80,6 +77,8 @@ export default function AddNewHireModal({ isOpen, onClose }: AddNewHireModalProp
         }
         if (!formData.phone.trim()) {
             newErrors.phone = "Phone number is required";
+        } else if (formData.phone.replace(/\D/g, "").length !== 11) {
+            newErrors.phone = "Enter a complete 10-digit phone number";
         }
         if (!formData.country) {
             newErrors.country = "Please select a country";
@@ -252,6 +251,100 @@ export default function AddNewHireModal({ isOpen, onClose }: AddNewHireModalProp
         }
     };
 
+    const generateContractEmailHtml = (signingUrl: string) => {
+        const fullName = `${formData.firstName} ${formData.lastName}`;
+        return `
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Employment Contract - Pitch Perfect Solutions</title>
+</head>
+<body style="margin: 0; padding: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f5f5f5;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="max-width: 600px; margin: 0 auto; background-color: #ffffff;">
+        <!-- Header -->
+        <tr>
+            <td style="background-color: #ffffff; padding: 30px 30px 20px 30px; text-align: center; border-bottom: 3px solid #7c3aed;">
+                <img src="https://eyrxkirpubylgkkvcrlh.supabase.co/storage/v1/object/public/employee_documents/onboarding-attachments/pp-logo-black.png" alt="Pitch Perfect Solutions" style="max-width: 220px; height: auto; margin-bottom: 16px;" />
+                <h1 style="color: #1a1a1a; margin: 0; font-size: 24px; font-weight: 700;">Employment Contract</h1>
+            </td>
+        </tr>
+
+        <!-- Body -->
+        <tr>
+            <td style="padding: 40px 30px;">
+                <p style="color: #333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+                    Dear ${fullName},
+                </p>
+
+                <p style="color: #333; font-size: 16px; line-height: 1.6; margin: 0 0 20px 0;">
+                    Your employment contract with Pitch Perfect Solutions is ready for review and signing. Please click the button below to open the contract, review the terms, and sign electronically.
+                </p>
+
+                <!-- CTA Button -->
+                <div style="text-align: center; margin: 35px 0;">
+                    <a href="${signingUrl}" style="background-color: #7c3aed; color: #ffffff; padding: 14px 40px; text-decoration: none; border-radius: 8px; font-size: 16px; font-weight: 600; display: inline-block;">
+                        Review &amp; Sign Contract
+                    </a>
+                </div>
+
+                <div style="background-color: #fef3c7; border: 1px solid #f59e0b; padding: 16px 20px; margin: 25px 0; border-radius: 8px;">
+                    <p style="color: #92400e; font-size: 14px; line-height: 1.6; margin: 0;">
+                        <strong>Important:</strong> Please sign your contract as soon as possible, ideally before your first day of training. If you have any questions about the contract, please contact HR.
+                    </p>
+                </div>
+
+                <p style="color: #666; font-size: 14px; line-height: 1.6; margin: 20px 0 0 0;">
+                    If the button above does not work, copy and paste this link into your browser:<br/>
+                    <a href="${signingUrl}" style="color: #7c3aed; word-break: break-all;">${signingUrl}</a>
+                </p>
+
+                <!-- Signature -->
+                <div style="border-top: 1px solid #e5e7eb; padding-top: 20px; margin-top: 30px;">
+                    <p style="color: #333; font-size: 16px; margin: 0 0 5px 0;">Sincerely,</p>
+                    <p style="color: #7c3aed; font-size: 18px; font-weight: 600; margin: 0 0 5px 0;">Alisha M</p>
+                    <p style="color: #666; font-size: 14px; margin: 0 0 5px 0;">HR Manager</p>
+                    <p style="color: #666; font-size: 14px; margin: 0;">Pitch Perfect Solutions</p>
+                </div>
+            </td>
+        </tr>
+
+        <!-- Footer -->
+        <tr>
+            <td style="background-color: #7c3aed; padding: 20px 30px; text-align: center;">
+                <p style="color: rgba(255,255,255,0.85); font-size: 12px; margin: 0;">
+                    &copy; ${new Date().getFullYear()} Pitch Perfect Solutions. All rights reserved.
+                </p>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>
+        `;
+    };
+
+    const sendContractEmail = async (signingUrl: string) => {
+        try {
+            const response = await fetch("/api/email/send", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    to: formData.email,
+                    subject: "Pitch Perfect Solutions - Employment Contract Signing",
+                    html: generateContractEmailHtml(signingUrl),
+                    senderName: "Alisha M - HR Manager",
+                })
+            });
+
+            const result = await response.json();
+            return result.success || result.simulated;
+        } catch (error) {
+            console.error("Failed to send contract email:", error);
+            return false;
+        }
+    };
+
     const resetForm = () => {
         setFormData({
             firstName: "",
@@ -274,88 +367,24 @@ export default function AddNewHireModal({ isOpen, onClose }: AddNewHireModalProp
     const fetchTerminatedEmployees = async () => {
         setLoadingTerminated(true);
         try {
-            // Fetch from both sources in parallel
-            const [{ data: dirData, error: dirError }, { data: firedData, error: firedError }] = await Promise.all([
-                supabase
-                    .from('employee_directory')
-                    .select('id, first_name, last_name, email, phone, country, role, terminated_at')
-                    .eq('employee_status', 'Terminated')
-                    .order('terminated_at', { ascending: false }),
-                supabase
-                    .from('HR Fired')
-                    .select('*'),
-            ]);
+            const { data: dirData, error: dirError } = await supabase
+                .from('employee_directory')
+                .select('id, first_name, last_name, email, phone, country, role, terminated_at')
+                .eq('employee_status', 'Terminated')
+                .order('terminated_at', { ascending: false });
 
             if (dirError) throw dirError;
-            if (firedError) throw firedError;
 
-            // Build map from employee_directory (keyed by lowercase full name)
-            const directoryMap = new Map<string, TerminatedEmployee>();
-            (dirData || []).forEach(emp => {
-                const key = `${(emp.first_name || '').trim().toLowerCase()} ${(emp.last_name || '').trim().toLowerCase()}`;
-                directoryMap.set(key, {
-                    id: emp.id,
-                    first_name: emp.first_name,
-                    last_name: emp.last_name,
-                    email: emp.email || '',
-                    phone: emp.phone,
-                    country: emp.country,
-                    role: emp.role,
-                    terminated_at: emp.terminated_at,
-                    reason: null,
-                    firedOrQuit: null,
-                    source: 'directory',
-                });
-            });
-
-            // Deduplicate HR Fired by Agent Name
-            const seenFired = new Set<string>();
-            const dedupedFired = (firedData || []).filter((r: any) => {
-                const name = (r['Agent Name'] || '').trim().toLowerCase();
-                if (!name || seenFired.has(name)) return false;
-                seenFired.add(name);
-                return true;
-            });
-
-            // Merge: directory records take priority, add HR Fired records not in directory
-            const merged = new Map(directoryMap);
-            dedupedFired.forEach((fired: any) => {
-                const fullName = (fired['Agent Name'] || '').trim();
-                const key = fullName.toLowerCase();
-                if (!merged.has(key)) {
-                    // Parse first/last from "Agent Name"
-                    const parts = fullName.split(' ');
-                    const firstName = parts[0] || '';
-                    const lastName = parts.slice(1).join(' ') || '';
-                    const geo = (fired['Canadian/American'] || '').toLowerCase();
-
-                    merged.set(key, {
-                        id: fired.id,
-                        first_name: firstName,
-                        last_name: lastName,
-                        email: '',
-                        phone: null,
-                        country: geo.includes('canad') ? 'Canada' : geo.includes('americ') ? 'USA' : null,
-                        role: null,
-                        terminated_at: fired['Termination Date'] || null,
-                        reason: fired['Reason for Termination'] || null,
-                        firedOrQuit: fired['Fired/Quit'] || null,
-                        source: 'hr_fired',
-                    });
-                } else {
-                    // Enrich directory record with HR Fired details
-                    const existing = merged.get(key)!;
-                    existing.reason = fired['Reason for Termination'] || existing.reason;
-                    existing.firedOrQuit = fired['Fired/Quit'] || existing.firedOrQuit;
-                }
-            });
-
-            // Sort by termination date descending
-            const result = Array.from(merged.values()).sort((a, b) => {
-                const dateA = a.terminated_at ? new Date(a.terminated_at).getTime() : 0;
-                const dateB = b.terminated_at ? new Date(b.terminated_at).getTime() : 0;
-                return dateB - dateA;
-            });
+            const result: TerminatedEmployee[] = (dirData || []).map(emp => ({
+                id: emp.id,
+                first_name: emp.first_name,
+                last_name: emp.last_name,
+                email: emp.email || '',
+                phone: emp.phone,
+                country: emp.country,
+                role: emp.role,
+                terminated_at: emp.terminated_at,
+            }));
 
             setTerminatedEmployees(result);
         } catch (error) {
@@ -368,19 +397,15 @@ export default function AddNewHireModal({ isOpen, onClose }: AddNewHireModalProp
     const handleReactivate = async (emp: TerminatedEmployee) => {
         setReactivating(emp.id);
         try {
-            if (emp.source === 'directory') {
-                // Existing directory record — reactivate
-                await supabase
-                    .from('employee_directory')
-                    .update({
-                        employee_status: 'Active',
-                        terminated_at: null,
-                        hired_at: new Date().toISOString(),
-                    })
-                    .eq('id', emp.id);
-            }
-            // For HR Fired-only records, no directory record exists yet —
-            // the form submission will create one via the normal flow
+            // Reactivate directory record
+            await supabase
+                .from('employee_directory')
+                .update({
+                    employee_status: 'Active',
+                    terminated_at: null,
+                    hired_at: new Date().toISOString(),
+                })
+                .eq('id', emp.id);
 
             // Pre-fill the form with their details and switch to the new hire form
             setFormData(prev => ({
@@ -388,7 +413,12 @@ export default function AddNewHireModal({ isOpen, onClose }: AddNewHireModalProp
                 firstName: emp.first_name || '',
                 lastName: emp.last_name || '',
                 email: emp.email || '',
-                phone: emp.phone || '',
+                phone: (() => {
+                    const d = (emp.phone || '').replace(/\D/g, '');
+                    if (d.length === 11 && d.startsWith('1')) return `+1 ${d.slice(1,4)} ${d.slice(4,7)} ${d.slice(7)}`;
+                    if (d.length === 10) return `+1 ${d.slice(0,3)} ${d.slice(3,6)} ${d.slice(6)}`;
+                    return emp.phone || '';
+                })(),
                 country: (emp.country as "Canada" | "USA" | "") || '',
             }));
             setStep('new');
@@ -543,7 +573,7 @@ export default function AddNewHireModal({ isOpen, onClose }: AddNewHireModalProp
                 }
             }
 
-            // 5. Send contract for signing via DocuSeal
+            // 5. Create contract via DocuSeal + send signing link via our SMTP
             if (formData.sendContract) {
                 try {
                     const contractRes = await fetch("/api/docuseal/send-contract", {
@@ -574,8 +604,13 @@ export default function AddNewHireModal({ isOpen, onClose }: AddNewHireModalProp
                         .update(contractUpdate)
                         .eq("id", employeeId);
 
-                    // Mark the contract checklist item as in_progress when sent
                     if (contractResult.success) {
+                        // Send contract signing email via our own SMTP
+                        if (contractResult.signingUrl) {
+                            await sendContractEmail(contractResult.signingUrl);
+                        }
+
+                        // Mark the contract checklist item as in_progress when sent
                         const CONTRACT_ITEM_ID = "c0a80121-0001-4000-8000-000000000001";
                         await supabase
                             .from("onboarding_progress")
@@ -775,13 +810,9 @@ export default function AddNewHireModal({ isOpen, onClose }: AddNewHireModalProp
                                                                     Left: {new Date(emp.terminated_at + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
                                                                 </span>
                                                             )}
-                                                            {emp.firedOrQuit && (
-                                                                <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
-                                                                    emp.firedOrQuit.toLowerCase() === 'quit'
-                                                                        ? 'bg-amber-500/10 text-amber-400 border border-amber-500/20'
-                                                                        : 'bg-red-500/10 text-red-400 border border-red-500/20'
-                                                                }`}>
-                                                                    {emp.firedOrQuit}
+                                                            {emp.role && (
+                                                                <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-zinc-500/10 text-zinc-400 border border-zinc-500/20">
+                                                                    {emp.role}
                                                                 </span>
                                                             )}
                                                         </div>
@@ -914,8 +945,19 @@ export default function AddNewHireModal({ isOpen, onClose }: AddNewHireModalProp
                                                 <input
                                                     type="tel"
                                                     value={formData.phone}
-                                                    onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
-                                                    placeholder="(555) 123-4567"
+                                                    onChange={(e) => {
+                                                        const raw = e.target.value.replace(/[^\d+]/g, "");
+                                                        // Strip leading country code if user types it manually
+                                                        let digits = raw.replace(/^\+?1?/, "").replace(/\D/g, "").slice(0, 10);
+                                                        // Auto-format: +1 XXX XXX XXXX
+                                                        let formatted = "";
+                                                        if (digits.length > 0) formatted = `+1 ${digits.slice(0, 3)}`;
+                                                        if (digits.length > 3) formatted = `+1 ${digits.slice(0, 3)} ${digits.slice(3, 6)}`;
+                                                        if (digits.length > 6) formatted = `+1 ${digits.slice(0, 3)} ${digits.slice(3, 6)} ${digits.slice(6)}`;
+                                                        setFormData({ ...formData, phone: formatted || "" });
+                                                    }}
+                                                    placeholder="+1 XXX XXX XXXX"
+                                                    maxLength={15}
                                                     className={`w-full pl-10 pr-3 py-2.5 rounded-xl bg-zinc-800/50 border ${
                                                         errors.phone ? "border-red-500/50" : "border-zinc-700"
                                                     } text-white placeholder-zinc-500 focus:outline-none focus:border-indigo-500/50 focus:ring-1 focus:ring-indigo-500/50 transition-all text-sm`}

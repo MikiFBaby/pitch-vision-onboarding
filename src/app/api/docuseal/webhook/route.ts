@@ -18,6 +18,10 @@ export async function GET() {
  * POST handler for DocuSeal webhook events.
  * Events: form.viewed, form.started, form.completed, form.declined
  *
+ * Handles two document types:
+ *   1. Employment contracts — matched via employee_directory.docuseal_submission_id
+ *   2. ID attestations — matched via onboarding_new_hires.attestation_submission_id
+ *
  * Payload structure (form events):
  *   event_type: "form.completed"
  *   data.id: submitter ID (number)
@@ -43,7 +47,24 @@ export async function POST(req: Request) {
             return NextResponse.json({ error: "Missing event_type" }, { status: 400 });
         }
 
-        // ── Find the employee ──────────────────────────────────────────────
+        // ── Check for attestation first ──────────────────────────────────────
+        // Attestation signer is the Payroll Specialist (not the employee),
+        // so we must check onboarding_new_hires BEFORE the employee_directory
+        // to avoid matching the wrong person via email fallback.
+        if (submissionId) {
+            const { data: attestationHire } = await supabaseAdmin
+                .from("onboarding_new_hires")
+                .select("id, first_name, last_name")
+                .eq("attestation_submission_id", String(submissionId))
+                .maybeSingle();
+
+            if (attestationHire) {
+                console.log(`[DocuSeal Webhook] Matched ATTESTATION for ${attestationHire.first_name} ${attestationHire.last_name} (hire=${attestationHire.id})`);
+                return handleAttestationEvent(eventType, submitterData, attestationHire);
+            }
+        }
+
+        // ── Find the employee (contract flow) ───────────────────────────────
         // Strategy: try submission_id first, then submitter_id, then email fallback
         let employee: any = null;
 
@@ -100,7 +121,7 @@ export async function POST(req: Request) {
             });
         }
 
-        // ── Handle events ──────────────────────────────────────────────────
+        // ── Handle contract events ───────────────────────────────────────────
 
         if (eventType === "form.completed") {
             const documents = submitterData.documents || [];
@@ -170,4 +191,72 @@ export async function POST(req: Request) {
         console.error("[DocuSeal Webhook] Unhandled error:", error);
         return NextResponse.json({ error: "Internal server error" }, { status: 500 });
     }
+}
+
+// ── Attestation event handler ────────────────────────────────────────────────
+
+async function handleAttestationEvent(
+    eventType: string,
+    submitterData: any,
+    hire: { id: string; first_name: string; last_name: string }
+) {
+    const hireName = `${hire.first_name} ${hire.last_name}`;
+
+    if (eventType === "form.completed") {
+        const documents = submitterData.documents || [];
+        const signedDocUrl = documents[0]?.url || null;
+        const auditLogUrl = submitterData.audit_log_url
+            || submitterData.submission?.audit_log_url || null;
+
+        await supabaseAdmin
+            .from("onboarding_new_hires")
+            .update({
+                attestation_status: "signed",
+                attestation_signed_url: signedDocUrl,
+                attestation_audit_url: auditLogUrl,
+                attestation_signed_at: new Date().toISOString(),
+            })
+            .eq("id", hire.id);
+
+        console.log(`[DocuSeal Webhook] Attestation SIGNED for ${hireName}${signedDocUrl ? ` — doc: ${signedDocUrl}` : ""}`);
+
+        return NextResponse.json({
+            success: true,
+            type: "attestation",
+            message: `Attestation signed for ${hireName}`,
+        });
+    }
+
+    if (eventType === "form.declined") {
+        await supabaseAdmin
+            .from("onboarding_new_hires")
+            .update({ attestation_status: "declined" })
+            .eq("id", hire.id);
+
+        console.log(`[DocuSeal Webhook] Attestation DECLINED for ${hireName}`);
+
+        return NextResponse.json({
+            success: true,
+            type: "attestation",
+            message: `Attestation declined for ${hireName}`,
+        });
+    }
+
+    if (eventType === "form.started" || eventType === "form.viewed") {
+        await supabaseAdmin
+            .from("onboarding_new_hires")
+            .update({ attestation_status: "opened" })
+            .eq("id", hire.id);
+
+        console.log(`[DocuSeal Webhook] Attestation ${eventType.replace("form.", "").toUpperCase()} for ${hireName}`);
+
+        return NextResponse.json({
+            success: true,
+            type: "attestation",
+            message: `Attestation ${eventType} for ${hireName}`,
+        });
+    }
+
+    console.log(`[DocuSeal Webhook] Unhandled attestation event: ${eventType}`);
+    return NextResponse.json({ received: true, type: "attestation", event: eventType });
 }

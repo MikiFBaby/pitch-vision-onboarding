@@ -684,8 +684,8 @@ export default function EmployeeTable() {
                             { id: 'hr', label: 'HR' },
                             { id: 'payroll', label: 'Payroll' },
                             { id: 'management', label: 'Management' },
-                            { id: 'c-suite', label: 'C-Suite' },
-                            { id: 'ea', label: 'EA' }
+                            { id: 'ea', label: 'EA' },
+                            { id: 'c-suite', label: 'C-Suite' }
                         ].map((tab) => {
                             const isActive = activeTab === tab.id;
                             return (

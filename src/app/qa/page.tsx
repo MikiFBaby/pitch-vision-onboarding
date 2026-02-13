@@ -619,7 +619,7 @@ function QADashboardContent() {
             const matchesProductType = selectedProductType ? c.productType === selectedProductType : true;
             const matchesSearch = searchQuery
                 ? c.agentName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                c.phoneNumber.includes(searchQuery)
+                c.phoneNumber.includes(searchQuery.replace(/\D/g, ''))
                 : true;
 
             let matchesDate = true;
