@@ -54,11 +54,54 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
 
             if (empErr) console.error('employee_directory error:', empErr);
 
-            const activeEmployeeKeys = new Set(
-                (employees || []).map(e =>
-                    `${(e.first_name || '').trim().toLowerCase()} ${(e.last_name || '').trim().toLowerCase()}`
-                )
-            );
+            // Normalize: strip periods, suffixes, hyphens for comparison
+            const normName = (s: string) => s.replace(/\./g, '').replace(/\b(jr|sr|ii|iii|iv)\b/gi, '').replace(/-/g, '').replace(/\s+/g, ' ').trim();
+
+            // Build fuzzy match keys for active employees
+            const activeEmployeeKeys = new Set<string>();
+            const activeFirstToLasts = new Map<string, string[]>();
+            (employees || []).forEach(e => {
+                const fn = (e.first_name || '').trim().toLowerCase();
+                const ln = (e.last_name || '').trim().toLowerCase();
+                const fnN = normName(fn), lnN = normName(ln);
+                const fnFirst = fn.split(/\s+/)[0];
+                const fnFirstN = normName(fnFirst);
+                const lnParts = ln.split(/[\s-]+/);
+                const lnLast = lnParts[lnParts.length - 1];
+                const lnFirst = lnParts[0];
+                // Add all key variants
+                [
+                    `${fn} ${ln}`, `${fnN} ${lnN}`,
+                    `${fnFirst} ${ln}`, `${fnFirstN} ${lnN}`,
+                    `${fn} ${lnLast}`, `${fn} ${lnFirst}`,
+                    `${fnFirst} ${lnLast}`, `${fnFirstN} ${normName(lnLast)}`,
+                ].forEach(k => activeEmployeeKeys.add(k));
+                // Track for prefix matching
+                if (!activeFirstToLasts.has(fnFirst)) activeFirstToLasts.set(fnFirst, []);
+                activeFirstToLasts.get(fnFirst)!.push(lnN);
+            });
+
+            const isActiveMatch = (firstName: string, lastName: string) => {
+                const fn = firstName.trim().toLowerCase();
+                const ln = lastName.trim().toLowerCase();
+                const fnN = normName(fn), lnN = normName(ln);
+                const fnFirst = fn.split(/\s+/)[0];
+                const fnFirstN = normName(fnFirst);
+                const lnParts = ln.split(/[\s-]+/);
+                const lnLast = lnParts[lnParts.length - 1];
+                const lnFirst = lnParts[0];
+                if (activeEmployeeKeys.has(`${fn} ${ln}`)
+                    || activeEmployeeKeys.has(`${fnN} ${lnN}`)
+                    || activeEmployeeKeys.has(`${fnFirst} ${ln}`)
+                    || activeEmployeeKeys.has(`${fnFirstN} ${lnN}`)
+                    || activeEmployeeKeys.has(`${fn} ${lnLast}`)
+                    || activeEmployeeKeys.has(`${fn} ${lnFirst}`)
+                    || activeEmployeeKeys.has(`${fnFirst} ${lnLast}`)
+                    || activeEmployeeKeys.has(`${fnFirstN} ${normName(lnLast)}`)) return true;
+                // Prefix matching
+                const dirLns = activeFirstToLasts.get(fnFirst) || activeFirstToLasts.get(fnFirstN) || [];
+                return dirLns.some(d => lnN.startsWith(d) || d.startsWith(lnN) || lnN.includes(d) || d.includes(lnN));
+            };
 
             const totalActive = (employees || []).length;
 
@@ -96,11 +139,13 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
             let totalScheduled = 0;
 
             allSchedules.forEach(agent => {
-                const agentKey = `${(agent['First Name'] || '').trim().toLowerCase()} ${(agent['Last Name'] || '').trim().toLowerCase()}`;
+                const fn = (agent['First Name'] || '').trim();
+                const ln = (agent['Last Name'] || '').trim();
+                const agentKey = `${fn.toLowerCase()} ${ln.toLowerCase()}`;
                 const shift = agent[day];
 
                 if (
-                    activeEmployeeKeys.has(agentKey) &&
+                    isActiveMatch(fn, ln) &&
                     !seenAgents.has(agentKey) &&
                     shift && shift.trim() !== '' && shift.trim().toLowerCase() !== 'off'
                 ) {

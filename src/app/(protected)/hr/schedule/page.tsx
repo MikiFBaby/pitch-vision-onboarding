@@ -74,23 +74,36 @@ export default function AgentSchedulePage() {
                         .then(res => res.data || []),
                 ]);
 
+                // Normalize: strip periods, suffixes (jr/sr/ii/iii), hyphens for comparison
+                const norm = (s: string) => s.replace(/\./g, '').replace(/\b(jr|sr|ii|iii|iv)\b/gi, '').replace(/-/g, '').replace(/\s+/g, ' ').trim();
+
                 // Build multiple match keys per active employee for fuzzy matching
-                // Handles: middle names in first_name, hyphenated last names, etc.
                 const activeNameKeys = new Set<string>();
+                const activeFirstNames = new Map<string, string[]>(); // first_name → [last_names]
                 activeEmployees.forEach((e: any) => {
                     const fn = (e.first_name || '').trim().toLowerCase();
                     const ln = (e.last_name || '').trim().toLowerCase();
-                    // Full match
+                    const fnN = norm(fn), lnN = norm(ln);
+                    // Full match + normalized
                     activeNameKeys.add(`${fn} ${ln}`);
-                    // First word of first_name + full last_name (handles middle names in first_name)
+                    if (fnN !== fn || lnN !== ln) activeNameKeys.add(`${fnN} ${lnN}`);
+                    // First word of first_name + full last_name
                     const fnFirst = fn.split(/\s+/)[0];
-                    if (fnFirst !== fn) activeNameKeys.add(`${fnFirst} ${ln}`);
-                    // Full first_name + last word of last_name (handles hyphenated/compound last names)
+                    const fnFirstN = norm(fnFirst);
+                    activeNameKeys.add(`${fnFirst} ${ln}`);
+                    activeNameKeys.add(`${fnFirstN} ${lnN}`);
+                    // Full first_name + last word of last_name (hyphenated/compound)
                     const lnParts = ln.split(/[\s-]+/);
                     const lnLast = lnParts[lnParts.length - 1];
-                    if (lnLast !== ln) activeNameKeys.add(`${fn} ${lnLast}`);
-                    // First word + last word (handles both)
-                    if (fnFirst !== fn || lnLast !== ln) activeNameKeys.add(`${fnFirst} ${lnLast}`);
+                    const lnFirst = lnParts[0];
+                    activeNameKeys.add(`${fn} ${lnLast}`);
+                    activeNameKeys.add(`${fn} ${lnFirst}`);
+                    activeNameKeys.add(`${fnFirst} ${lnLast}`);
+                    activeNameKeys.add(`${fnFirstN} ${norm(lnLast)}`);
+                    // Track first names for prefix matching
+                    const key = fnFirst;
+                    if (!activeFirstNames.has(key)) activeFirstNames.set(key, []);
+                    activeFirstNames.get(key)!.push(lnN);
                 });
 
                 const filterActiveDedup = (rows: any[]) => {
@@ -99,14 +112,32 @@ export default function AgentSchedulePage() {
                         const fn = (row["First Name"] || '').trim().toLowerCase();
                         const ln = (row["Last Name"] || '').trim().toLowerCase();
                         const key = `${fn} ${ln}`;
-                        // Try multiple match strategies
+                        const fnN = norm(fn), lnN = norm(ln);
                         const fnFirst = fn.split(/\s+/)[0];
+                        const fnFirstN = norm(fnFirst);
                         const lnParts = ln.split(/[\s-]+/);
                         const lnLast = lnParts[lnParts.length - 1];
-                        const matched = activeNameKeys.has(key)
+                        const lnFirst = lnParts[0];
+
+                        // Direct key matching (multiple strategies)
+                        let matched = activeNameKeys.has(key)
+                            || activeNameKeys.has(`${fnN} ${lnN}`)
                             || activeNameKeys.has(`${fnFirst} ${ln}`)
+                            || activeNameKeys.has(`${fnFirstN} ${lnN}`)
                             || activeNameKeys.has(`${fn} ${lnLast}`)
-                            || activeNameKeys.has(`${fnFirst} ${lnLast}`);
+                            || activeNameKeys.has(`${fn} ${lnFirst}`)
+                            || activeNameKeys.has(`${fnFirst} ${lnLast}`)
+                            || activeNameKeys.has(`${fnFirstN} ${norm(lnLast)}`);
+
+                        // Prefix matching: sheet last name starts with or contains directory last name
+                        if (!matched) {
+                            const dirLns = activeFirstNames.get(fnFirst) || activeFirstNames.get(fnFirstN) || [];
+                            matched = dirLns.some(dirLn =>
+                                lnN.startsWith(dirLn) || dirLn.startsWith(lnN)
+                                || lnN.includes(dirLn) || dirLn.includes(lnN)
+                            );
+                        }
+
                         if (!matched || seen.has(key)) return false;
                         seen.add(key);
                         return true;
