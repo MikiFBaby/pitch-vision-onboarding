@@ -46,9 +46,7 @@ export async function POST(request: NextRequest) {
             console.log(`[Attendance Bot] DM from ${event.user}: "${event.text}" — dispatching to processor`);
 
             // Fire-and-forget fetch to processing endpoint (runs as separate serverless invocation)
-            const baseUrl = process.env.VERCEL_URL
-                ? `https://${process.env.VERCEL_URL}`
-                : 'https://www.pitchvision.io';
+            const baseUrl = 'https://www.pitchvision.io';
 
             fetch(`${baseUrl}/api/slack/attendance-process`, {
                 method: 'POST',
