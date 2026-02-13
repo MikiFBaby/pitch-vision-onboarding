@@ -54,9 +54,11 @@ export async function POST(request: NextRequest) {
         // Handle DM messages
         if (event.type === 'message' && event.channel_type === 'im') {
             if (!event.bot_id && !event.subtype) {
-                handleAttendanceDM(event).catch(err =>
-                    console.error('[Attendance Events] handleAttendanceDM error:', err)
-                );
+                try {
+                    await handleAttendanceDM(event);
+                } catch (err) {
+                    console.error('[Attendance Events] handleAttendanceDM error:', err);
+                }
             }
             return NextResponse.json({ ok: true });
         }
