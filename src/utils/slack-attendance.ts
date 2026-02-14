@@ -375,7 +375,8 @@ export function buildUndoBlocks(events: ParsedAttendanceEvent[], pendingId: stri
 export async function writeToGoogleSheets(
     events: ParsedAttendanceEvent[],
     reportedBySlackId: string,
-    action: 'add' | 'delete' = 'add'
+    action: 'add' | 'delete' = 'add',
+    options?: { reportedByName?: string; reportedAt?: string; confirmedAt?: string }
 ): Promise<SheetsWriteResult> {
     const isDryRun = process.env.ATTENDANCE_DRY_RUN === 'true';
 
@@ -398,7 +399,7 @@ export async function writeToGoogleSheets(
         return { success: false, absences_added: 0, attendance_events_added: 0, error: 'GOOGLE_SHEETS_WEBHOOK_URL not set' };
     }
 
-    // Prepare events with display names for the sheet
+    // Prepare events with display names and metadata for the sheet
     const sheetEvents = events.map(e => ({
         agent_name: e.matched_employee_name || e.agent_name,
         event_type: e.event_type,
@@ -406,6 +407,9 @@ export async function writeToGoogleSheets(
         minutes: e.minutes,
         reason: e.reason,
         reported_by: reportedBySlackId,
+        reported_by_name: options?.reportedByName || '',
+        reported_at: options?.reportedAt || '',
+        confirmed_at: options?.confirmedAt || '',
     }));
 
     try {

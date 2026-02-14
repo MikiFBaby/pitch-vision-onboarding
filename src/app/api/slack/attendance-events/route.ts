@@ -61,6 +61,7 @@ export async function POST(request: NextRequest) {
                         user: event.user,
                         channel: event.channel,
                         text: event.text,
+                        ts: event.ts,
                     }),
                 });
                 console.log(`[Attendance Bot] Processor responded: ${res.status}`);

@@ -7,6 +7,7 @@ import {
     buildConfirmationBlocks,
     buildUndoBlocks,
     postAttendanceBotMessage,
+    getAttendanceBotUserProfile,
     UNDO_WINDOW_MINUTES,
 } from '@/utils/slack-attendance';
 
@@ -26,11 +27,16 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const { user: slackUserId, channel: channelId, text: messageText } = await request.json();
+    const { user: slackUserId, channel: channelId, text: messageText, ts: messageTs } = await request.json();
 
     if (!slackUserId || !channelId || !messageText) {
         return NextResponse.json({ error: 'Missing fields' }, { status: 400 });
     }
+
+    // Convert Slack ts (Unix epoch with decimal) to ISO timestamp
+    const reportedAt = messageTs
+        ? new Date(parseFloat(messageTs) * 1000).toISOString()
+        : new Date().toISOString();
 
     console.log(`[Attendance Process] Processing DM from ${slackUserId}: "${messageText}"`);
 
@@ -46,14 +52,18 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ ok: true, result: 'unauthorized' });
         }
 
-        // 2. Check for undo command
+        // 2. Resolve reporter name from Slack profile
+        const profile = await getAttendanceBotUserProfile(slackUserId);
+        const reportedByName = profile?.realName || 'Unknown';
+
+        // 3. Check for undo command
         const normalizedText = messageText.trim().toLowerCase();
         if (['undo', 'undo last', 'cancel last', 'undo last entry'].includes(normalizedText)) {
             await handleUndoRequest(slackUserId, channelId);
             return NextResponse.json({ ok: true, result: 'undo' });
         }
 
-        // 3. AI parsing
+        // 4. AI parsing
         console.log('[Attendance Process] Calling AI parser...');
         const events = await parseAttendanceMessage(messageText);
         console.log(`[Attendance Process] AI returned ${events.length} events`);
@@ -71,11 +81,11 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ ok: true, result: 'no_events' });
         }
 
-        // 4. Name resolution
+        // 5. Name resolution
         console.log('[Attendance Process] Resolving agent names...');
         const resolvedEvents = await resolveAgentNames(events);
 
-        // 5. Store pending confirmation
+        // 6. Store pending confirmation (include reporter metadata)
         const { data: pending, error: insertError } = await supabaseAdmin
             .from('attendance_pending_confirmations')
             .insert({
@@ -83,6 +93,8 @@ export async function POST(request: NextRequest) {
                 slack_channel_id: channelId,
                 events: resolvedEvents,
                 status: 'pending',
+                reported_by_name: reportedByName,
+                reported_at: reportedAt,
             })
             .select('id')
             .single();
@@ -93,12 +105,12 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ ok: false, error: 'db_insert_failed' }, { status: 500 });
         }
 
-        // 6. Send confirmation message with Block Kit
+        // 7. Send confirmation message with Block Kit
         console.log('[Attendance Process] Sending confirmation blocks...');
         const blocks = buildConfirmationBlocks(resolvedEvents, pending.id);
         const response = await postAttendanceBotMessage(channelId, 'Attendance update confirmation', blocks);
 
-        // 7. Store message_ts for later update
+        // 8. Store message_ts for later update
         if (response?.ts) {
             await supabaseAdmin
                 .from('attendance_pending_confirmations')

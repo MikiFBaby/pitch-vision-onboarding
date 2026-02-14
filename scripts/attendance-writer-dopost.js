@@ -123,7 +123,9 @@ function handleAdd(events) {
         formatDateForSheet(evt.date),           // Date (col C)
         evt.minutes || '',                      // Minutes (col D)
         evt.reason || '',                       // Reason (col E)
-        evt.reported_by || ''                   // Reported By (col F)
+        evt.reported_by_name || '',             // Reported By Name (col F)
+        formatTimestamp(evt.reported_at),        // Reported At (col G)
+        formatTimestamp(evt.confirmed_at)        // Confirmed At (col H)
       ]);
       attendanceCount++;
     }
@@ -213,10 +215,10 @@ function getOrCreateAttendanceEventsSheet(ss) {
   var sheet = ss.getSheetByName('Attendance Events');
   if (!sheet) {
     sheet = ss.insertSheet('Attendance Events');
-    sheet.getRange(1, 1, 1, 6).setValues([[
-      'Agent Name', 'Event Type', 'Date', 'Minutes', 'Reason', 'Reported By'
+    sheet.getRange(1, 1, 1, 8).setValues([[
+      'Agent Name', 'Event Type', 'Date', 'Minutes', 'Reason', 'Reported By', 'Reported At', 'Confirmed At'
     ]]);
-    sheet.getRange(1, 1, 1, 6).setFontWeight('bold');
+    sheet.getRange(1, 1, 1, 8).setFontWeight('bold');
     Logger.log('Created "Attendance Events" sheet with headers');
   }
   return sheet;
@@ -233,6 +235,19 @@ function formatDateForSheet(isoDate) {
   var month = months[parseInt(parts[1], 10) - 1];
   var year = parts[0];
   return day + ' ' + month + ' ' + year;
+}
+
+/**
+ * Converts ISO timestamp to readable format "Feb 13, 2026 4:05 PM".
+ */
+function formatTimestamp(isoTimestamp) {
+  if (!isoTimestamp) return '';
+  try {
+    var date = new Date(isoTimestamp);
+    return Utilities.formatDate(date, Session.getScriptTimeZone(), 'MMM d, yyyy h:mm a');
+  } catch (e) {
+    return isoTimestamp;
+  }
 }
 
 /**

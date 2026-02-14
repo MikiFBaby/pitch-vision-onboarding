@@ -5,7 +5,6 @@ import {
     ATTENDANCE_SIGNING_SECRET,
     writeToGoogleSheets,
     postAttendanceSummary,
-    postAttendanceBotMessage,
     updateAttendanceBotMessage,
     getAttendanceBotUserProfile,
     PENDING_EXPIRY_MINUTES,
@@ -115,8 +114,20 @@ export async function POST(request: NextRequest) {
 
 async function handleConfirm(pending: any, pendingId: string) {
     const events = pending.events as ParsedAttendanceEvent[];
+    const confirmedAt = new Date().toISOString();
 
-    const result = await writeToGoogleSheets(events, pending.slack_user_id);
+    // Get reporter name — use stored value from processor, fall back to Slack profile
+    let reporterName = pending.reported_by_name;
+    if (!reporterName) {
+        const profile = await getAttendanceBotUserProfile(pending.slack_user_id);
+        reporterName = profile?.realName || 'HR Manager';
+    }
+
+    const result = await writeToGoogleSheets(events, pending.slack_user_id, 'add', {
+        reportedByName: reporterName,
+        reportedAt: pending.reported_at || '',
+        confirmedAt,
+    });
 
     if (!result.success) {
         if (pending.message_ts) {
@@ -131,7 +142,7 @@ async function handleConfirm(pending: any, pendingId: string) {
 
     await supabaseAdmin
         .from('attendance_pending_confirmations')
-        .update({ status: 'confirmed', resolved_at: new Date().toISOString() })
+        .update({ status: 'confirmed', resolved_at: confirmedAt })
         .eq('id', pendingId);
 
     const dryRunNote = result.dry_run ? ' _(dry run — not saved to Sheets)_' : '';
@@ -149,8 +160,6 @@ async function handleConfirm(pending: any, pendingId: string) {
     }
 
     if (!result.dry_run) {
-        const profile = await getAttendanceBotUserProfile(pending.slack_user_id);
-        const reporterName = profile?.realName || 'HR Manager';
         await postAttendanceSummary(events, reporterName, 'added');
     }
 }
