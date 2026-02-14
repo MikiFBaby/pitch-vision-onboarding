@@ -299,7 +299,7 @@ export default function EmployeeTable() {
         if (tab === 'hr') return (role.includes('hr') || role.includes('attendance')) && !role.includes('payroll');
         if (tab === 'payroll') return role.includes('payroll');
         if (tab === 'management') return role.includes('manager') || role.includes('team leader') || role.includes('head of dialer') || role.includes('head of operations');
-        if (tab === 'c-suite') return role.includes('owner') || role.includes('president') || role.includes('cto');
+        if (tab === 'c-suite') return role.includes('owner') || role.includes('founder') || role.includes('president') || role.includes('cto') || role.includes('ai architect');
         if (tab === 'ea') return role.includes('executive assistant') || role === 'ea';
         return false;
     }, []);
