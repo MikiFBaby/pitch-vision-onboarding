@@ -208,7 +208,7 @@ export default function EmployeeTable() {
         }
     };
 
-    const [activeTab, setActiveTab] = useState<'all' | 'agents' | 'qa' | 'hr' | 'payroll' | 'management' | 'c-suite' | 'ea'>('all');
+    const [activeTab, setActiveTab] = useState<'all' | 'agents' | 'qa' | 'hr' | 'payroll' | 'management' | 'c-suite'>('all');
 
     // Dropdown Filters
     const [countryFilter, setCountryFilter] = useState<'all' | 'Canada' | 'USA' | 'unknown'>('all');
@@ -300,7 +300,6 @@ export default function EmployeeTable() {
         if (tab === 'payroll') return role.includes('payroll');
         if (tab === 'management') return role.includes('manager') || role.includes('team leader') || role.includes('head of dialer') || role.includes('head of operations');
         if (tab === 'c-suite') return role.includes('owner') || role.includes('founder') || role.includes('president') || role.includes('cto') || role.includes('caio');
-        if (tab === 'ea') return role.includes('executive assistant') || role === 'ea';
         return false;
     }, []);
 
@@ -684,7 +683,6 @@ export default function EmployeeTable() {
                             { id: 'hr', label: 'HR' },
                             { id: 'payroll', label: 'Payroll' },
                             { id: 'management', label: 'Management' },
-                            { id: 'ea', label: 'EA' },
                             { id: 'c-suite', label: 'C-Suite' }
                         ].map((tab) => {
                             const isActive = activeTab === tab.id;
