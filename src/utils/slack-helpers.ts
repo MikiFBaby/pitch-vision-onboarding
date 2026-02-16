@@ -81,8 +81,8 @@ export async function getSlackUserProfile(userId: string, botToken?: string): Pr
  * Fetches all members of a Slack channel (paginated).
  * Returns array of Slack user IDs.
  */
-export async function getChannelMembers(channelId: string): Promise<string[]> {
-    const token = process.env.SLACK_BOT_TOKEN;
+export async function getChannelMembers(channelId: string, botToken?: string): Promise<string[]> {
+    const token = botToken || process.env.SLACK_BOT_TOKEN;
     if (!token) throw new Error('SLACK_BOT_TOKEN is not set');
 
     const members: string[] = [];
@@ -251,6 +251,34 @@ export async function postTeamsWebhook(
  * Removes a user from a Slack channel using conversations.kick.
  * Requires channels:manage scope on the bot token.
  */
+/**
+ * Joins a public Slack channel. Bot must have channels:manage scope.
+ * Silently succeeds if already in the channel.
+ */
+export async function joinChannel(
+    channelId: string,
+    botToken?: string
+): Promise<{ ok: boolean; error?: string }> {
+    const token = botToken || process.env.SLACK_BOT_TOKEN;
+    if (!token) return { ok: false, error: 'No bot token' };
+
+    const res = await fetch('https://slack.com/api/conversations.join', {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ channel: channelId }),
+    });
+
+    const data = await res.json();
+    if (!data.ok && data.error !== 'already_in_channel') {
+        console.error('[Slack] conversations.join failed:', data.error);
+        return { ok: false, error: data.error };
+    }
+    return { ok: true };
+}
+
 export async function kickFromChannel(
     channelId: string,
     userId: string,
@@ -317,7 +345,7 @@ export async function findChannelMemberByName(
     const token = botToken || process.env.SLACK_BOT_TOKEN;
     if (!token) return null;
 
-    const memberIds = await getChannelMembers(channelId);
+    const memberIds = await getChannelMembers(channelId, token);
     const needle = searchName.trim().toLowerCase();
 
     // Fetch profiles in batches and match
@@ -329,25 +357,22 @@ export async function findChannelMemberByName(
 
         for (const p of profiles) {
             if (!p || p.isBot) continue;
-            const real = (p.realName || '').toLowerCase();
-            const display = (p.displayName || '').toLowerCase();
-            const first = (p.firstName || '').toLowerCase();
-            const last = (p.lastName || '').toLowerCase();
+            const real = (p.realName || '').toLowerCase().trim();
+            const display = (p.displayName || '').toLowerCase().trim();
+            const first = (p.firstName || '').toLowerCase().trim();
+            const last = (p.lastName || '').toLowerCase().trim();
 
-            if (
-                real === needle ||
-                display === needle ||
-                real.includes(needle) ||
-                display.includes(needle) ||
-                needle.includes(real) ||
-                needle.includes(display) ||
-                (first && last && needle === `${first} ${last}`)
-            ) {
-                return {
-                    userId: p.slackUserId,
-                    realName: p.realName,
-                    displayName: p.displayName,
-                };
+            // Exact matches
+            if (real && real === needle) return { userId: p.slackUserId, realName: p.realName, displayName: p.displayName };
+            if (display && display === needle) return { userId: p.slackUserId, realName: p.realName, displayName: p.displayName };
+            if (first && last && needle === `${first} ${last}`) return { userId: p.slackUserId, realName: p.realName, displayName: p.displayName };
+
+            // Substring matches (only if both sides have 3+ chars to avoid false positives)
+            if (needle.length >= 3) {
+                if (real.length >= 3 && real.includes(needle)) return { userId: p.slackUserId, realName: p.realName, displayName: p.displayName };
+                if (display.length >= 3 && display.includes(needle)) return { userId: p.slackUserId, realName: p.realName, displayName: p.displayName };
+                if (real.length >= 3 && needle.includes(real)) return { userId: p.slackUserId, realName: p.realName, displayName: p.displayName };
+                if (display.length >= 3 && needle.includes(display)) return { userId: p.slackUserId, realName: p.realName, displayName: p.displayName };
             }
         }
 

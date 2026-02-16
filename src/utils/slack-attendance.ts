@@ -1,5 +1,5 @@
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { namesMatch, postSlackMessage, updateSlackMessage, getSlackUserProfile, postTeamsWebhook, kickFromChannel, inviteToChannel, findChannelMemberByName } from '@/utils/slack-helpers';
+import { namesMatch, postSlackMessage, updateSlackMessage, getSlackUserProfile, postTeamsWebhook, kickFromChannel, inviteToChannel, findChannelMemberByName, joinChannel } from '@/utils/slack-helpers';
 
 // The attendance bot token — separate Slack app from the hire/termination bot
 export const ATTENDANCE_BOT_TOKEN = process.env.SLACK_ATTENDANCE_BOT_TOKEN || '';
@@ -714,6 +714,9 @@ export async function handleChannelRemove(
     }
 
     console.log(`[Channel Mgmt] Looking up "${targetName}" in channel ${HIRES_CHANNEL_ID}`);
+
+    // Ensure Sam is in the channel first (required for kick/member listing)
+    await joinChannel(HIRES_CHANNEL_ID, ATTENDANCE_BOT_TOKEN);
 
     const member = await findChannelMemberByName(HIRES_CHANNEL_ID, targetName, ATTENDANCE_BOT_TOKEN);
     if (!member) {
