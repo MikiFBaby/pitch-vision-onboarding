@@ -8,6 +8,10 @@ import {
     buildUndoBlocks,
     postAttendanceBotMessage,
     getAttendanceBotUserProfile,
+    classifyMessageIntent,
+    handleChannelRemove,
+    handleChannelAdd,
+    buildHelpMessage,
     UNDO_WINDOW_MINUTES,
 } from '@/utils/slack-attendance';
 
@@ -47,79 +51,61 @@ export async function POST(request: NextRequest) {
             console.log(`[Attendance Process] User ${slackUserId} not authorized`);
             await postAttendanceBotMessage(
                 channelId,
-                "Sorry, you're not authorized to report attendance events. Please contact HR if you believe this is an error."
+                "Sorry, you're not authorized to use this bot. Please contact HR if you believe this is an error."
             );
             return NextResponse.json({ ok: true, result: 'unauthorized' });
         }
 
-        // 2. Resolve reporter name from Slack profile
-        const profile = await getAttendanceBotUserProfile(slackUserId);
-        const reportedByName = profile?.realName || 'Unknown';
-
-        // 3. Check for undo command
+        // 2. Check for undo command (fast path, no AI needed)
         const normalizedText = messageText.trim().toLowerCase();
         if (['undo', 'undo last', 'cancel last', 'undo last entry'].includes(normalizedText)) {
             await handleUndoRequest(slackUserId, channelId);
             return NextResponse.json({ ok: true, result: 'undo' });
         }
 
-        // 4. AI parsing
-        console.log('[Attendance Process] Calling AI parser...');
-        const events = await parseAttendanceMessage(messageText);
-        console.log(`[Attendance Process] AI returned ${events.length} events`);
+        // 3. Classify intent with AI
+        console.log('[Attendance Process] Classifying intent...');
+        const intent = await classifyMessageIntent(messageText);
+        console.log(`[Attendance Process] Intent: ${intent.type}`);
 
-        if (events.length === 0) {
-            await postAttendanceBotMessage(
-                channelId,
-                "I couldn't identify any attendance events in your message. Try something like:\n" +
-                "• _\"Sarah called out sick today\"_\n" +
-                "• _\"John was 15 min late\"_\n" +
-                "• _\"Mike left early due to doctor appointment\"_\n" +
-                "• _\"NCNS for David Brown\"_\n\n" +
-                "You can also type *undo* to undo your last entry."
-            );
-            return NextResponse.json({ ok: true, result: 'no_events' });
+        // 4. Route based on intent
+        switch (intent.type) {
+            case 'help': {
+                await postAttendanceBotMessage(channelId, buildHelpMessage());
+                return NextResponse.json({ ok: true, result: 'help' });
+            }
+
+            case 'greeting': {
+                await postAttendanceBotMessage(channelId, intent.text);
+                return NextResponse.json({ ok: true, result: 'greeting' });
+            }
+
+            case 'unknown': {
+                await postAttendanceBotMessage(channelId, intent.text);
+                return NextResponse.json({ ok: true, result: 'unknown' });
+            }
+
+            case 'channel_remove': {
+                console.log(`[Attendance Process] Channel remove request: "${intent.targetName}"`);
+                const result = await handleChannelRemove(intent.targetName, channelId);
+                await postAttendanceBotMessage(channelId, result);
+                return NextResponse.json({ ok: true, result: 'channel_remove' });
+            }
+
+            case 'channel_add': {
+                console.log(`[Attendance Process] Channel add request: "${intent.targetName}"`);
+                const result = await handleChannelAdd(intent.targetName);
+                await postAttendanceBotMessage(channelId, result);
+                return NextResponse.json({ ok: true, result: 'channel_add' });
+            }
+
+            case 'attendance':
+            default: {
+                return await handleAttendanceFlow(
+                    slackUserId, channelId, messageText, reportedAt
+                );
+            }
         }
-
-        // 5. Name resolution
-        console.log('[Attendance Process] Resolving agent names...');
-        const resolvedEvents = await resolveAgentNames(events);
-
-        // 6. Store pending confirmation (include reporter metadata)
-        const { data: pending, error: insertError } = await supabaseAdmin
-            .from('attendance_pending_confirmations')
-            .insert({
-                slack_user_id: slackUserId,
-                slack_channel_id: channelId,
-                events: resolvedEvents,
-                status: 'pending',
-                reported_by_name: reportedByName,
-                reported_at: reportedAt,
-            })
-            .select('id')
-            .single();
-
-        if (insertError || !pending) {
-            console.error('[Attendance Process] Failed to store pending:', insertError);
-            await postAttendanceBotMessage(channelId, 'Sorry, something went wrong. Please try again.');
-            return NextResponse.json({ ok: false, error: 'db_insert_failed' }, { status: 500 });
-        }
-
-        // 7. Send confirmation message with Block Kit
-        console.log('[Attendance Process] Sending confirmation blocks...');
-        const blocks = buildConfirmationBlocks(resolvedEvents, pending.id);
-        const response = await postAttendanceBotMessage(channelId, 'Attendance update confirmation', blocks);
-
-        // 8. Store message_ts for later update
-        if (response?.ts) {
-            await supabaseAdmin
-                .from('attendance_pending_confirmations')
-                .update({ message_ts: response.ts })
-                .eq('id', pending.id);
-        }
-
-        console.log(`[Attendance Process] Complete — ${events.length} events pending confirmation`);
-        return NextResponse.json({ ok: true, result: 'pending', count: events.length });
     } catch (err) {
         console.error('[Attendance Process] Unhandled error:', err);
         try {
@@ -128,6 +114,83 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ ok: false, error: String(err) }, { status: 500 });
     }
 }
+
+// ---------------------------------------------------------------------------
+// Attendance Flow (extracted from original handler)
+// ---------------------------------------------------------------------------
+
+async function handleAttendanceFlow(
+    slackUserId: string,
+    channelId: string,
+    messageText: string,
+    reportedAt: string,
+) {
+    // Resolve reporter name
+    const profile = await getAttendanceBotUserProfile(slackUserId);
+    const reportedByName = profile?.realName || 'Unknown';
+
+    // AI parsing for attendance events
+    console.log('[Attendance Process] Calling AI attendance parser...');
+    const events = await parseAttendanceMessage(messageText);
+    console.log(`[Attendance Process] AI returned ${events.length} events`);
+
+    if (events.length === 0) {
+        await postAttendanceBotMessage(
+            channelId,
+            "Hmm, I couldn't pick out any attendance events from that. Try something like:\n" +
+            "• _\"Sarah called out sick today\"_\n" +
+            "• _\"John was 15 min late\"_\n" +
+            "• _\"Mike left early due to doctor appointment\"_\n" +
+            "• _\"NCNS for David Brown\"_\n\n" +
+            "Type *help* to see everything I can do."
+        );
+        return NextResponse.json({ ok: true, result: 'no_events' });
+    }
+
+    // Name resolution
+    console.log('[Attendance Process] Resolving agent names...');
+    const resolvedEvents = await resolveAgentNames(events);
+
+    // Store pending confirmation
+    const { data: pending, error: insertError } = await supabaseAdmin
+        .from('attendance_pending_confirmations')
+        .insert({
+            slack_user_id: slackUserId,
+            slack_channel_id: channelId,
+            events: resolvedEvents,
+            status: 'pending',
+            reported_by_name: reportedByName,
+            reported_at: reportedAt,
+        })
+        .select('id')
+        .single();
+
+    if (insertError || !pending) {
+        console.error('[Attendance Process] Failed to store pending:', insertError);
+        await postAttendanceBotMessage(channelId, 'Sorry, something went wrong. Please try again.');
+        return NextResponse.json({ ok: false, error: 'db_insert_failed' }, { status: 500 });
+    }
+
+    // Send confirmation message with Block Kit
+    console.log('[Attendance Process] Sending confirmation blocks...');
+    const blocks = buildConfirmationBlocks(resolvedEvents, pending.id);
+    const response = await postAttendanceBotMessage(channelId, 'Attendance update confirmation', blocks);
+
+    // Store message_ts for later update
+    if (response?.ts) {
+        await supabaseAdmin
+            .from('attendance_pending_confirmations')
+            .update({ message_ts: response.ts })
+            .eq('id', pending.id);
+    }
+
+    console.log(`[Attendance Process] Complete — ${events.length} events pending confirmation`);
+    return NextResponse.json({ ok: true, result: 'pending', count: events.length });
+}
+
+// ---------------------------------------------------------------------------
+// Undo Handler
+// ---------------------------------------------------------------------------
 
 async function handleUndoRequest(slackUserId: string, channelId: string) {
     const cutoff = new Date(Date.now() - UNDO_WINDOW_MINUTES * 60 * 1000).toISOString();

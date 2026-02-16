@@ -243,6 +243,123 @@ export async function postTeamsWebhook(
 // Name Matching
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Channel Management
+// ---------------------------------------------------------------------------
+
+/**
+ * Removes a user from a Slack channel using conversations.kick.
+ * Requires channels:manage scope on the bot token.
+ */
+export async function kickFromChannel(
+    channelId: string,
+    userId: string,
+    botToken?: string
+): Promise<{ ok: boolean; error?: string }> {
+    const token = botToken || process.env.SLACK_BOT_TOKEN;
+    if (!token) return { ok: false, error: 'No bot token' };
+
+    const res = await fetch('https://slack.com/api/conversations.kick', {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ channel: channelId, user: userId }),
+    });
+
+    const data = await res.json();
+    if (!data.ok) {
+        console.error('[Slack] conversations.kick failed:', data.error);
+        return { ok: false, error: data.error };
+    }
+    return { ok: true };
+}
+
+/**
+ * Invites a user to a Slack channel using conversations.invite.
+ * Requires channels:manage scope on the bot token.
+ */
+export async function inviteToChannel(
+    channelId: string,
+    userId: string,
+    botToken?: string
+): Promise<{ ok: boolean; error?: string }> {
+    const token = botToken || process.env.SLACK_BOT_TOKEN;
+    if (!token) return { ok: false, error: 'No bot token' };
+
+    const res = await fetch('https://slack.com/api/conversations.invite', {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ channel: channelId, users: userId }),
+    });
+
+    const data = await res.json();
+    if (!data.ok) {
+        console.error('[Slack] conversations.invite failed:', data.error);
+        return { ok: false, error: data.error };
+    }
+    return { ok: true };
+}
+
+/**
+ * Looks up a Slack user by display name / real name within a channel.
+ * Returns the first match's user ID and name, or null.
+ */
+export async function findChannelMemberByName(
+    channelId: string,
+    searchName: string,
+    botToken?: string
+): Promise<{ userId: string; realName: string; displayName: string } | null> {
+    const token = botToken || process.env.SLACK_BOT_TOKEN;
+    if (!token) return null;
+
+    const memberIds = await getChannelMembers(channelId);
+    const needle = searchName.trim().toLowerCase();
+
+    // Fetch profiles in batches and match
+    for (let i = 0; i < memberIds.length; i += 20) {
+        const batch = memberIds.slice(i, i + 20);
+        const profiles = await Promise.all(
+            batch.map(id => getSlackUserProfile(id, token))
+        );
+
+        for (const p of profiles) {
+            if (!p || p.isBot) continue;
+            const real = (p.realName || '').toLowerCase();
+            const display = (p.displayName || '').toLowerCase();
+            const first = (p.firstName || '').toLowerCase();
+            const last = (p.lastName || '').toLowerCase();
+
+            if (
+                real === needle ||
+                display === needle ||
+                real.includes(needle) ||
+                display.includes(needle) ||
+                needle.includes(real) ||
+                needle.includes(display) ||
+                (first && last && needle === `${first} ${last}`)
+            ) {
+                return {
+                    userId: p.slackUserId,
+                    realName: p.realName,
+                    displayName: p.displayName,
+                };
+            }
+        }
+
+        // Rate limit
+        if (i + 20 < memberIds.length) {
+            await new Promise(r => setTimeout(r, 1000));
+        }
+    }
+
+    return null;
+}
+
 export function namesMatch(a: string, b: string): boolean {
     const na = normalizeName(a);
     const nb = normalizeName(b);

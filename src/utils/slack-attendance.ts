@@ -1,5 +1,5 @@
 import { supabaseAdmin } from '@/lib/supabase-admin';
-import { namesMatch, postSlackMessage, updateSlackMessage, getSlackUserProfile, postTeamsWebhook } from '@/utils/slack-helpers';
+import { namesMatch, postSlackMessage, updateSlackMessage, getSlackUserProfile, postTeamsWebhook, kickFromChannel, inviteToChannel, findChannelMemberByName } from '@/utils/slack-helpers';
 
 // The attendance bot token — separate Slack app from the hire/termination bot
 export const ATTENDANCE_BOT_TOKEN = process.env.SLACK_ATTENDANCE_BOT_TOKEN || '';
@@ -376,7 +376,7 @@ export async function writeToGoogleSheets(
     events: ParsedAttendanceEvent[],
     reportedBySlackId: string,
     action: 'add' | 'delete' = 'add',
-    options?: { reportedByName?: string; reportedAt?: string; confirmedAt?: string }
+    options?: { reportedByName?: string; reportedAt?: string }
 ): Promise<SheetsWriteResult> {
     const isDryRun = process.env.ATTENDANCE_DRY_RUN === 'true';
 
@@ -399,18 +399,69 @@ export async function writeToGoogleSheets(
         return { success: false, absences_added: 0, attendance_events_added: 0, error: 'GOOGLE_SHEETS_WEBHOOK_URL not set' };
     }
 
+    // Enrich events with shift start time and campaign (non-absences only)
+    let shiftMap: Record<string, string> = {};
+    let campaignMap: Record<string, string> = {};
+    const nonAbsences = events.filter(e => e.event_type !== 'absent');
+    if (action === 'add' && nonAbsences.length > 0) {
+        try {
+            // Fetch schedules + campaigns in parallel
+            const [schedRes, hiredRes] = await Promise.all([
+                supabaseAdmin.from('Agent Schedule').select('*').limit(2000),
+                supabaseAdmin.from('HR Hired').select('"Agent Name", "Campaign"'),
+            ]);
+
+            const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+
+            // Build shift lookup: agent name → shift time for the event date
+            (schedRes.data || []).forEach((row: any) => {
+                const fn = (row['First Name'] || '').trim();
+                const ln = (row['Last Name'] || '').trim();
+                const key = `${fn} ${ln}`.trim().toLowerCase();
+
+                nonAbsences.forEach(e => {
+                    const agentKey = (e.matched_employee_name || e.agent_name).toLowerCase();
+                    if (agentKey.includes(fn.toLowerCase()) && agentKey.includes(ln.toLowerCase()) && fn && ln) {
+                        const eventDate = new Date(e.date + 'T12:00:00');
+                        const dow = dayNames[eventDate.getDay()];
+                        const shift = row[dow];
+                        if (shift && shift.trim() && shift.trim().toLowerCase() !== 'off') {
+                            // Extract start time from "9:00 AM - 5:00 PM" format
+                            const startTime = shift.split('-')[0]?.trim() || shift.trim();
+                            shiftMap[`${agentKey}|${e.date}`] = startTime;
+                        }
+                    }
+                });
+            });
+
+            // Build campaign lookup: agent name → campaign
+            (hiredRes.data || []).forEach((row: any) => {
+                const name = (row['Agent Name'] || '').trim().toLowerCase();
+                if (name && row['Campaign']) {
+                    campaignMap[name] = row['Campaign'].trim();
+                }
+            });
+        } catch (err) {
+            console.warn('[Attendance] Enrichment lookup failed (non-fatal):', err);
+        }
+    }
+
     // Prepare events with display names and metadata for the sheet
-    const sheetEvents = events.map(e => ({
-        agent_name: e.matched_employee_name || e.agent_name,
-        event_type: e.event_type,
-        date: e.date,
-        minutes: e.minutes,
-        reason: e.reason,
-        reported_by: reportedBySlackId,
-        reported_by_name: options?.reportedByName || '',
-        reported_at: options?.reportedAt || '',
-        confirmed_at: options?.confirmedAt || '',
-    }));
+    const sheetEvents = events.map(e => {
+        const agentName = e.matched_employee_name || e.agent_name;
+        const agentKey = agentName.toLowerCase();
+        return {
+            agent_name: agentName,
+            event_type: e.event_type,
+            date: e.date,
+            minutes: e.minutes,
+            reason: e.reason,
+            shift_start: shiftMap[`${agentKey}|${e.date}`] || '',
+            campaign: campaignMap[agentKey] || '',
+            reported_by_name: options?.reportedByName || '',
+            reported_at: options?.reportedAt || '',
+        };
+    });
 
     try {
         const res = await fetch(webhookUrl, {
@@ -536,4 +587,193 @@ function formatDateForDisplay(isoDate: string): string {
     const month = months[parseInt(parts[1], 10) - 1];
     const year = parts[0];
     return `${month} ${day}, ${year}`;
+}
+
+// ---------------------------------------------------------------------------
+// Intent Classification
+// ---------------------------------------------------------------------------
+
+export type MessageIntent =
+    | { type: 'attendance'; text: string }
+    | { type: 'channel_remove'; targetName: string; channelRef?: string }
+    | { type: 'channel_add'; targetName: string; channelRef?: string }
+    | { type: 'help' }
+    | { type: 'greeting'; text: string }
+    | { type: 'unknown'; text: string };
+
+/**
+ * Classifies a DM message into an intent using AI.
+ * Routes to the appropriate handler based on intent.
+ */
+export async function classifyMessageIntent(text: string): Promise<MessageIntent> {
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    if (!apiKey) return { type: 'attendance', text };
+
+    const normalizedText = text.trim().toLowerCase();
+
+    // Fast path: known simple commands
+    if (['undo', 'undo last', 'cancel last', 'undo last entry'].includes(normalizedText)) {
+        return { type: 'attendance', text };
+    }
+    if (['help', 'commands', 'what can you do', 'what do you do'].includes(normalizedText)) {
+        return { type: 'help' };
+    }
+
+    const systemPrompt = `You are a message intent classifier for "Sam", a Slack bot assistant at a call center company.
+Classify the user's message into exactly one intent category.
+
+Return ONLY a JSON object with these fields:
+- "intent": one of "attendance", "channel_remove", "channel_add", "help", "greeting", "unknown"
+- "target_name": (only for channel_remove/channel_add) the person's name mentioned
+- "reply": (only for greeting/unknown) a short, friendly reply from Sam
+
+Intent definitions:
+- "attendance": Reporting someone is absent, late, left early, or no-showed. Examples: "Sarah called out sick", "NCNS for John", "Mike was 15 min late"
+- "channel_remove": Requesting to remove/kick someone from a Slack channel. Examples: "remove THE GRINCH from the channel", "kick John Smith", "take Sarah out of the channel"
+- "channel_add": Requesting to add/invite someone to a Slack channel. Examples: "add John to the channel", "invite Sarah Smith"
+- "help": Asking what the bot can do, asking for help, listing commands
+- "greeting": Casual greetings or social messages. Examples: "hey", "good morning", "thanks", "how are you"
+- "unknown": Anything else that doesn't fit the above categories
+
+For "greeting" and "unknown", provide a short, friendly "reply" that stays in character as Sam, a helpful HR/attendance bot. Keep replies brief and natural.
+
+Examples:
+Input: "remove THE GRINCH from the channel"
+Output: {"intent":"channel_remove","target_name":"THE GRINCH"}
+
+Input: "Sarah called out sick today"
+Output: {"intent":"attendance"}
+
+Input: "hey sam!"
+Output: {"intent":"greeting","reply":"Hey! How can I help you today?"}
+
+Input: "what's the weather like?"
+Output: {"intent":"unknown","reply":"I'm not sure about the weather, but I can help with attendance tracking and channel management! Type *help* to see what I can do."}`;
+
+    try {
+        const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${apiKey}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                model: 'google/gemini-2.0-flash-001',
+                messages: [
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: text },
+                ],
+                response_format: { type: 'json_object' },
+            }),
+        });
+
+        if (!response.ok) {
+            console.error(`[Intent] OpenRouter error ${response.status}`);
+            return { type: 'attendance', text };
+        }
+
+        const data = await response.json();
+        const content = data.choices?.[0]?.message?.content;
+        if (!content) return { type: 'attendance', text };
+
+        const parsed = JSON.parse(content);
+
+        switch (parsed.intent) {
+            case 'channel_remove':
+                return { type: 'channel_remove', targetName: parsed.target_name || '' };
+            case 'channel_add':
+                return { type: 'channel_add', targetName: parsed.target_name || '' };
+            case 'help':
+                return { type: 'help' };
+            case 'greeting':
+                return { type: 'greeting', text: parsed.reply || 'Hey! How can I help?' };
+            case 'unknown':
+                return { type: 'unknown', text: parsed.reply || "I'm not sure what you mean. Type *help* to see what I can do." };
+            case 'attendance':
+            default:
+                return { type: 'attendance', text };
+        }
+    } catch (err) {
+        console.error('[Intent] Classification error:', err);
+        return { type: 'attendance', text };
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Channel Management Handlers
+// ---------------------------------------------------------------------------
+
+const HIRES_CHANNEL_ID = process.env.SLACK_HIRES_CHANNEL_ID || 'C031F6MCS9W';
+
+export async function handleChannelRemove(
+    targetName: string,
+    channelId: string,
+): Promise<string> {
+    if (!targetName) {
+        return "I need a name to remove. Try: _\"remove John Smith from the channel\"_";
+    }
+
+    console.log(`[Channel Mgmt] Looking up "${targetName}" in channel ${HIRES_CHANNEL_ID}`);
+
+    const member = await findChannelMemberByName(HIRES_CHANNEL_ID, targetName, ATTENDANCE_BOT_TOKEN);
+    if (!member) {
+        return `I couldn't find anyone named *${targetName}* in the channel. Double-check the name and try again.`;
+    }
+
+    console.log(`[Channel Mgmt] Found: ${member.realName} (${member.userId}) — kicking`);
+    const result = await kickFromChannel(HIRES_CHANNEL_ID, member.userId, ATTENDANCE_BOT_TOKEN);
+
+    if (!result.ok) {
+        if (result.error === 'not_in_channel') {
+            return `*${member.realName}* is not currently in the channel.`;
+        }
+        if (result.error === 'cant_kick_self') {
+            return "I can't remove myself from the channel!";
+        }
+        if (result.error === 'missing_scope') {
+            return "I don't have permission to remove users. An admin needs to grant me the `channels:manage` scope.";
+        }
+        return `Failed to remove *${member.realName}*: ${result.error}`;
+    }
+
+    return `:white_check_mark: Done! Removed *${member.realName}* (${member.displayName || member.realName}) from the channel.`;
+}
+
+export async function handleChannelAdd(
+    targetName: string,
+    targetSlackId?: string,
+): Promise<string> {
+    if (!targetName && !targetSlackId) {
+        return "I need a name or Slack ID to add. Try: _\"add John Smith to the channel\"_";
+    }
+
+    if (targetSlackId) {
+        const result = await inviteToChannel(HIRES_CHANNEL_ID, targetSlackId, ATTENDANCE_BOT_TOKEN);
+        if (!result.ok) {
+            if (result.error === 'already_in_channel') {
+                return `That person is already in the channel.`;
+            }
+            return `Failed to add user: ${result.error}`;
+        }
+        return `:white_check_mark: Added to the channel!`;
+    }
+
+    // Can't easily find a user NOT in the channel by name alone
+    // For now, provide guidance
+    return `To add someone to the channel, I need their Slack user ID since I can only search within channel members. You can find it by clicking their profile in Slack → "More" → "Copy member ID".`;
+}
+
+export function buildHelpMessage(): string {
+    return `:wave: *Hi! I'm Sam, your attendance & channel management assistant.*\n\n` +
+        `Here's what I can do:\n\n` +
+        `:clipboard: *Attendance Tracking*\n` +
+        `• _\"Sarah called out sick today\"_\n` +
+        `• _\"John was 15 min late\"_\n` +
+        `• _\"Mike left early due to doctor appointment\"_\n` +
+        `• _\"NCNS for David Brown\"_\n` +
+        `• *undo* — undo your last attendance entry\n\n` +
+        `:busts_in_silhouette: *Channel Management*\n` +
+        `• _\"remove THE GRINCH from the channel\"_\n` +
+        `• _\"kick John Smith\"_\n\n` +
+        `Just message me naturally and I'll figure out what you need!`;
 }
