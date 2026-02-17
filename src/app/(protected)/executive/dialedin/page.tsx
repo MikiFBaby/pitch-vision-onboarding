@@ -11,7 +11,7 @@ import CampaignBreakdown from "@/components/dialedin/CampaignBreakdown";
 import AnomalyAlertsBanner from "@/components/dialedin/AnomalyAlertsBanner";
 import AlertsPanel from "@/components/dialedin/AlertsPanel";
 import ReportChecklist from "@/components/dialedin/ReportChecklist";
-import { Calendar, RefreshCw, Upload, FileSpreadsheet, CheckCircle2, XCircle, Loader2, X } from "lucide-react";
+import { Calendar, RefreshCw, Upload, FileSpreadsheet, CheckCircle2, XCircle, Loader2, X, Info } from "lucide-react";
 import { motion, AnimatePresence } from "framer-motion";
 import type { DailyKPIs, AgentPerformance, SkillSummary, Anomaly, Alert } from "@/types/dialedin-types";
 
@@ -164,7 +164,7 @@ export default function DialedinDashboard() {
     e.preventDefault();
     setIsDragging(false);
     const files = Array.from(e.dataTransfer.files).filter(
-      (f) => f.name.endsWith(".xls") || f.name.endsWith(".xlsx"),
+      (f) => f.name.endsWith(".xls") || f.name.endsWith(".xlsx") || f.name.endsWith(".csv"),
     );
     if (files.length > 0) handleUploadFiles(files);
   };
@@ -279,7 +279,7 @@ export default function DialedinDashboard() {
                     ref={fileInputRef}
                     type="file"
                     multiple
-                    accept=".xls,.xlsx"
+                    accept=".xls,.xlsx,.csv"
                     onChange={handleFileSelect}
                     className="hidden"
                   />
@@ -292,7 +292,7 @@ export default function DialedinDashboard() {
                     <div className="flex flex-col items-center gap-2">
                       <Upload size={32} className={isDragging ? "text-indigo-400" : "text-white/20"} />
                       <p className="text-white/50 text-sm">
-                        Drop <span className="text-white/80">.xls</span> / <span className="text-white/80">.xlsx</span> files here, or click to browse
+                        Drop <span className="text-white/80">.xls</span> / <span className="text-white/80">.xlsx</span> / <span className="text-white/80">.csv</span> files here, or click to browse
                       </p>
                       <p className="text-white/25 text-xs">
                         All 12 DialedIn report types supported
@@ -345,6 +345,16 @@ export default function DialedinDashboard() {
               loading={loading}
             />
           </motion.div>
+        )}
+
+        {/* Partial Data Indicator */}
+        {kpis?.is_partial && (
+          <div className="flex items-center gap-2 px-4 py-2.5 bg-amber-500/10 border border-amber-500/20 rounded-lg">
+            <Info size={14} className="text-amber-400 shrink-0" />
+            <span className="text-amber-300/80 text-sm">
+              Partial data — Agent Summary only. Disposition metrics unavailable.
+            </span>
+          </div>
         )}
 
         {/* KPI Cards */}

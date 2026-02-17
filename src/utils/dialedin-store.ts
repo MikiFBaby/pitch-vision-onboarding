@@ -7,6 +7,7 @@ import { parseXLSBuffer, identifyReportType, extractDateRange, toISODate } from 
 import { processDay, type ETLResult } from './dialedin-kpi';
 import { postSlackMessage } from './slack-helpers';
 import { REPORT_TYPE_CONFIG, type ParsedReportData, type IngestionSource, type ReportType } from '@/types/dialedin-types';
+import { uploadReportToS3 } from './s3-upload';
 
 const ALL_REPORT_TYPES = Object.keys(REPORT_TYPE_CONFIG) as ReportType[];
 
@@ -70,19 +71,25 @@ export async function ingestFile(
   const { start, end } = extractDateRange(filename);
   const reportDate = end ? toISODate(end) : new Date().toISOString().split('T')[0];
 
-  // 1. Upload raw file to Supabase Storage
+  // 1. Upload raw file to Supabase Storage + S3 (parallel, S3 non-blocking)
   const storagePath = `raw/${reportDate}/${Date.now()}_${filename}`;
   let rawFileUrl: string | null = null;
-  const { error: storageError } = await supabaseAdmin.storage
-    .from('dialedin_reports')
-    .upload(storagePath, buffer, { contentType: 'application/vnd.ms-excel', upsert: false });
+  let s3FileKey: string | null = null;
 
-  if (!storageError) {
+  const [storageResult, s3Result] = await Promise.all([
+    supabaseAdmin.storage
+      .from('dialedin_reports')
+      .upload(storagePath, buffer, { contentType: 'application/vnd.ms-excel', upsert: false }),
+    uploadReportToS3(buffer, reportDate, reportType, filename),
+  ]);
+
+  if (!storageResult.error) {
     const { data: urlData } = supabaseAdmin.storage
       .from('dialedin_reports')
       .getPublicUrl(storagePath);
     rawFileUrl = urlData?.publicUrl || null;
   }
+  s3FileKey = s3Result;
 
   // 2. Parse XLS
   let parsed: ParsedReportData;
@@ -143,6 +150,7 @@ export async function ingestFile(
         date_range_start: start ? toISODate(start) : null,
         date_range_end: end ? toISODate(end) : null,
         raw_file_url: rawFileUrl,
+        s3_file_key: s3FileKey,
         row_count: rowCount,
         ingestion_source: source,
         ingestion_status: 'processing',
@@ -178,8 +186,10 @@ export async function computeAndStore(
   // Check if all 12 report types are present
   const checklist = await getChecklistStatus(reportDate);
 
-  if (!checklist.complete) {
-    // Mark current batch as completed (ingested) but don't compute
+  const isPartial = !checklist.complete;
+
+  // If incomplete and no AgentSummary received yet, just store — can't compute anything
+  if (isPartial && !checklist.received.includes('AgentSummary')) {
     const now = new Date().toISOString();
     for (const id of reportIds) {
       await supabaseAdmin
@@ -190,7 +200,7 @@ export async function computeAndStore(
     return { incomplete: true, checklist };
   }
 
-  // All 12 report types present — run full computation
+  // Agent Summary available (partial) or all 12 present (full) — run computation
   const { data: allReportsForDate } = await supabaseAdmin
     .from('dialedin_reports')
     .select('id, report_type, raw_metadata')
@@ -248,11 +258,12 @@ export async function computeAndStore(
   }
 
   // Upsert daily KPIs with enrichment data in raw_data
-  const { report_date: _, ...kpiData } = result.dailyKPIs;
+  const { report_date: _, is_partial: _p, ...kpiData } = result.dailyKPIs;
   await supabaseAdmin.from('dialedin_daily_kpis').upsert(
     {
       ...kpiData,
       report_date: reportDate,
+      is_partial: isPartial,
       raw_data: result.rawData,
       updated_at: new Date().toISOString(),
     },
@@ -302,15 +313,15 @@ export async function computeAndStore(
   }
 
   // Send Slack notification on completion
-  await sendCompletionNotification(reportDate, result);
+  await sendCompletionNotification(reportDate, result, isPartial);
 
   return result;
 }
 
 /**
- * Send a Slack notification when all 12 reports are received and analyzed.
+ * Send a Slack notification when reports are analyzed.
  */
-async function sendCompletionNotification(reportDate: string, result: ETLResult): Promise<void> {
+async function sendCompletionNotification(reportDate: string, result: ETLResult, isPartial: boolean): Promise<void> {
   const channelId = process.env.DIALEDIN_SLACK_CHANNEL_ID;
   if (!channelId) return;
 
@@ -323,14 +334,27 @@ async function sendCompletionNotification(reportDate: string, result: ETLResult)
     month: 'short', day: 'numeric', year: 'numeric',
   });
 
-  const text = [
-    `*DialedIn Daily Analysis Complete — ${dateFormatted}*`,
-    `All 12 reports received and processed\n`,
+  const header = isPartial
+    ? `*DialedIn Daily Analysis — ${dateFormatted}* (Agent Summary)`
+    : `*DialedIn Daily Analysis Complete — ${dateFormatted}*`;
+  const subtitle = isPartial
+    ? `Agent Summary processed\n`
+    : `All 12 reports received and processed\n`;
+
+  const lines = [
+    header,
+    subtitle,
     `*Agent Summary:* ${kpi.total_agents} agents | ${kpi.total_dials} dials | ${kpi.total_connects} connects | ${kpi.total_transfers} transfers`,
-    `*Campaigns:* ${campAgg.total_campaigns || 0} campaigns | ${(campAgg.total_system_dials || 0).toLocaleString()} sys dials | ${(campAgg.total_system_connects || 0).toLocaleString()} sys connects`,
-    `*Pipeline:* ${sources.total_source_rows || 0} source rows → ${sections} analytical sections`,
-    `\n<${process.env.NEXT_PUBLIC_APP_URL || 'https://pitchvision.io'}/executive/dialedin|View Dashboard>`,
-  ].join('\n');
+  ];
+
+  if (!isPartial) {
+    lines.push(`*Campaigns:* ${campAgg.total_campaigns || 0} campaigns | ${(campAgg.total_system_dials || 0).toLocaleString()} sys dials | ${(campAgg.total_system_connects || 0).toLocaleString()} sys connects`);
+    lines.push(`*Pipeline:* ${sources.total_source_rows || 0} source rows → ${sections} analytical sections`);
+  }
+
+  lines.push(`\n<${process.env.NEXT_PUBLIC_APP_URL || 'https://pitchvision.io'}/executive/dialedin|View Dashboard>`);
+
+  const text = lines.join('\n');
 
   try {
     await postSlackMessage(channelId, text);

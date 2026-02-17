@@ -28,7 +28,7 @@
  * CONFIGURATION (set via setup() or Script Properties):
  * - INGEST_URL:    https://pitchvision.io/api/dialedin/ingest
  * - INGEST_API_KEY: Your DIALEDIN_INGEST_API_KEY value from .env.local
- * - GMAIL_QUERY:   from:reports@dialedin.com has:attachment filename:xls
+ * - GMAIL_QUERY:   from:reports@dialedin.com subject:AgentSummary has:attachment filename:xls
  *
  * ============================================================================
  */
@@ -45,7 +45,7 @@ function getConfig() {
   return {
     ingestUrl:   props.getProperty('INGEST_URL') || 'https://pitchvision.io/api/dialedin/ingest',
     apiKey:      props.getProperty('INGEST_API_KEY') || '',
-    gmailQuery:  props.getProperty('GMAIL_QUERY') || 'from:reports@dialedin.com has:attachment filename:xls is:unread',
+    gmailQuery:  props.getProperty('GMAIL_QUERY') || 'from:reports@dialedin.com subject:AgentSummary has:attachment filename:xls is:unread',
     maxThreads:  parseInt(props.getProperty('MAX_THREADS') || '10', 10),
   };
 }
@@ -72,7 +72,7 @@ function setup() {
   }
 
   // Gmail search query — targets DialedIn report emails with XLS attachments
-  props.setProperty('GMAIL_QUERY', 'from:reports@dialedin.com has:attachment filename:xls is:unread');
+  props.setProperty('GMAIL_QUERY', 'from:reports@dialedin.com subject:AgentSummary has:attachment filename:xls is:unread');
   props.setProperty('MAX_THREADS', '10');
 
   // Create Gmail labels if they don't exist
@@ -335,7 +335,7 @@ function getOrCreateLabel(name) {
  * Useful for testing without waiting for the trigger.
  */
 function testProcessSingleEmail() {
-  var threads = GmailApp.search('from:reports@dialedin.com has:attachment filename:xls', 0, 1);
+  var threads = GmailApp.search('from:reports@dialedin.com subject:AgentSummary has:attachment filename:xls', 0, 1);
   if (threads.length === 0) {
     Logger.log('No matching emails found.');
     return;

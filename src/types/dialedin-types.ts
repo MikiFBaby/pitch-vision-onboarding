@@ -282,6 +282,7 @@ export interface DailyKPIs {
   delta_tph: number | null;
   dispositions: Record<string, number>;
   distribution: TPHDistribution | null;
+  is_partial?: boolean;
 }
 
 export interface TPHDistribution {

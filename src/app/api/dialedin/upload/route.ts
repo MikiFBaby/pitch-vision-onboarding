@@ -91,11 +91,12 @@ export async function POST(request: NextRequest) {
         reportDate,
         files: results,
         computed: true,
+        is_partial: !checklist.complete,
         checklist: {
           received: checklist.receivedCount,
           total: checklist.totalCount,
-          complete: true,
-          missing: [],
+          complete: checklist.complete,
+          missing: checklist.missing,
         },
         summary: {
           agents: etlResult.dailyKPIs.total_agents,

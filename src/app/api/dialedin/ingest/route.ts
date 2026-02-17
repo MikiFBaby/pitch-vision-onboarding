@@ -90,11 +90,12 @@ export async function POST(request: NextRequest) {
         skipped: errors.length,
         errors: errors.length > 0 ? errors : undefined,
         computed: true,
+        is_partial: !checklist.complete,
         checklist: {
           received: checklist.receivedCount,
           total: checklist.totalCount,
-          complete: true,
-          missing: [],
+          complete: checklist.complete,
+          missing: checklist.missing,
         },
         summary: {
           agents: etlResult.dailyKPIs.total_agents,
