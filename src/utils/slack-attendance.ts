@@ -597,6 +597,15 @@ export type MessageIntent =
     | { type: 'attendance'; text: string }
     | { type: 'channel_remove'; targetName: string; channelRef?: string }
     | { type: 'channel_add'; targetName: string; channelRef?: string }
+    | { type: 'employee_lookup'; targetName: string }
+    | { type: 'whos_out'; date: string }
+    | { type: 'attendance_history'; targetName: string; period: 'today' | 'week' | 'month' }
+    | { type: 'schedule_lookup'; targetName: string | null; when: 'now' | 'today' | 'tomorrow' }
+    | { type: 'qa_lookup'; targetName: string }
+    | { type: 'onboarding_status'; targetName: string }
+    | { type: 'bulk_cleanup' }
+    | { type: 'directory_update'; targetName: string; field: string; value: string }
+    | { type: 'coverage_finder'; targetName: string; date: string }
     | { type: 'help' }
     | { type: 'greeting'; text: string }
     | { type: 'unknown'; text: string };
@@ -619,36 +628,72 @@ export async function classifyMessageIntent(text: string): Promise<MessageIntent
         return { type: 'help' };
     }
 
+    // Fast-path keyword matches
+    if (/^who'?s\s+out/i.test(normalizedText) || /^who\s+is\s+out/i.test(normalizedText)) {
+        const tomorrow = /tomorrow/i.test(normalizedText);
+        const dateMatch = normalizedText.match(/(\d{4}-\d{2}-\d{2})/);
+        const date = dateMatch ? dateMatch[1] : tomorrow ? _tomorrowISO() : _todayISO();
+        return { type: 'whos_out', date };
+    }
+    if (/^who'?s\s+working/i.test(normalizedText) || /^who\s+is\s+working/i.test(normalizedText)) {
+        const when = /tomorrow/i.test(normalizedText) ? 'tomorrow' as const : 'today' as const;
+        return { type: 'schedule_lookup', targetName: null, when };
+    }
+    if (/^(remove|clean\s*up|kick)\s+(all\s+)?terminated/i.test(normalizedText)) {
+        return { type: 'bulk_cleanup' };
+    }
+
+    // Compute date context for AI
+    const todayStr = _todayISO();
+    const tomorrowStr = _tomorrowISO();
+
     const systemPrompt = `You are a message intent classifier for "Sam", a Slack bot assistant at a call center company.
 Classify the user's message into exactly one intent category.
+Today's date is ${todayStr}. Tomorrow is ${tomorrowStr}.
 
 Return ONLY a JSON object with these fields:
-- "intent": one of "attendance", "channel_remove", "channel_add", "help", "greeting", "unknown"
-- "target_name": (only for channel_remove/channel_add) the person's name mentioned
-- "reply": (only for greeting/unknown) a short, friendly reply from Sam
+- "intent": one of the intents listed below
+- "target_name": (for intents that involve a person) the person's name mentioned
+- "date": (for whos_out, coverage_finder) YYYY-MM-DD date. Default to today if not specified.
+- "period": (for attendance_history) one of "today", "week", "month". Default "week".
+- "when": (for schedule_lookup) one of "now", "today", "tomorrow". Default "today".
+- "field": (for directory_update) the field to update (phone, email, campaign, country, role)
+- "value": (for directory_update) the new value
+- "reply": (for greeting/unknown) a short, friendly reply from Sam
 
 Intent definitions:
 - "attendance": Reporting someone is absent, late, left early, or no-showed. Examples: "Sarah called out sick", "NCNS for John", "Mike was 15 min late"
-- "channel_remove": Requesting to remove/kick someone from a Slack channel. Examples: "remove THE GRINCH from the channel", "kick John Smith", "take Sarah out of the channel"
+- "channel_remove": Requesting to remove/kick someone from a Slack channel. Examples: "remove THE GRINCH from the channel", "kick John Smith"
 - "channel_add": Requesting to add/invite someone to a Slack channel. Examples: "add John to the channel", "invite Sarah Smith"
-- "help": Asking what the bot can do, asking for help, listing commands
-- "greeting": Casual greetings or social messages. Examples: "hey", "good morning", "thanks", "how are you"
-- "unknown": Anything else that doesn't fit the above categories
+- "employee_lookup": Asking about who someone is, looking up an employee. Examples: "who is Sarah?", "look up John Smith", "tell me about Mike"
+- "whos_out": Asking who is out/absent on a given day. Examples: "who's out today?", "who's off tomorrow?", "absences for 2026-02-20"
+- "attendance_history": Asking for a specific person's attendance record over a period. Examples: "attendance for Sarah this week", "John's absences this month", "how has Mike's attendance been?"
+- "schedule_lookup": Asking about work schedules. With a name: "what's Sarah's schedule?". Without: "who's working today?", "who's on shift tomorrow?"
+- "qa_lookup": Asking about QA scores or evaluations. Examples: "Sarah's QA score?", "how did John do on his last QA?", "QA results for Mike"
+- "onboarding_status": Asking about a new hire's onboarding progress. Examples: "how's John's onboarding?", "onboarding status for Sarah"
+- "bulk_cleanup": Requesting removal of all terminated employees from the channel. Examples: "remove all terminated employees", "clean up the channel"
+- "directory_update": Requesting to update an employee's info. Examples: "update John's phone to 555-1234", "change Sarah's email to sarah@example.com"
+- "coverage_finder": Asking who can cover for someone. Examples: "who can cover for Sarah?", "Sarah called out, who's available?", "coverage for John tomorrow"
+- "help": Asking what the bot can do
+- "greeting": Casual greetings. Examples: "hey", "good morning", "thanks"
+- "unknown": Anything that doesn't fit
 
-For "greeting" and "unknown", provide a short, friendly "reply" that stays in character as Sam, a helpful HR/attendance bot. Keep replies brief and natural.
+For "greeting" and "unknown", provide a short, friendly "reply" in character as Sam.
 
 Examples:
-Input: "remove THE GRINCH from the channel"
-Output: {"intent":"channel_remove","target_name":"THE GRINCH"}
-
-Input: "Sarah called out sick today"
-Output: {"intent":"attendance"}
-
-Input: "hey sam!"
-Output: {"intent":"greeting","reply":"Hey! How can I help you today?"}
-
-Input: "what's the weather like?"
-Output: {"intent":"unknown","reply":"I'm not sure about the weather, but I can help with attendance tracking and channel management! Type *help* to see what I can do."}`;
+{"intent":"channel_remove","target_name":"THE GRINCH"}
+{"intent":"employee_lookup","target_name":"Sarah Jones"}
+{"intent":"whos_out","date":"${todayStr}"}
+{"intent":"attendance_history","target_name":"John","period":"week"}
+{"intent":"schedule_lookup","target_name":"Sarah","when":"today"}
+{"intent":"schedule_lookup","target_name":null,"when":"tomorrow"}
+{"intent":"qa_lookup","target_name":"Mike"}
+{"intent":"onboarding_status","target_name":"New Hire Name"}
+{"intent":"directory_update","target_name":"John","field":"phone","value":"555-1234"}
+{"intent":"coverage_finder","target_name":"Sarah","date":"${tomorrowStr}"}
+{"intent":"bulk_cleanup"}
+{"intent":"attendance"}
+{"intent":"greeting","reply":"Hey! How can I help?"}`;
 
     try {
         const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -683,6 +728,24 @@ Output: {"intent":"unknown","reply":"I'm not sure about the weather, but I can h
                 return { type: 'channel_remove', targetName: parsed.target_name || '' };
             case 'channel_add':
                 return { type: 'channel_add', targetName: parsed.target_name || '' };
+            case 'employee_lookup':
+                return { type: 'employee_lookup', targetName: parsed.target_name || '' };
+            case 'whos_out':
+                return { type: 'whos_out', date: parsed.date || todayStr };
+            case 'attendance_history':
+                return { type: 'attendance_history', targetName: parsed.target_name || '', period: parsed.period || 'week' };
+            case 'schedule_lookup':
+                return { type: 'schedule_lookup', targetName: parsed.target_name || null, when: parsed.when || 'today' };
+            case 'qa_lookup':
+                return { type: 'qa_lookup', targetName: parsed.target_name || '' };
+            case 'onboarding_status':
+                return { type: 'onboarding_status', targetName: parsed.target_name || '' };
+            case 'bulk_cleanup':
+                return { type: 'bulk_cleanup' };
+            case 'directory_update':
+                return { type: 'directory_update', targetName: parsed.target_name || '', field: parsed.field || '', value: parsed.value || '' };
+            case 'coverage_finder':
+                return { type: 'coverage_finder', targetName: parsed.target_name || '', date: parsed.date || todayStr };
             case 'help':
                 return { type: 'help' };
             case 'greeting':
@@ -697,6 +760,17 @@ Output: {"intent":"unknown","reply":"I'm not sure about the weather, but I can h
         console.error('[Intent] Classification error:', err);
         return { type: 'attendance', text };
     }
+}
+
+function _todayISO(): string {
+    const now = new Date();
+    return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+}
+
+function _tomorrowISO(): string {
+    const d = new Date();
+    d.setDate(d.getDate() + 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -767,16 +841,26 @@ export async function handleChannelAdd(
 }
 
 export function buildHelpMessage(): string {
-    return `:wave: *Hi! I'm Sam, your attendance & channel management assistant.*\n\n` +
-        `Here's what I can do:\n\n` +
-        `:clipboard: *Attendance Tracking*\n` +
-        `• _\"Sarah called out sick today\"_\n` +
-        `• _\"John was 15 min late\"_\n` +
-        `• _\"Mike left early due to doctor appointment\"_\n` +
-        `• _\"NCNS for David Brown\"_\n` +
+    return `:wave: *Hi! I'm Sam, your HR & operations assistant.*\n\n` +
+        `Here's everything I can do:\n\n` +
+        `:clipboard: *Attendance*\n` +
+        `• _\"Sarah called out sick today\"_ — report absences, lates, no-shows\n` +
+        `• _\"who's out today?\"_ — see all absences for a date\n` +
+        `• _\"attendance for Sarah this week\"_ — view someone's attendance history\n` +
         `• *undo* — undo your last attendance entry\n\n` +
+        `:bust_in_silhouette: *Employee Lookup*\n` +
+        `• _\"who is Sarah?\"_ — look up employee info\n\n` +
+        `:calendar: *Schedules*\n` +
+        `• _\"who's working today?\"_ — see who's on shift\n` +
+        `• _\"what's Sarah's schedule?\"_ — view weekly schedule\n` +
+        `• _\"who can cover for Sarah tomorrow?\"_ — find available agents\n\n` +
+        `:bar_chart: *QA & Onboarding*\n` +
+        `• _\"Sarah's QA score?\"_ — latest QA results\n` +
+        `• _\"John's onboarding status?\"_ — onboarding progress\n\n` +
         `:busts_in_silhouette: *Channel Management*\n` +
-        `• _\"remove THE GRINCH from the channel\"_\n` +
-        `• _\"kick John Smith\"_\n\n` +
+        `• _\"remove John Smith from the channel\"_\n` +
+        `• _\"remove all terminated employees\"_ — bulk cleanup\n\n` +
+        `:pencil2: *Directory Updates*\n` +
+        `• _\"update John's phone to 555-1234\"_ — update phone, email, campaign, country, role\n\n` +
         `Just message me naturally and I'll figure out what you need!`;
 }

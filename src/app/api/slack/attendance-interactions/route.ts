@@ -3,6 +3,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { verifySlackSignature } from '@/utils/slack-helpers';
 import {
     ATTENDANCE_SIGNING_SECRET,
+    ATTENDANCE_BOT_TOKEN,
     writeToGoogleSheets,
     postAttendanceSummary,
     updateAttendanceBotMessage,
@@ -10,6 +11,7 @@ import {
     PENDING_EXPIRY_MINUTES,
     type ParsedAttendanceEvent,
 } from '@/utils/slack-attendance';
+import { executeBulkCleanup } from '@/utils/slack-sam-handlers';
 
 // ---------------------------------------------------------------------------
 // POST /api/slack/attendance-interactions — Attendance Bot interactivity handler
@@ -49,12 +51,23 @@ export async function POST(request: NextRequest) {
     }
 
     const actionId = action.action_id;
-    const pendingId = action.value;
     const actingUserId = payload.user?.id;
+    const channelId = payload.channel?.id;
 
-    console.log(`[Attendance Interactions] action=${actionId} pending=${pendingId} user=${actingUserId}`);
+    console.log(`[Attendance Interactions] action=${actionId} user=${actingUserId}`);
 
-    // 4. Look up pending confirmation
+    // 4. Handle bulk cleanup actions (these don't use the pending table)
+    if (actionId === 'bulk_cleanup_confirm') {
+        await handleBulkCleanupConfirm(action, channelId, payload);
+        return NextResponse.json({ ok: true });
+    }
+    if (actionId === 'bulk_cleanup_cancel') {
+        await handleBulkCleanupCancel(channelId, payload);
+        return NextResponse.json({ ok: true });
+    }
+
+    // 5. Look up pending confirmation (for attendance actions)
+    const pendingId = action.value;
     const { data: pending } = await supabaseAdmin
         .from('attendance_pending_confirmations')
         .select('*')
@@ -66,19 +79,19 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ ok: true });
     }
 
-    // 5. Verify the acting user matches
+    // 6. Verify the acting user matches
     if (actingUserId !== pending.slack_user_id) {
         console.warn('[Attendance Interactions] User mismatch:', actingUserId, '!=', pending.slack_user_id);
         return NextResponse.json({ ok: true });
     }
 
-    // 6. Check if already processed
+    // 7. Check if already processed
     if (pending.status !== 'pending') {
         console.log('[Attendance Interactions] Already processed:', pending.status);
         return NextResponse.json({ ok: true });
     }
 
-    // 7. Check expiry
+    // 8. Check expiry
     const ageMs = Date.now() - new Date(pending.created_at).getTime();
     if (ageMs > PENDING_EXPIRY_MINUTES * 60 * 1000) {
         await supabaseAdmin
@@ -96,7 +109,7 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ ok: true });
     }
 
-    // 8. Handle actions
+    // 9. Handle attendance actions
     if (actionId === 'attendance_confirm') {
         await handleConfirm(pending, pendingId);
     } else if (actionId === 'attendance_cancel') {
@@ -126,7 +139,6 @@ async function handleConfirm(pending: any, pendingId: string) {
     const result = await writeToGoogleSheets(events, pending.slack_user_id, 'add', {
         reportedByName: reporterName,
         reportedAt: pending.reported_at || '',
-        confirmedAt,
     });
 
     if (!result.success) {
@@ -211,4 +223,37 @@ async function handleUndo(pending: any, pendingId: string) {
     const profile = await getAttendanceBotUserProfile(pending.slack_user_id);
     const reporterName = profile?.realName || 'HR Manager';
     await postAttendanceSummary(events, reporterName, 'removed');
+}
+
+// ---------------------------------------------------------------------------
+// Bulk Cleanup Handlers
+// ---------------------------------------------------------------------------
+
+async function handleBulkCleanupConfirm(action: any, channelId: string, payload: any) {
+    let parsed: { users: { name: string; slackId: string }[]; channelId: string };
+    try {
+        parsed = JSON.parse(action.value);
+    } catch {
+        console.error('[Bulk Cleanup] Failed to parse action value');
+        return;
+    }
+
+    // Update original message to show processing
+    const msgTs = payload.message?.ts;
+    if (msgTs && channelId) {
+        await updateAttendanceBotMessage(channelId, msgTs, ':hourglass_flowing_sand: Removing terminated employees…');
+    }
+
+    const result = await executeBulkCleanup(parsed.users, parsed.channelId, ATTENDANCE_BOT_TOKEN);
+
+    if (msgTs && channelId) {
+        await updateAttendanceBotMessage(channelId, msgTs, result);
+    }
+}
+
+async function handleBulkCleanupCancel(channelId: string, payload: any) {
+    const msgTs = payload.message?.ts;
+    if (msgTs && channelId) {
+        await updateAttendanceBotMessage(channelId, msgTs, ':x: Bulk cleanup cancelled.');
+    }
 }

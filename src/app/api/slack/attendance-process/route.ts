@@ -13,7 +13,19 @@ import {
     handleChannelAdd,
     buildHelpMessage,
     UNDO_WINDOW_MINUTES,
+    ATTENDANCE_BOT_TOKEN,
 } from '@/utils/slack-attendance';
+import {
+    handleEmployeeLookup,
+    handleWhosOut,
+    handleAttendanceHistory,
+    handleScheduleLookup,
+    handleQALookup,
+    handleOnboardingStatus,
+    handleBulkCleanupPreview,
+    handleDirectoryUpdate,
+    handleCoverageFinder,
+} from '@/utils/slack-sam-handlers';
 
 // Force Node.js runtime for reliable execution
 export const runtime = 'nodejs';
@@ -97,6 +109,69 @@ export async function POST(request: NextRequest) {
                 const result = await handleChannelAdd(intent.targetName);
                 await postAttendanceBotMessage(channelId, result);
                 return NextResponse.json({ ok: true, result: 'channel_add' });
+            }
+
+            case 'employee_lookup': {
+                console.log(`[Attendance Process] Employee lookup: "${intent.targetName}"`);
+                const result = await handleEmployeeLookup(intent.targetName);
+                await postAttendanceBotMessage(channelId, result);
+                return NextResponse.json({ ok: true, result: 'employee_lookup' });
+            }
+
+            case 'whos_out': {
+                console.log(`[Attendance Process] Who's out: ${intent.date}`);
+                const result = await handleWhosOut(intent.date);
+                await postAttendanceBotMessage(channelId, result);
+                return NextResponse.json({ ok: true, result: 'whos_out' });
+            }
+
+            case 'attendance_history': {
+                console.log(`[Attendance Process] Attendance history: "${intent.targetName}" ${intent.period}`);
+                const result = await handleAttendanceHistory(intent.targetName, intent.period);
+                await postAttendanceBotMessage(channelId, result);
+                return NextResponse.json({ ok: true, result: 'attendance_history' });
+            }
+
+            case 'schedule_lookup': {
+                console.log(`[Attendance Process] Schedule lookup: "${intent.targetName}" ${intent.when}`);
+                const result = await handleScheduleLookup(intent.targetName, intent.when);
+                await postAttendanceBotMessage(channelId, result);
+                return NextResponse.json({ ok: true, result: 'schedule_lookup' });
+            }
+
+            case 'qa_lookup': {
+                console.log(`[Attendance Process] QA lookup: "${intent.targetName}"`);
+                const result = await handleQALookup(intent.targetName);
+                await postAttendanceBotMessage(channelId, result);
+                return NextResponse.json({ ok: true, result: 'qa_lookup' });
+            }
+
+            case 'onboarding_status': {
+                console.log(`[Attendance Process] Onboarding status: "${intent.targetName}"`);
+                const result = await handleOnboardingStatus(intent.targetName);
+                await postAttendanceBotMessage(channelId, result);
+                return NextResponse.json({ ok: true, result: 'onboarding_status' });
+            }
+
+            case 'bulk_cleanup': {
+                console.log('[Attendance Process] Bulk cleanup request');
+                const preview = await handleBulkCleanupPreview(channelId, ATTENDANCE_BOT_TOKEN);
+                await postAttendanceBotMessage(channelId, preview.text, preview.blocks);
+                return NextResponse.json({ ok: true, result: 'bulk_cleanup' });
+            }
+
+            case 'directory_update': {
+                console.log(`[Attendance Process] Directory update: "${intent.targetName}" ${intent.field}=${intent.value}`);
+                const result = await handleDirectoryUpdate(intent.targetName, intent.field, intent.value);
+                await postAttendanceBotMessage(channelId, result);
+                return NextResponse.json({ ok: true, result: 'directory_update' });
+            }
+
+            case 'coverage_finder': {
+                console.log(`[Attendance Process] Coverage finder: "${intent.targetName}" ${intent.date}`);
+                const result = await handleCoverageFinder(intent.targetName, intent.date);
+                await postAttendanceBotMessage(channelId, result);
+                return NextResponse.json({ ok: true, result: 'coverage_finder' });
             }
 
             case 'attendance':
