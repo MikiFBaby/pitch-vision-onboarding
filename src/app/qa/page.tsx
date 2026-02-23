@@ -128,6 +128,18 @@ function QADashboardContent() {
         fetchCalls();
     }, [fetchCalls]);
 
+    // Sync agent filter from URL params (e.g., /qa?view=live&agent=Crystal+Diljohn)
+    useEffect(() => {
+        const agentParam = searchParams.get('agent');
+        if (agentParam) {
+            setSelectedAgent(agentParam);
+            // Clean param from URL after applying to avoid re-triggering on dropdown changes
+            const params = new URLSearchParams(searchParams.toString());
+            params.delete('agent');
+            router.replace(`/qa?${params.toString()}`, { scroll: false });
+        }
+    }, [searchParams, router]);
+
     // Real-time subscription for auto-refresh
     useEffect(() => {
         const channel = supabase
@@ -152,13 +164,20 @@ function QADashboardContent() {
         };
     }, [fetchCalls]);
 
-    // Calculate Review Queue Count
+    // Calculate Review Queue Count (must match pending tab filter exactly)
     const reviewQueueCount = useMemo(() => {
         return calls.filter(c => {
             // If manual QA status is set to final state, it's NOT in queue
             if (c.qaStatus === 'approved' || c.qaStatus === 'rejected') return false;
 
+            // High compliance (90-100%) not in review queue
+            if (c.complianceScore >= 90) return false;
+
             const statusLower = (c.status || '').toLowerCase();
+
+            // Auto-fail items have their own tab — exclude from pending badge
+            if (statusLower.includes('auto_fail') || c.autoFailTriggered) return false;
+
             const isReviewStatus = statusLower.includes('review') || statusLower.includes('requires');
 
             // Medium risk score range (70-89%)
@@ -262,7 +281,7 @@ function QADashboardContent() {
     };
 
     // Agent review handler - can filter by specific agent or multiple risky agents
-    const handleAgentReview = (agentName: string, riskyAgentNames?: string[]) => {
+    const handleAgentReview = (agentName: string, riskyAgentNames?: string[], scoreboardTimeRange?: string) => {
         if (riskyAgentNames && riskyAgentNames.length > 0) {
             // Filter by multiple risky agents (for risky agent watch list)
             setSelectedAgent('');
@@ -277,8 +296,21 @@ function QADashboardContent() {
         setSearchQuery('');
         setSelectedCampaign('');
         setMinScore(0);
-        // Navigate to live feed view to show filtered calls
-        router.push('/qa?view=live');
+        // Sync the main page time range with the scoreboard's selection
+        // so the call count matches what the user saw on the performance tab
+        if (scoreboardTimeRange) {
+            const validRanges: TimeRange[] = ['today', '7d', '14d', '30d', '90d', 'all'];
+            const mapped = validRanges.includes(scoreboardTimeRange as TimeRange)
+                ? (scoreboardTimeRange as TimeRange)
+                : scoreboardTimeRange === '60d' ? '90d' : 'all';
+            setTimeRange(mapped);
+        }
+        // Navigate to live feed view with agent encoded in URL for reliability
+        const params = new URLSearchParams({ view: 'live' });
+        if (agentName && !riskyAgentNames?.length) {
+            params.set('agent', agentName);
+        }
+        router.push(`/qa?${params.toString()}`);
     };
 
     // QA Status change handler
@@ -614,12 +646,17 @@ function QADashboardContent() {
                 })
                 : true;
 
-            const matchesAgent = selectedAgent ? c.agentName === selectedAgent : true;
+            const matchesAgent = selectedAgent ? normalizeForMatch(c.agentName || '') === normalizeForMatch(selectedAgent) : true;
             const matchesCampaign = selectedCampaign ? c.campaignType === selectedCampaign : true;
             const matchesProductType = selectedProductType ? c.productType === selectedProductType : true;
             const matchesSearch = searchQuery
-                ? c.agentName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                c.phoneNumber.includes(searchQuery.replace(/\D/g, ''))
+                ? (() => {
+                    const q = searchQuery.toLowerCase();
+                    const nameMatch = c.agentName.toLowerCase().includes(q);
+                    const digits = searchQuery.replace(/\D/g, '');
+                    const phoneMatch = digits.length > 0 && c.phoneNumber.includes(digits);
+                    return nameMatch || phoneMatch;
+                })()
                 : true;
 
             let matchesDate = true;
