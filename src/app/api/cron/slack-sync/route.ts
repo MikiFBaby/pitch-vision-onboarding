@@ -17,6 +17,21 @@ const PITCH_HEALTH_NAMES = new Set(
     pitchHealthBlocklist.map((n: string) => n.trim().toLowerCase())
 );
 
+// Slack user IDs that should never be auto-added as new employees
+// (founders, known alt accounts, non-department members)
+const EXCLUDED_SLACK_IDS = new Set([
+    'U09K9NUQ691', // Alex Pitch Perfect — Alex Bershadsky's alt account
+    'U0470TMNGLB', // Hanan Abogamil (Demi) — not in our department
+    'U032D1HHH2M', // Mohamed Roumieh (Moe) — not in our department
+]);
+
+// Slack display names / real names that should be skipped (lowercased)
+const EXCLUDED_NAMES = new Set([
+    'boris',          // Boris Shvarts (Founder) — already in directory
+    'the grinch',     // Holiday joke account
+    'shawn z',        // Not in our department
+]);
+
 // Channel IDs
 const MAIN_CHANNEL = process.env.SLACK_HIRES_CHANNEL_ID || '';
 
@@ -179,6 +194,11 @@ async function reconcileMainChannel(
                 results.reconcile.backfilled++;
                 continue;
             }
+
+            // Skip known exclusions (founders, alt accounts, non-department members)
+            if (EXCLUDED_SLACK_IDS.has(profile.slackUserId)) continue;
+            if (EXCLUDED_NAMES.has(profile.realName.trim().toLowerCase())) continue;
+            if (EXCLUDED_NAMES.has((profile.displayName || '').trim().toLowerCase())) continue;
 
             // Skip Pitch Health agents — they share our main Slack channel but are a separate department
             if (PITCH_HEALTH_NAMES.has(profile.realName.trim().toLowerCase())) {

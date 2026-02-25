@@ -241,6 +241,7 @@ export default function AttendancePage() {
     };
 
     // Filtering
+    // Filter by date range, type, and search — then remove true duplicates
     const filteredEvents = useMemo(() => {
         const now = new Date();
         const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
@@ -250,7 +251,7 @@ export default function AttendancePage() {
         else if (datePreset === '7d') cutoff = new Date(Date.now() - 7 * 86400000).toISOString().split('T')[0];
         else if (datePreset === '30d') cutoff = new Date(Date.now() - 30 * 86400000).toISOString().split('T')[0];
 
-        return events
+        const filtered = events
             .filter(e => {
                 if (datePreset === 'custom' && specificDate) return e.date === specificDate;
                 return !cutoff || e.date >= cutoff;
@@ -261,6 +262,15 @@ export default function AttendancePage() {
                 return e.eventType === filterType;
             })
             .filter(e => !searchTerm || e.agentName.toLowerCase().includes(searchTerm.toLowerCase()));
+
+        // Remove true duplicates: same agent + date + event type → keep first occurrence only
+        const seen = new Set<string>();
+        return filtered.filter(e => {
+            const key = `${e.agentName.toLowerCase()}|${e.date}|${e.eventType}`;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        });
     }, [events, datePreset, specificDate, filterType, searchTerm]);
 
     // Sorting
@@ -276,19 +286,7 @@ export default function AttendancePage() {
         return sorted;
     }, [filteredEvents, sortField, sortDir]);
 
-    // Agent summaries
-    // Compute duplicate keys (agent+date appearing more than once) for DUP badge
-    const duplicateKeys = useMemo(() => {
-        const counts = new Map<string, number>();
-        filteredEvents.forEach(e => {
-            const key = `${e.agentName.toLowerCase()}|${e.date}`;
-            counts.set(key, (counts.get(key) || 0) + 1);
-        });
-        const dups = new Set<string>();
-        counts.forEach((count, key) => { if (count > 1) dups.add(key); });
-        return dups;
-    }, [filteredEvents]);
-
+    // Agent summaries (computed from deduped filteredEvents)
     const agentSummaries = useMemo(() => {
         const map = new Map<string, AgentSummary>();
         filteredEvents.forEach(e => {
@@ -296,10 +294,9 @@ export default function AttendancePage() {
             const existing = map.get(key) || {
                 name: e.agentName, plannedCount: 0, unplannedCount: 0, totalScore: 0, latestDate: '',
             };
-            // Map legacy types to new categories for counting
             const et = e.eventType;
             if (et === 'planned') existing.plannedCount++;
-            else existing.unplannedCount++; // unplanned, no_show, absent, late, early_leave
+            else existing.unplannedCount++;
             existing.totalScore += OCCURRENCE_WEIGHTS[et] || 1;
             if (e.date > existing.latestDate) existing.latestDate = e.date;
             map.set(key, existing);
@@ -307,6 +304,7 @@ export default function AttendancePage() {
         return Array.from(map.values()).sort((a, b) => b.totalScore - a.totalScore);
     }, [filteredEvents]);
 
+    // Stats count the visible (already deduped) rows directly
     const stats = useMemo(() => ({
         total: filteredEvents.length,
         planned: filteredEvents.filter(e => e.eventType === 'planned').length,
@@ -505,12 +503,10 @@ export default function AttendancePage() {
                                                 const style = EVENT_STYLES[e.eventType] || EVENT_STYLES.unplanned;
                                                 const isConfirming = confirmDeleteId === e.id;
                                                 const isDeleting = deletingId === e.id;
-                                                const isDup = duplicateKeys.has(`${e.agentName.toLowerCase()}|${e.date}`);
                                                 return (
                                                     <tr key={e.id} className="border-b border-white/5 hover:bg-white/[0.03] transition-colors group">
                                                         <td className="p-3 font-medium text-white">
                                                             {e.agentName}
-                                                            {isDup && <span className="ml-1.5 text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-400">DUP</span>}
                                                         </td>
                                                         <td className="p-3">
                                                             <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${style.color} ${style.bg}`}>

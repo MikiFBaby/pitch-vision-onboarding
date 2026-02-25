@@ -487,12 +487,19 @@ Pitch Perfect Solutions`,
     useEffect(() => {
         fetchData();
 
+        // Real-time subscriptions for instant updates
         const channels = [
             supabase.channel('attendance_watchlist_absences').on('postgres_changes', { event: '*', schema: 'public', table: 'Non Booked Days Off' }, fetchData).subscribe(),
             supabase.channel('attendance_watchlist_events').on('postgres_changes', { event: '*', schema: 'public', table: 'Attendance Events' }, fetchData).subscribe(),
         ];
 
-        return () => { channels.forEach(c => supabase.removeChannel(c)); };
+        // 15-minute polling backup — Supabase real-time can occasionally disconnect
+        const pollInterval = setInterval(fetchData, 15 * 60 * 1000);
+
+        return () => {
+            channels.forEach(c => supabase.removeChannel(c));
+            clearInterval(pollInterval);
+        };
     }, [fetchData]);
 
     if (loading) {

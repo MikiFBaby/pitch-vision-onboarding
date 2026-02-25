@@ -180,10 +180,10 @@ export async function handleWhosOut(date: string): Promise<string> {
     const unbooked = deduplicateUnplannedOff(unbookedRes.data || []);
     const events = (eventsRes.data || []);
 
-    // Dedup attendance events by Agent Name + Event Type
+    // Dedup attendance events by Agent Name + Date + Event Type
     const seenEvents = new Set<string>();
     const dedupedEvents = events.filter((e: any) => {
-        const key = `${(e['Agent Name'] || '').trim().toLowerCase()}|${e['Event Type'] || ''}`;
+        const key = `${(e['Agent Name'] || '').trim().toLowerCase()}|${e['Date'] || ''}|${e['Event Type'] || ''}`;
         if (seenEvents.has(key)) return false;
         seenEvents.add(key);
         return true;

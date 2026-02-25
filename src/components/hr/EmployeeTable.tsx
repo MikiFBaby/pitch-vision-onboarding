@@ -216,7 +216,7 @@ export default function EmployeeTable() {
     // Dropdown Filters
     const [countryFilter, setCountryFilter] = useState<'all' | 'Canada' | 'USA' | 'unknown'>('all');
     const [employmentFilter, setEmploymentFilter] = useState<'all' | 'full-time' | 'part-time' | 'unknown'>('all');
-    const [campaignFilter, setCampaignFilter] = useState<'all' | 'Medicare' | 'ACA' | 'Medicare WhatIF' | 'Hospital' | 'Meals' | 'Home Care' | 'none'>('all');
+    const [campaignFilter, setCampaignFilter] = useState<'all' | 'Medicare' | 'ACA' | 'Medicare WhatIF' | 'Hospital' | 'Pitch Meals' | 'Home Care Michigan' | 'Home Care PA' | 'none'>('all');
     const [statusFilter, setStatusFilter] = useState<'active' | 'pending' | 'terminated' | 'all'>('active');
     const [scheduleMap, setScheduleMap] = useState<Map<string, { hours: number; ft: boolean }>>(new Map());
     const [scheduleLoading, setScheduleLoading] = useState(true);
@@ -570,17 +570,50 @@ export default function EmployeeTable() {
     const getEmploymentType = (emp: Employee): 'full-time' | 'part-time' | 'unknown' => {
         const f = (emp.first_name || '').trim().toLowerCase();
         const l = (emp.last_name || '').trim().toLowerCase();
+        const fullName = `${f} ${l}`.trim();
+        const fFirst = f.split(/\s+/)[0];
+        const strip = (s: string) => s.replace(/[''`.\-]/g, '').trim().toLowerCase();
+        const collapse = (s: string) => strip(s).replace(/\s+/g, '');
         // Exact match
         const exact = scheduleMap.get(`${f}|${l}`);
         if (exact) return exact.ft ? 'full-time' : 'part-time';
-        // Flexible: try contains matching on last name
+        // First-word match (e.g. directory "John Michael" vs schedule "john")
+        if (fFirst !== f) {
+            const firstWordMatch = scheduleMap.get(`${fFirst}|${l}`);
+            if (firstWordMatch) return firstWordMatch.ft ? 'full-time' : 'part-time';
+        }
+        // Flexible: full-name-in-first-column, first name matching, last name matching
         let flexResult: 'full-time' | 'part-time' | null = null;
         scheduleMap.forEach((val, key) => {
             if (flexResult) return;
             const parts = key.split('|');
             const sf = parts[0], sl = parts[1];
-            if (sf !== f) return;
-            if (sl.includes(l) || l.includes(sl)) {
+            const schedFull = `${sf} ${sl}`.trim();
+            // Full-name match: "portia washington"|"" vs fullName "portia washington"
+            if (schedFull === fullName || collapse(schedFull) === collapse(fullName)) {
+                flexResult = val.ft ? 'full-time' : 'part-time'; return;
+            }
+            // Full name crammed into first-name column: sf="portia washington", sl=""
+            if (sf.includes(' ') && !sl && l) {
+                const sfParts = sf.split(/\s+/);
+                if (sfParts.length >= 2) {
+                    const sfFirst = sfParts[0], sfRest = sfParts.slice(1).join(' ');
+                    if ((sfFirst === fFirst || sfFirst === f) &&
+                        (sfRest === l || sfRest.includes(l) || l.includes(sfRest) ||
+                         strip(sfRest) === strip(l) || collapse(sfRest) === collapse(l))) {
+                        flexResult = val.ft ? 'full-time' : 'part-time'; return;
+                    }
+                }
+            }
+            const sfFirst = sf.split(/\s+/)[0];
+            const firstMatch = sf === f || sf === fFirst || sfFirst === f || sfFirst === fFirst
+                || strip(sf) === strip(f) || strip(sfFirst) === strip(fFirst)
+                || (sfFirst.length >= 3 && fFirst.startsWith(sfFirst))
+                || (fFirst.length >= 3 && sfFirst.startsWith(fFirst));
+            if (!firstMatch) return;
+            // Empty last name in schedule or directory → match on first name alone
+            if (!sl || !l) { flexResult = val.ft ? 'full-time' : 'part-time'; return; }
+            if (sl === l || sl.includes(l) || l.includes(sl) || strip(sl) === strip(l) || collapse(sl) === collapse(l)) {
                 flexResult = val.ft ? 'full-time' : 'part-time';
             }
         });
@@ -829,8 +862,9 @@ export default function EmployeeTable() {
                             <option value="ACA">ACA</option>
                             <option value="Medicare WhatIF">Medicare WhatIF</option>
                             <option value="Hospital">Hospital</option>
-                            <option value="Meals">Meals</option>
-                            <option value="Home Care">Home Care</option>
+                            <option value="Pitch Meals">Pitch Meals</option>
+                            <option value="Home Care Michigan">Home Care Michigan</option>
+                            <option value="Home Care PA">Home Care PA</option>
                             <option value="none">No Campaign</option>
                         </select>
                         <select

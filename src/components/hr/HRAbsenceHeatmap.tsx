@@ -49,14 +49,18 @@ export default function HRAbsenceHeatmap() {
     const fetchData = useCallback(async () => {
         setLoading(true);
         try {
-            const [bookedRes, unplannedRes, aeRes] = await Promise.all([
+            // Merge both sources for accurate historical averages:
+            // - Non Booked Days Off: legacy Google Sheets data (months of history)
+            // - Attendance Events: Sam bot source (current + recent, also has late/early_leave)
+            // Dedup by agent+date to avoid double-counting (Sam bot dual-writes to both tables)
+            const [bookedRes, nbRes, aeRes] = await Promise.all([
                 supabase.from('Booked Days Off').select('"Date", "Agent Name"'),
                 supabase.from('Non Booked Days Off').select('"Date", "Agent Name", "Reason"'),
-                supabase.from('Attendance Events').select('"Date", "Event Type"'),
+                supabase.from('Attendance Events').select('"Date", "Agent Name", "Event Type"'),
             ]);
 
             const booked = deduplicateBookedOff(bookedRes.data || []);
-            const unplanned = deduplicateUnplannedOff(unplannedRes.data || []);
+            const unplanned = deduplicateUnplannedOff(nbRes.data || []);
 
             const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
             const shortNames = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -73,6 +77,9 @@ export default function HRAbsenceHeatmap() {
             let todayBookedCount = 0;
             let todayUnplannedCount = 0;
 
+            // Master dedup set for unplanned: agent|date (prevents double-counting across NB + AE)
+            const seenUnplanned = new Set<string>();
+
             booked.forEach((b: any) => {
                 if (!b['Date'] || !b['Agent Name']?.trim()) return;
                 const dateStr = (b['Date'] || '').toString().trim();
@@ -86,34 +93,63 @@ export default function HRAbsenceHeatmap() {
                 }
             });
 
+            // Process Non Booked Days Off first (historical unplanned absences)
             unplanned.forEach((u: any) => {
                 if (!u['Date'] || !u['Agent Name']?.trim()) return;
                 const dateStr = (u['Date'] || '').toString().trim();
+                const agentName = (u['Agent Name'] || '').trim().toLowerCase();
                 const d = new Date(dateStr + 'T00:00:00');
                 const dow = d.getDay();
-                if (dow >= 1 && dow <= 5) {
+                if (dow < 1 || dow > 5) return;
+
+                const dedupKey = `${agentName}|${dateStr}`;
+                if (seenUnplanned.has(dedupKey)) return;
+                seenUnplanned.add(dedupKey);
+
+                unplannedByDow[dow] = (unplannedByDow[dow] || 0) + 1;
+                if (!unplannedDatesByDow[dow]) unplannedDatesByDow[dow] = new Set();
+                unplannedDatesByDow[dow].add(dateStr);
+                if (dateStr === todayStr) todayUnplannedCount++;
+            });
+
+            // Process Attendance Events: adds unplanned not already in NB, plus late/early_leave
+            const lateByDow: Record<number, number> = {};
+            const earlyByDow: Record<number, number> = {};
+            let todayLateCount = 0, todayEarlyCount = 0;
+            const seenAE = new Set<string>(); // dedup key for late/early: agent|date|type
+
+            ((aeRes.data || []) as any[]).forEach((ae: any) => {
+                const rawDate = (ae['Date'] || '').toString().trim();
+                const dateStr = rawDate.includes('-') ? rawDate : parseDateDMonYYYY(rawDate);
+                const agentName = (ae['Agent Name'] || '').trim().toLowerCase();
+                const type = (ae['Event Type'] || '').toLowerCase();
+                if (!agentName || !dateStr || type === 'planned') return;
+                const d = new Date(dateStr + 'T00:00:00');
+                const dow = d.getDay();
+                if (dow < 1 || dow > 5) return;
+
+                if (type === 'late') {
+                    const dedupKey = `${agentName}|${dateStr}|late`;
+                    if (seenAE.has(dedupKey)) return;
+                    seenAE.add(dedupKey);
+                    lateByDow[dow] = (lateByDow[dow] || 0) + 1;
+                    if (dateStr === todayStr) todayLateCount++;
+                } else if (type === 'early_leave') {
+                    const dedupKey = `${agentName}|${dateStr}|early_leave`;
+                    if (seenAE.has(dedupKey)) return;
+                    seenAE.add(dedupKey);
+                    earlyByDow[dow] = (earlyByDow[dow] || 0) + 1;
+                    if (dateStr === todayStr) todayEarlyCount++;
+                } else {
+                    // unplanned, no_show, absent — only count if not already seen from NB Days Off
+                    const dedupKey = `${agentName}|${dateStr}`;
+                    if (seenUnplanned.has(dedupKey)) return;
+                    seenUnplanned.add(dedupKey);
                     unplannedByDow[dow] = (unplannedByDow[dow] || 0) + 1;
                     if (!unplannedDatesByDow[dow]) unplannedDatesByDow[dow] = new Set();
                     unplannedDatesByDow[dow].add(dateStr);
                     if (dateStr === todayStr) todayUnplannedCount++;
                 }
-            });
-
-            // Attendance Events (late, early_leave) by day-of-week
-            const lateByDow: Record<number, number> = {};
-            const earlyByDow: Record<number, number> = {};
-            let todayLateCount = 0, todayEarlyCount = 0;
-
-            (aeRes.data || []).forEach((ae: any) => {
-                const rawDate = (ae['Date'] || '').toString().trim();
-                const dateStr = rawDate.includes('-') ? rawDate : parseDateDMonYYYY(rawDate);
-                const d = new Date(dateStr + 'T00:00:00');
-                const dow = d.getDay();
-                if (dow < 1 || dow > 5) return;
-                const type = (ae['Event Type'] || '').toLowerCase();
-                if (type === 'late') { lateByDow[dow] = (lateByDow[dow] || 0) + 1; if (dateStr === todayStr) todayLateCount++; }
-                else if (type === 'early_leave') { earlyByDow[dow] = (earlyByDow[dow] || 0) + 1; if (dateStr === todayStr) todayEarlyCount++; }
-                // no_show is now counted as unplanned (in Non Booked Days Off), skip here
             });
 
             const data: DayData[] = [];
@@ -184,7 +220,13 @@ export default function HRAbsenceHeatmap() {
             supabase.channel('heatmap_attendance').on('postgres_changes', { event: '*', schema: 'public', table: 'Attendance Events' }, () => fetchData()).subscribe(),
         ];
 
-        return () => { channels.forEach(c => supabase.removeChannel(c)); };
+        // 15-minute polling backup for reliable real-time data
+        const pollInterval = setInterval(fetchData, 15 * 60 * 1000);
+
+        return () => {
+            channels.forEach(c => supabase.removeChannel(c));
+            clearInterval(pollInterval);
+        };
     }, [fetchData]);
 
     if (loading) {
@@ -236,7 +278,7 @@ export default function HRAbsenceHeatmap() {
                 </p>
                 <div className="mt-2 px-3 py-2.5 rounded-lg bg-white/[0.04] border border-white/10">
                     <p className="text-sm text-white/90 leading-relaxed">
-                        <strong className="text-white">What this shows:</strong> The average number of absences per weekday, calculated from running totals across all recorded history. <span className="text-rose-400 font-medium">Unplanned</span> = call-offs and no-shows (from Non Booked Days Off). <span className="text-blue-300 font-medium">Booked</span> = pre-approved time off (from Booked Days Off). Use this to spot which days are most likely to face staffing gaps.
+                        <strong className="text-white">What this shows:</strong> The average number of absences per weekday, calculated from running totals across all recorded history. <span className="text-rose-400 font-medium">Unplanned</span> = call-offs and no-shows (from Attendance Events + Non Booked Days Off). <span className="text-blue-300 font-medium">Booked</span> = pre-approved time off (from Booked Days Off). Use this to spot which days are most likely to face staffing gaps.
                     </p>
                 </div>
             </CardHeader>

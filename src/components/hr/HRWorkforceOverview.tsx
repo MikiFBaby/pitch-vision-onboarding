@@ -4,7 +4,7 @@ import React, { useEffect, useState, useMemo, useCallback } from "react";
 import { supabase } from "@/lib/supabase-client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Users, Clock, CalendarCheck, AlertTriangle, ArrowLeft, Ban } from "lucide-react";
+import { Users, Clock, CalendarCheck, AlertTriangle } from "lucide-react";
 import { deduplicateBookedOff, deduplicateUnplannedOff } from '@/lib/hr-utils';
 
 interface HRWorkforceOverviewProps {
@@ -131,31 +131,55 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
             }
 
             // 3. Absences + Attendance Events for the effective date
-            const [bookedRes, unplannedRes, attendanceRes] = await Promise.all([
+            // Merge both sources for cohesive data (matches heatmap logic):
+            // - Booked Days Off = Google Sheets for planned PTO
+            // - Non Booked Days Off = Google Sheets historical unplanned
+            // - Attendance Events = Sam bot for current unplanned + late/early_leave
+            const [bookedRes, nbRes, attendanceRes] = await Promise.all([
                 supabase.from('Booked Days Off').select('*').eq('Date', date),
-                supabase.from('Non Booked Days Off').select('*').eq('Date', date),
+                supabase.from('Non Booked Days Off').select('"Agent Name", "Date"').eq('Date', date),
                 supabase.from('Attendance Events').select('"Agent Name", "Event Type", "Date"'),
             ]);
 
             if (bookedRes.error) console.error('Booked Days Off error:', bookedRes.error);
-            if (unplannedRes.error) console.error('Non Booked Days Off error:', unplannedRes.error);
+            if (nbRes.error) console.error('Non Booked Days Off error:', nbRes.error);
+            if (attendanceRes.error) console.error('Attendance Events error:', attendanceRes.error);
 
             const bookedOff = deduplicateBookedOff(bookedRes.data || []);
-            const unplannedOff = deduplicateUnplannedOff(unplannedRes.data || []);
+            const nbOff = deduplicateUnplannedOff(nbRes.data || []);
 
             const normalize = (name: string) => (name || '').trim().toLowerCase();
 
-            // 4. Attendance Events for today (late, early_leave)
-            const todayAttendanceEvents = (attendanceRes.data || []).filter((ae: any) => {
+            // 4. Build unplanned set from Non Booked Days Off first (historical source)
+            const seenUnplannedAgents = new Set<string>();
+            nbOff.forEach((u: any) => {
+                const name = normalize(u['Agent Name']);
+                if (name) seenUnplannedAgents.add(name);
+            });
+
+            // 5. Attendance Events for today — adds unplanned not in NB, plus late/early_leave
+            const todayAttendanceEvents = ((attendanceRes.data || []) as any[]).filter((ae: any) => {
                 const aeDate = ae['Date'] || '';
-                // Handle both ISO "2026-02-13" and "13 Feb 2026" formats
                 const normalized = aeDate.includes('-') ? aeDate : parseDateDMonYYYY(aeDate);
                 return normalized === date;
             });
 
-            const lateCount = todayAttendanceEvents.filter((ae: any) => (ae['Event Type'] || '').toLowerCase() === 'late').length;
-            const earlyLeaveCount = todayAttendanceEvents.filter((ae: any) => (ae['Event Type'] || '').toLowerCase() === 'early_leave').length;
-            const noShowCount = 0; // No longer tracked separately — NCNS is now unplanned
+            const attendanceByType = { late: new Set<string>(), early_leave: new Set<string>() };
+            todayAttendanceEvents.forEach((ae: any) => {
+                const name = normalize(ae['Agent Name']);
+                const eventType = (ae['Event Type'] || '').toLowerCase();
+                if (eventType === 'planned') return;
+                if (eventType === 'late') attendanceByType.late.add(name);
+                else if (eventType === 'early_leave') attendanceByType.early_leave.add(name);
+                else {
+                    // unplanned, no_show, absent — add if not already from NB Days Off
+                    if (name) seenUnplannedAgents.add(name);
+                }
+            });
+
+            const lateCount = attendanceByType.late.size;
+            const earlyLeaveCount = attendanceByType.early_leave.size;
+            const noShowCount = 0;
 
             // 5. Scheduled count: Active employees with a shift today
             const seenAgents = new Set<string>();
@@ -177,18 +201,14 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
                 }
             });
 
-            // 6. Absences: Google Sheets = source of truth
+            // 6. Absences: Booked (Sheets) + Attendance Events (Sam bot)
             const bookedNames = new Set(bookedOff.map(b => normalize(b['Agent Name'])));
             const bookedCount = bookedNames.size;
 
+            // Unplanned = unique agents from NB Days Off + Attendance Events, excluding Booked
             let unplannedCount = 0;
-            const countedUnplanned = new Set<string>();
-            unplannedOff.forEach(u => {
-                const name = normalize(u['Agent Name']);
-                if (!bookedNames.has(name) && !countedUnplanned.has(name)) {
-                    countedUnplanned.add(name);
-                    unplannedCount++;
-                }
+            seenUnplannedAgents.forEach((name: string) => {
+                if (!bookedNames.has(name)) unplannedCount++;
             });
 
             const totalAbsent = bookedCount + unplannedCount;
@@ -222,7 +242,13 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
             supabase.channel('workforce_attendance').on('postgres_changes', { event: '*', schema: 'public', table: 'Attendance Events' }, () => fetchData()).subscribe(),
         ];
 
-        return () => { channels.forEach(c => supabase.removeChannel(c)); };
+        // 15-minute polling backup for reliable real-time data
+        const pollInterval = setInterval(fetchData, 15 * 60 * 1000);
+
+        return () => {
+            channels.forEach(c => supabase.removeChannel(c));
+            clearInterval(pollInterval);
+        };
     }, [fetchData]);
 
     if (loading) {
@@ -233,8 +259,8 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
         ? Math.round(((todayStats.totalScheduled - todayStats.absent) / todayStats.totalScheduled) * 100)
         : 100;
 
-    const totalAbsent = todayStats.bookedOff + todayStats.unplannedOff;
-    const hasEvents = todayStats.lateCount > 0 || todayStats.earlyLeaveCount > 0;
+    const totalAbsent = todayStats.absent;
+    const otherUnplanned = todayStats.unplannedOff - todayStats.lateCount - todayStats.earlyLeaveCount;
 
     return (
         <Card className="bg-gradient-to-br from-indigo-500/10 to-purple-500/10 border-white/10 text-white overflow-hidden">
@@ -283,59 +309,69 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
                     </div>
                 </div>
 
-                {/* Attendance Events Row (Late / Early Leave) */}
-                {hasEvents && (
-                    <div className="grid grid-cols-2 gap-3 mt-4">
-                        {todayStats.lateCount > 0 && (
-                            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-2.5 text-center">
-                                <div className="flex items-center justify-center gap-1.5">
-                                    <Clock className="w-3.5 h-3.5 text-yellow-400" />
-                                    <span className="text-lg font-bold text-yellow-400">{todayStats.lateCount}</span>
-                                </div>
-                                <div className="text-[11px] text-yellow-300/80 font-medium mt-0.5">Late</div>
-                            </div>
-                        )}
-                        {todayStats.earlyLeaveCount > 0 && (
-                            <div className="bg-orange-500/10 border border-orange-500/20 rounded-lg p-2.5 text-center">
-                                <div className="flex items-center justify-center gap-1.5">
-                                    <ArrowLeft className="w-3.5 h-3.5 text-orange-400" />
-                                    <span className="text-lg font-bold text-orange-400">{todayStats.earlyLeaveCount}</span>
-                                </div>
-                                <div className="text-[11px] text-orange-300/80 font-medium mt-0.5">Early Leave</div>
-                            </div>
-                        )}
-                    </div>
-                )}
-
-                {/* Absence Breakdown Bar (Booked vs Unplanned) */}
+                {/* Absence Breakdown Bar — all segments total to absent count */}
                 {totalAbsent > 0 ? (
                     <>
                         <div className="mt-4 h-4 bg-white/10 rounded-full overflow-hidden flex">
-                            <div
-                                className="bg-blue-400 h-full transition-all"
-                                style={{ width: `${(todayStats.bookedOff / Math.max(1, totalAbsent)) * 100}%` }}
-                                title={`Booked Time Off: ${todayStats.bookedOff}`}
-                            />
-                            <div
-                                className="bg-rose-500 h-full transition-all"
-                                style={{ width: `${(todayStats.unplannedOff / Math.max(1, totalAbsent)) * 100}%` }}
-                                title={`Unplanned Absence: ${todayStats.unplannedOff}`}
-                            />
+                            {todayStats.bookedOff > 0 && (
+                                <div
+                                    className="bg-blue-400 h-full transition-all"
+                                    style={{ width: `${(todayStats.bookedOff / totalAbsent) * 100}%` }}
+                                    title={`Booked Time Off: ${todayStats.bookedOff}`}
+                                />
+                            )}
+                            {todayStats.lateCount > 0 && (
+                                <div
+                                    className="bg-yellow-400 h-full transition-all"
+                                    style={{ width: `${(todayStats.lateCount / totalAbsent) * 100}%` }}
+                                    title={`Late: ${todayStats.lateCount}`}
+                                />
+                            )}
+                            {todayStats.earlyLeaveCount > 0 && (
+                                <div
+                                    className="bg-orange-400 h-full transition-all"
+                                    style={{ width: `${(todayStats.earlyLeaveCount / totalAbsent) * 100}%` }}
+                                    title={`Early Leave: ${todayStats.earlyLeaveCount}`}
+                                />
+                            )}
+                            {otherUnplanned > 0 && (
+                                <div
+                                    className="bg-rose-500 h-full transition-all"
+                                    style={{ width: `${(otherUnplanned / totalAbsent) * 100}%` }}
+                                    title={`Unplanned Absence: ${otherUnplanned}`}
+                                />
+                            )}
                         </div>
-                        <div className="flex justify-between text-sm text-white/80 mt-2 font-medium">
-                            <span className="flex items-center gap-1.5">
-                                <span className="w-3 h-3 rounded-full bg-blue-400 inline-block" />
-                                Booked Time Off: {todayStats.bookedOff}
-                            </span>
-                            <span className="flex items-center gap-1.5">
-                                <span className="w-3 h-3 rounded-full bg-rose-500 inline-block" />
-                                Unplanned Absence: {todayStats.unplannedOff}
-                            </span>
+                        <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-white/80 mt-2 font-medium">
+                            {todayStats.bookedOff > 0 && (
+                                <span className="flex items-center gap-1.5">
+                                    <span className="w-3 h-3 rounded-full bg-blue-400 inline-block" />
+                                    Booked: {todayStats.bookedOff}
+                                </span>
+                            )}
+                            {todayStats.lateCount > 0 && (
+                                <span className="flex items-center gap-1.5">
+                                    <span className="w-3 h-3 rounded-full bg-yellow-400 inline-block" />
+                                    Late: {todayStats.lateCount}
+                                </span>
+                            )}
+                            {todayStats.earlyLeaveCount > 0 && (
+                                <span className="flex items-center gap-1.5">
+                                    <span className="w-3 h-3 rounded-full bg-orange-400 inline-block" />
+                                    Early Leave: {todayStats.earlyLeaveCount}
+                                </span>
+                            )}
+                            {otherUnplanned > 0 && (
+                                <span className="flex items-center gap-1.5">
+                                    <span className="w-3 h-3 rounded-full bg-rose-500 inline-block" />
+                                    Unplanned: {otherUnplanned}
+                                </span>
+                            )}
                         </div>
                     </>
-                ) : !hasEvents ? (
+                ) : (
                     <div className="mt-4 text-xs text-white/60 text-center">No absences today</div>
-                ) : null}
+                )}
             </CardContent>
         </Card>
     );

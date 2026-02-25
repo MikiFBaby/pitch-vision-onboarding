@@ -584,17 +584,21 @@ function syncBookedDaysOff() {
   var sheetName = 'Booked Days Off';
   var tableName = SHEET_TABLE_MAP[sheetName];
   try {
-    var data = getSheetData(sheetName);
+    var data = getSheetData(sheetName, true); // useDisplayValues to capture formatted dates
     if (!data || data.length === 0) { logToSheet(sheetName, 'WARN', 'No data rows. Skipping.'); return; }
     var rows = [];
+    var skippedNoDate = 0;
     for (var i = 0; i < data.length; i++) {
       var row = data[i];
       if (isBlank(row[0]) && isBlank(row[1])) continue;
+      var parsedDate = parseDateDDMonYYYY(row[1]);
+      if (!parsedDate) { skippedNoDate++; continue; } // Skip entries without a valid date
       rows.push({
         'Agent Name': trimVal(row[0]),
-        'Date': parseDateDDMonYYYY(row[1])
+        'Date': parsedDate
       });
     }
+    if (skippedNoDate > 0) logToSheet(sheetName, 'INFO', 'Skipped ' + skippedNoDate + ' rows with missing/unparseable date');
     atomicReplaceSync(tableName, rows, sheetName);
   } catch (err) { logToSheet(sheetName, 'ERROR', err.message); throw err; }
 }
@@ -608,7 +612,7 @@ function syncNonBookedDaysOff() {
   var sheetName = 'Non Booked Days Off ';  // trailing space in tab name
   var tableName = SHEET_TABLE_MAP[sheetName];
   try {
-    var data = getSheetData(sheetName);
+    var data = getSheetData(sheetName, true); // useDisplayValues to capture formatted dates
     if (!data || data.length === 0) { logToSheet(sheetName, 'WARN', 'No data rows. Skipping.'); return; }
     var rows = [];
     for (var i = 0; i < data.length; i++) {

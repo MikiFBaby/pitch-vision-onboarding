@@ -145,7 +145,15 @@ Input: "NCNS for David Brown yesterday"
 Output: [{"agent_name":"David Brown","event_type":"unplanned","date":"${yesterdayStr}","minutes":null,"reason":"no call no show"}]
 
 Input: "Sarah is taking vacation next Monday and Tuesday"
-Output: [{"agent_name":"Sarah","event_type":"planned","date":"YYYY-MM-DD","minutes":null,"reason":"vacation"},{"agent_name":"Sarah","event_type":"planned","date":"YYYY-MM-DD","minutes":null,"reason":"vacation"}]`;
+Output: [{"agent_name":"Sarah","event_type":"planned","date":"YYYY-MM-DD","minutes":null,"reason":"vacation"},{"agent_name":"Sarah","event_type":"planned","date":"YYYY-MM-DD","minutes":null,"reason":"vacation"}]
+
+Input: "Hiam Elsayed - tech issue"
+Output: [{"agent_name":"Hiam Elsayed","event_type":"unplanned","date":"${todayStr}","minutes":null,"reason":"tech issue"}]
+
+Input: "John Smith - car trouble, Lisa Park - internet down"
+Output: [{"agent_name":"John Smith","event_type":"unplanned","date":"${todayStr}","minutes":null,"reason":"car trouble"},{"agent_name":"Lisa Park","event_type":"unplanned","date":"${todayStr}","minutes":null,"reason":"internet down"}]
+
+NOTE: The format "Name - reason" is a common shorthand used by HR. The part before the dash is always the agent name, and the part after is the reason. If the reason doesn't clearly indicate planned (PTO, vacation, booked day off), default to "unplanned".`;
 
     try {
         const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -659,6 +667,12 @@ export async function classifyMessageIntent(text: string): Promise<MessageIntent
     }
     if (['help', 'commands', 'what can you do', 'what do you do'].includes(normalizedText)) {
         return { type: 'help' };
+    }
+
+    // Fast-path: "Name - reason" or "Name- reason" pattern (very common HR shorthand)
+    // Matches: "Hiam Elsayed - tech issue", "John Smith - sick", "Sarah- car trouble"
+    if (/^[A-Za-z][A-Za-z'\- ]{1,40}\s*-\s*\S+/i.test(text.trim())) {
+        return { type: 'attendance', text };
     }
 
     // Fast-path keyword matches

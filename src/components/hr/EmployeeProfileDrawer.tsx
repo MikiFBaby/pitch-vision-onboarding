@@ -188,7 +188,8 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
     const fetchSchedule = async (firstName: string, lastName: string) => {
         const firstLower = (firstName || '').trim().toLowerCase();
         const lastLower = (lastName || '').trim().toLowerCase();
-        if (!firstLower || !lastLower) {
+        const dirFullName = `${firstLower} ${lastLower}`.trim();
+        if (!firstLower) {
             setSchedule(null);
             setBreakSchedule(null);
             return;
@@ -208,23 +209,79 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
 
         const { data: breakData } = await supabase.from('Agent Break Schedule').select('*');
 
-        // Flexible name matching: handles punctuation variants, hyphens, middle names
-        // e.g. De'Andria vs De`Andria, Adams-Gray vs Adams, El-Shobasy vs Elshobasy
-        const strip = (s: string) => s.replace(/[''`\-]/g, '').trim().toLowerCase();
+        // Flexible name matching: handles punctuation variants, hyphens, middle names,
+        // multi-word first names, nicknames, empty last names, and full-name-in-first-column
+        const strip = (s: string) => s.replace(/[''`.\-]/g, '').trim().toLowerCase();
+        const collapse = (s: string) => strip(s).replace(/\s+/g, ''); // "St Louis" → "stlouis"
         const nameMatches = (rowFirst: string, rowLast: string) => {
             const rf = (rowFirst || '').trim().toLowerCase();
             const rl = (rowLast || '').trim().toLowerCase();
-            // Exact first name or stripped-punctuation match
-            const firstMatch = rf === firstLower || strip(rf) === strip(firstName);
+            if (!rf && !rl) return false;
+
+            // Full-name-in-first-column: schedule has "Portia Washington" in First Name, empty Last Name
+            // Compare concatenated schedule name against directory full name
+            const schedFullName = `${rf} ${rl}`.trim();
+            if (schedFullName === dirFullName) return true;
+            if (collapse(schedFullName) === collapse(dirFullName)) return true;
+            // Schedule first name contains the full name (or vice versa)
+            if (rf.includes(' ') && !rl && lastLower) {
+                // e.g. rf="portia washington", rl="" — check against "portia"+"washington"
+                const rfParts = rf.split(/\s+/);
+                if (rfParts.length >= 2) {
+                    const rfFirst = rfParts[0];
+                    const rfRest = rfParts.slice(1).join(' ');
+                    const dirFirstWord = firstLower.split(/\s+/)[0];
+                    if ((rfFirst === dirFirstWord || rfFirst === firstLower) &&
+                        (rfRest === lastLower || rfRest.includes(lastLower) || lastLower.includes(rfRest) ||
+                         strip(rfRest) === strip(lastName) || collapse(rfRest) === collapse(lastName))) {
+                        return true;
+                    }
+                }
+            }
+
+            // First name matching: exact, stripped, first-word, or prefix (Zach→Zachary)
+            const rfStrip = strip(rowFirst || '');
+            const dirFirstStrip = strip(firstName);
+            const rfFirstWord = rf.split(/\s+/)[0];
+            const dirFirstWord = firstLower.split(/\s+/)[0];
+            const firstMatch =
+                rf === firstLower
+                || rfStrip === dirFirstStrip
+                || rf === dirFirstWord
+                || rfFirstWord === firstLower
+                || rfFirstWord === dirFirstWord
+                || strip(rfFirstWord) === strip(dirFirstWord)
+                // Prefix match: "zach" matches "zachary" (min 3 chars)
+                || (rfFirstWord.length >= 3 && dirFirstWord.startsWith(rfFirstWord))
+                || (dirFirstWord.length >= 3 && rfFirstWord.startsWith(dirFirstWord));
             if (!firstMatch) return false;
-            // Exact last, contains, or hyphen-part match
+
+            // Empty last name in schedule OR directory: match on first name alone
+            if (!rl || !lastLower) return true;
+
+            // Last name matching: exact, contains, stripped, collapsed, or hyphen-part
             if (rl === lastLower || lastLower.includes(rl) || rl.includes(lastLower)) return true;
-            // Strip punctuation and compare
             if (strip(rl) === strip(lastName)) return true;
+            // Collapsed comparison: "St.Louis" vs "St Louis" → both become "stlouis"
+            if (collapse(rl) === collapse(lastName)) return true;
             // Hyphenated last name: match either part
-            const dirParts = lastName.split(/[-]/).map(p => p.trim().toLowerCase());
-            const schedParts = (rowLast || '').split(/[-]/).map(p => p.trim().toLowerCase());
-            return dirParts.some(dp => schedParts.some(sp => dp === sp && dp.length > 1));
+            const dirParts = lastName.split(/[\s-]+/).map(p => p.trim().toLowerCase()).filter(p => p.length > 1);
+            const schedParts = (rowLast || '').split(/[\s-]+/).map(p => p.trim().toLowerCase()).filter(p => p.length > 1);
+            if (dirParts.some(dp => schedParts.some(sp => dp === sp))) return true;
+            // 1-char tolerance: Shelly/Shelley, Musfeq/Musfek
+            const srl = strip(rl), sdl = strip(lastName);
+            if (srl.length > 3 && sdl.length > 3 && Math.abs(srl.length - sdl.length) <= 1) {
+                let diff = 0;
+                const longer = srl.length >= sdl.length ? srl : sdl;
+                const shorter = srl.length >= sdl.length ? sdl : srl;
+                let si = 0;
+                for (let li = 0; li < longer.length && diff <= 1; li++) {
+                    if (shorter[si] === longer[li]) si++;
+                    else diff++;
+                }
+                if (diff <= 1 && si >= shorter.length - 1) return true;
+            }
+            return false;
         };
 
         const matchSched = allSchedules.find(row =>
