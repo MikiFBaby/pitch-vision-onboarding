@@ -72,6 +72,7 @@ export interface RetreaverCSVRow {
   billable_minutes: number | null;
   converted: boolean | null;
   call_status: string;
+  call_uuid: string;
   source: "csv_summary" | "csv_detailed";
 }
 
@@ -115,6 +116,7 @@ export function parseRetreaverCSV(csvText: string): RetreaverCSVRow[] {
       billable_minutes: isDetailed ? parseFloat(cols[colIdx("BillableMinutes")] || "") || null : null,
       converted: isDetailed ? cols[colIdx("Converted")]?.trim()?.toLowerCase() === "yes" : null,
       call_status: isDetailed ? cols[colIdx("Status")]?.trim() || "" : "",
+      call_uuid: isDetailed ? cols[colIdx("CallUUID")]?.trim() || "" : "",
       source,
     };
 
@@ -248,6 +250,7 @@ export async function upsertCSVRows(
     billable_minutes: r.billable_minutes,
     converted: r.converted,
     call_status: r.call_status || null,
+    call_uuid: r.call_uuid || null,
     source: r.source,
     s3_file_key: s3Key,
   }));
@@ -290,26 +293,55 @@ interface PingCandidate {
   caller_phone: string;
   enriched_at: string | null;
   call_uuid: string | null;
+  campaign_name: string | null;
+  caller_state: string | null;
 }
 
-/** Find the best matching ping for a CSV row among candidates */
+/** Normalize campaign name to a canonical type for fuzzy matching.
+ *  Ping names (e.g. "FYM - MEDICARE") differ from CSV names
+ *  (e.g. "Medicare Campaign A [INBOUNDS]") so we compare by type. */
+function normalizeCampaignType(name: string): string {
+  const upper = name.toUpperCase();
+  if (upper.includes("ACA") || upper === "JADE") return "ACA";
+  if (upper.includes("MEDICARE") || upper.includes("FYM") || upper.includes("ELITE") || upper.includes("ARAGON") || upper.includes("BRANDON")) return "MEDICARE";
+  if (upper.includes("WHATIF") || upper.includes("WHAT IF")) return "WHATIF";
+  if (upper.includes("TLD")) return "TLD";
+  return upper;
+}
+
+/** Find the best matching ping for a CSV row among candidates.
+ *  Multi-signal scoring: timestamp proximity + revenue + campaign type + state.
+ *  Each signal adds a time-equivalent bonus (lower score = better match). */
 function findBestMatch(
   csvRow: RetreaverCSVRow,
   candidates: PingCandidate[],
   usedIds: Set<string>,
 ): PingCandidate | null {
   const csvTs = csvRow.event_timestamp.getTime();
+  const csvCampaignType = csvRow.campaign_name ? normalizeCampaignType(csvRow.campaign_name) : null;
   let best: { candidate: PingCandidate; score: number; delta: number } | null = null;
 
   for (const c of candidates) {
     if (usedIds.has(c.id)) continue;
 
     const delta = Math.abs(new Date(c.event_timestamp).getTime() - csvTs);
+
+    // Revenue match: exact within $0.02
     const revenueMatch = Math.abs(Number(c.revenue) - csvRow.revenue) < 0.02;
 
-    // Score: lower is better. Revenue match gets a 5-min bonus.
+    // Campaign type match: normalize both sides and compare
+    const pingCampaignType = c.campaign_name ? normalizeCampaignType(c.campaign_name) : null;
+    const campaignMatch = csvCampaignType && pingCampaignType && csvCampaignType === pingCampaignType;
+
+    // State match: exact state code
+    const stateMatch = c.caller_state && csvRow.caller_state
+      && c.caller_state.toUpperCase() === csvRow.caller_state.toUpperCase();
+
+    // Score: lower is better. Each signal adds a time-equivalent bonus.
     let score = delta;
-    if (revenueMatch) score -= 300_000;
+    if (revenueMatch) score -= 300_000;    // 5 min bonus
+    if (campaignMatch) score -= 200_000;   // ~3.3 min bonus
+    if (stateMatch) score -= 50_000;       // ~50s bonus
 
     if (!best || score < best.score) {
       best = { candidate: c, score, delta };
@@ -317,9 +349,9 @@ function findBestMatch(
   }
 
   if (!best) return null;
-  // Reject if > 10 min away
+  // Hard cap: reject if > 10 min away regardless of signals
   if (best.delta > 600_000) return null;
-  // Reject if no revenue match and > 30s away (could be wrong call)
+  // Soft cap: reject if no matching signals (score >= 0) and > 30s away
   if (best.score >= 0 && best.delta > 30_000) return null;
 
   return best.candidate;
@@ -365,7 +397,7 @@ export async function enrichPingsFromCSV(
     // Single query: fetch all candidate pings for this batch of phones
     const { data: candidates, error: fetchErr } = await supabaseAdmin
       .from("retreaver_events")
-      .select("id, event_timestamp, revenue, caller_phone, enriched_at, call_uuid")
+      .select("id, event_timestamp, revenue, caller_phone, enriched_at, call_uuid, campaign_name, caller_state")
       .eq("source", "api_ping")
       .in("caller_phone", batchPhones)
       .is("enriched_at", null)
@@ -420,6 +452,7 @@ export async function enrichPingsFromCSV(
               call_status: csvRow.call_status || undefined,
               payout: csvRow.payout || undefined,
               target_phone: csvRow.target_phone ? normalizePhone(csvRow.target_phone) : undefined,
+              call_uuid: csvRow.call_uuid || undefined,
               // Use CSV timestamp — more accurate than ping arrival time
               event_timestamp: csvRow.event_timestamp.toISOString(),
               enriched_at: new Date().toISOString(),
