@@ -179,7 +179,7 @@ const CampaignMixCard = ({ campaigns, total, delay }: { campaigns: { name: strin
                 ) : (
                     campaigns.map((c, i) => (
                         <div key={c.name} className="flex items-center justify-between">
-                            <span className="text-sm font-medium text-white/90 truncate max-w-[100px]" title={c.name}>
+                            <span className="text-sm font-medium text-white/90 truncate flex-1 min-w-0" title={c.name}>
                                 {c.name}
                             </span>
                             <div className="flex items-center gap-2">

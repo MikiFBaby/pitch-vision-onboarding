@@ -20,6 +20,7 @@ import type {
   ParsedReportData,
 } from '@/types/dialedin-types';
 import { THRESHOLDS, WASTE_DISPOSITIONS } from '@/types/dialedin-types';
+import { isExcludedTeam } from '@/utils/dialedin-revenue';
 
 // ═══════════════════════════════════════════════════════════
 // Helpers
@@ -171,6 +172,7 @@ export function computeAgentPerformance(
   agentSummary: AgentSummaryRow[],
   production: ProductionRow[] | undefined,
   reportDate: string,
+  agentAnalysis?: AgentAnalysisRow[],
 ): Omit<AgentPerformance, 'id'>[] {
   // Build production lookup by agent name
   const prodByAgent = new Map<string, ProductionRow[]>();
@@ -182,9 +184,24 @@ export function computeAgentPerformance(
     }
   }
 
+  // Build per-agent pause time lookup from AgentAnalysis (aggregate across campaigns)
+  const pauseByAgent = new Map<string, number>();
+  if (agentAnalysis) {
+    for (const row of agentAnalysis) {
+      const key = row.rep.toLowerCase();
+      pauseByAgent.set(key, (pauseByAgent.get(key) || 0) + (row.time_paused_min || 0));
+    }
+  }
+
   const agents: Omit<AgentPerformance, 'id'>[] = agentSummary.map((a) => {
     const tph = safeDiv(a.transfers, a.hours_worked);
-    const prodRows = prodByAgent.get(a.rep.toLowerCase()) || [];
+    const agentKey = a.rep.toLowerCase();
+    const prodRows = prodByAgent.get(agentKey) || [];
+    const pauseMin = pauseByAgent.get(agentKey) || 0;
+
+    // Adjusted TPH: effective_hours = (logged_in - pause - wrap + 30) / 60
+    const effectiveHours = (a.logged_in_time_min - pauseMin - a.wrap_time_min + 30) / 60;
+    const adjustedTph = effectiveHours > 0 ? round(a.transfers / effectiveHours, 2) : null;
 
     // Merge dispositions from production rows
     const dispositions: Record<string, number> = {};
@@ -203,6 +220,7 @@ export function computeAgentPerformance(
     return {
       report_date: reportDate,
       agent_name: a.rep,
+      team: a.team || null,
       employee_id: null,
       skill,
       subcampaign: null,
@@ -215,7 +233,9 @@ export function computeAgentPerformance(
       wait_time_min: round(a.wait_time_min, 2),
       wrap_time_min: round(a.wrap_time_min, 2),
       logged_in_time_min: round(a.logged_in_time_min, 2),
+      pause_time_min: round(pauseMin, 2),
       tph: round(tph, 2),
+      adjusted_tph: adjustedTph,
       connects_per_hour: round(a.connects_per_hour, 2),
       connect_rate: round(safeDiv(a.connects, a.dialed) * 100, 2),
       conversion_rate: round(safeDiv(a.transfers, a.contacts) * 100, 2),
@@ -231,7 +251,7 @@ export function computeAgentPerformance(
   // Compute rankings among qualified agents
   const qualified = agents
     .filter((a) => a.hours_worked >= THRESHOLDS.min_hours_qualified)
-    .sort((a, b) => b.tph - a.tph);
+    .sort((a, b) => (b.adjusted_tph ?? b.tph) - (a.adjusted_tph ?? a.tph));
 
   qualified.forEach((a, i) => {
     a.tph_rank = i + 1;
@@ -496,7 +516,9 @@ export function processDay(
   }
 
   // Prefer AgentSummary (all agents, including idle) over AgentSummaryCampaign (active only)
-  const agentSummary = agentSummaryBase.length > 0 ? agentSummaryBase : agentSummaryCampaign;
+  // Filter out defunct/excluded teams before any computation
+  const agentSummaryRaw = agentSummaryBase.length > 0 ? agentSummaryBase : agentSummaryCampaign;
+  const agentSummary = agentSummaryRaw.filter((a) => !isExcludedTeam(a.team || null));
 
   if (agentSummary.length === 0 && production.length === 0 && subcampaign.length === 0 && campaignSummary.length === 0) {
     throw new Error('No parseable report data found');
@@ -516,6 +538,7 @@ export function processDay(
       agentSummary,
       production.length > 0 ? production : undefined,
       reportDate,
+      agentAnalysis.length > 0 ? agentAnalysis : undefined,
     );
     anomalies = detectAnomalies(
       agentSummary,

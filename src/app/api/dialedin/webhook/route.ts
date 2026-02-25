@@ -18,6 +18,11 @@ export const runtime = 'nodejs';
  *   ...event-specific fields
  * }
  */
+// GET handler — lets DialedIn (or any platform) verify the endpoint is alive
+export async function GET() {
+  return NextResponse.json({ ok: true, service: 'dialedin-webhook', status: 'ready' });
+}
+
 export async function POST(request: NextRequest) {
   // 1. Authenticate (check multiple header names)
   const apiKey = request.headers.get('X-API-Key')

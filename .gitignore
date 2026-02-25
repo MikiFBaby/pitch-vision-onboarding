@@ -1,5 +1,8 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
+# n8n workflow snapshots (local rollback backups)
+.n8n-snapshots/
+
 # dependencies
 /node_modules
 /.pnp

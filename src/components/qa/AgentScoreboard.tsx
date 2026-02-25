@@ -30,7 +30,7 @@ const TIME_RANGE_OPTIONS: { value: TimeRange; label: string; days: number | null
 
 interface AgentScoreboardProps {
   calls: CallData[];
-  onReviewAgent: (agentName: string, riskyAgentNames?: string[]) => void;
+  onReviewAgent: (agentName: string, riskyAgentNames?: string[], timeRange?: string) => void;
 }
 
 interface AgentStats {
@@ -170,7 +170,8 @@ export const AgentScoreboard: React.FC<AgentScoreboardProps> = ({ calls, onRevie
 
     return agentData.filter(a => {
       const matchesName = a.name.toLowerCase().includes(term);
-      const matchesPhone = a.phoneNumbers.some(p => p.includes(term));
+      const digits = searchTerm.replace(/\D/g, '');
+      const matchesPhone = digits.length > 0 && a.phoneNumbers.some(p => p.includes(digits));
       return matchesName || matchesPhone;
     });
   }, [agentData, searchTerm]);
@@ -357,7 +358,7 @@ export const AgentScoreboard: React.FC<AgentScoreboardProps> = ({ calls, onRevie
                 <button
                   onClick={() => {
                     // Pass risky agent names to filter their calls
-                    onReviewAgent('', riskyAgentNames);
+                    onReviewAgent('', riskyAgentNames, selectedTimeRange);
                   }}
                   className="w-full py-2.5 px-4 rounded-lg bg-rose-500/20 border border-rose-500/30 text-rose-200 text-xs font-bold uppercase tracking-wider hover:bg-rose-500/30 hover:border-rose-500/50 transition-all flex items-center justify-center gap-2"
                 >
@@ -482,23 +483,28 @@ export const AgentScoreboard: React.FC<AgentScoreboardProps> = ({ calls, onRevie
                 <tr key={agent.name} className="group hover:bg-white/[0.03] transition-colors">
                   <td className="px-8 py-5">
                     <div className="flex items-center gap-4">
-                      {/* Avatar - Show image if available, fallback to letter */}
+                      {/* Avatar - Layered: initials base + image on top with error fallback */}
                       {(() => {
                         const agentImage = getAgentImage(agent.name);
-                        return agentImage ? (
-                          <div className="h-11 w-11 rounded-xl overflow-hidden shadow-lg border border-white/10">
-                            <img
-                              src={agentImage}
-                              alt={agent.name}
-                              className="h-full w-full object-cover"
-                            />
-                          </div>
-                        ) : (
-                          <div className={`h-11 w-11 rounded-xl flex items-center justify-center font-bold text-sm shadow-lg border border-white/5 transition-colors ${agent.riskLevel === 'Risk'
-                            ? 'bg-rose-500/10 text-rose-400 group-hover:bg-rose-500/20'
-                            : 'bg-white/5 text-slate-300 group-hover:bg-purple-500/20 group-hover:text-purple-300'
+                        return (
+                          <div className={`h-11 w-11 rounded-xl overflow-hidden shadow-lg border transition-colors relative ${agentImage ? 'border-white/10' : 'border-white/5'} ${!agentImage && agent.riskLevel === 'Risk'
+                            ? 'bg-rose-500/10 group-hover:bg-rose-500/20'
+                            : !agentImage ? 'bg-white/5 group-hover:bg-purple-500/20' : ''
                             }`}>
-                            {agent.name.charAt(0)}
+                            <div className={`h-full w-full flex items-center justify-center font-bold text-sm ${agent.riskLevel === 'Risk'
+                              ? 'text-rose-400'
+                              : 'text-slate-300 group-hover:text-purple-300'
+                              }`}>
+                              {agent.name.charAt(0)}
+                            </div>
+                            {agentImage && (
+                              <img
+                                src={agentImage}
+                                alt={agent.name}
+                                className="absolute inset-0 h-full w-full object-cover"
+                                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                              />
+                            )}
                           </div>
                         );
                       })()}
@@ -566,7 +572,7 @@ export const AgentScoreboard: React.FC<AgentScoreboardProps> = ({ calls, onRevie
 
                   <td className="px-8 py-5 text-right">
                     <button
-                      onClick={() => onReviewAgent(agent.name)}
+                      onClick={() => onReviewAgent(agent.name, undefined, selectedTimeRange)}
                       className="group/btn relative overflow-hidden bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold py-2.5 px-5 rounded-xl transition-all shadow-lg shadow-purple-900/30 flex items-center gap-2 ml-auto"
                     >
                       <span>Review Calls</span>

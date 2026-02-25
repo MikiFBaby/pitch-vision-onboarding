@@ -14,9 +14,9 @@ export function verifySlackSignature(
     timestamp: string,
     body: string
 ): boolean {
-    // Reject requests older than 5 minutes (replay attack protection)
-    const fiveMinutesAgo = Math.floor(Date.now() / 1000) - 60 * 5;
-    if (parseInt(timestamp, 10) < fiveMinutesAgo) return false;
+    // Reject requests older than 1 hour (relaxed from 5 min for Block Kit button interactions)
+    const oneHourAgo = Math.floor(Date.now() / 1000) - 60 * 60;
+    if (parseInt(timestamp, 10) < oneHourAgo) return false;
 
     const sigBasestring = `v0:${timestamp}:${body}`;
     const mySignature = 'v0=' + crypto
@@ -392,7 +392,6 @@ export function namesMatch(a: string, b: string): boolean {
     if (!na || !nb) return false;
     if (na === nb) return true;
 
-    // Try "First Last" exact
     const partsA = na.split(' ');
     const partsB = nb.split(' ');
 
@@ -401,6 +400,22 @@ export function namesMatch(a: string, b: string): boolean {
         const firstA = partsA[0], lastA = partsA[partsA.length - 1];
         const firstB = partsB[0], lastB = partsB[partsB.length - 1];
         if (firstA === firstB && lastA === lastB) return true;
+    }
+
+    // Compound last name handling: if the shorter name's parts all appear
+    // in order in the longer name, treat as match.
+    // e.g. "Stacy Martin" matches "Stacy Martin Sprowl"
+    if (partsA.length >= 2 && partsB.length >= 2) {
+        const [shorter, longer] = partsA.length <= partsB.length
+            ? [partsA, partsB] : [partsB, partsA];
+        if (shorter.length >= 2 && longer.length > shorter.length) {
+            let j = 0;
+            for (const part of longer) {
+                if (part === shorter[j]) j++;
+                if (j === shorter.length) break;
+            }
+            if (j === shorter.length) return true;
+        }
     }
 
     return false;

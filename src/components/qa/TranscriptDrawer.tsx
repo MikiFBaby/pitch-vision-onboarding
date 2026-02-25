@@ -2238,7 +2238,17 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                                   style={{ width: `${Math.min((wpmValue / 200) * 100, 100)}%` }}
                                 />
                               </div>
-                              <p className="text-xs text-slate-500 mt-1">Target: 120-150 words per minute</p>
+                              <p className="text-xs text-slate-500 mt-1">
+                                {(() => {
+                                  const agentSeconds = call.speakerMetrics?.agent?.speakingTimeSeconds ?? call.agentSpeakingTime ?? 0;
+                                  const estWordCount = call.languageAssessment?.agent_word_count ||
+                                    (wpmValue > 0 && agentSeconds > 0 ? Math.round(wpmValue * agentSeconds / 60) : null);
+                                  if (estWordCount && estWordCount > 0) {
+                                    return `${estWordCount.toLocaleString()} words · Target: 120-150 WPM`;
+                                  }
+                                  return 'Target: 120-150 words per minute';
+                                })()}
+                              </p>
                             </div>
                           );
                         })()}
@@ -2330,13 +2340,28 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                                 .filter(([_, item]: [string, any]) => item && item.time_seconds >= 0)
                                 .sort((a: any, b: any) => (a[1].time_seconds || 0) - (b[1].time_seconds || 0));
 
-                              // Expected order for Medicare
-                              const expectedOrder = [
-                                'client_name_confirmation', 'agent_introduction', 'company_name',
-                                'recorded_line_disclosure', 'food_utility_card_mention', 'medicare_ab_verification',
-                                'rwb_card_verification', 'state_zipcode_confirmation', 'food_benefits_mention',
-                                'verbal_consent_to_transfer', 'cold_transfer'
-                              ];
+                              // Expected order by product type (matches pipeline checklistOrderByProduct)
+                              const expectedOrders: Record<string, string[]> = {
+                                ACA: [
+                                  'client_name_confirmation', 'agent_introduction', 'company_name',
+                                  'recorded_line_disclosure', 'subsidy_mention', 'mmw_check_first',
+                                  'state_confirmation', 'mmw_check_second',
+                                  'verbal_consent_to_transfer', 'warm_handoff'
+                                ],
+                                MEDICARE: [
+                                  'client_name_confirmation', 'agent_introduction', 'company_name',
+                                  'recorded_line_disclosure', 'food_utility_card_mention', 'food_benefits_mention',
+                                  'state_zipcode_confirmation', 'medicare_ab_verification', 'rwb_card_verification',
+                                  'verbal_consent_to_transfer', 'warm_handoff'
+                                ],
+                                WHATIF: [
+                                  'client_name_confirmation', 'agent_introduction', 'company_name',
+                                  'recorded_line_disclosure', 'state_zipcode_confirmation',
+                                  'medicare_ab_verification', 'rwb_card_verification',
+                                  'verbal_consent_to_transfer', 'cold_transfer'
+                                ]
+                              };
+                              const expectedOrder = expectedOrders[(call.productType || 'ACA').toUpperCase()] || expectedOrders.ACA;
 
                               if (checklistItems.length >= 3) {
                                 // Count how many items are in correct relative order
@@ -2632,6 +2657,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                           <div className="bg-slate-50 rounded-xl p-3">
                             <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">Pace</span>
                             <span className={`text-sm font-bold ${call.languageAssessment.pace === 'appropriate' ? 'text-emerald-600' :
+                              call.languageAssessment.pace === 'rushed' ? 'text-rose-600' :
                               call.languageAssessment.pace === 'fast' || call.languageAssessment.pace === 'slow' ? 'text-amber-600' : 'text-slate-700'
                               }`}>
                               {call.languageAssessment.pace.charAt(0).toUpperCase() + call.languageAssessment.pace.slice(1)}
@@ -2639,24 +2665,33 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                           </div>
                         )}
 
-                        {/* Empathy Displayed */}
-                        {call.languageAssessment.empathy_displayed !== undefined && (
-                          <div className="bg-slate-50 rounded-xl p-3">
-                            <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">Empathy</span>
-                            <div className="flex items-center gap-1.5">
-                              {call.languageAssessment.empathy_displayed ? (
-                                <>
-                                  <CheckCircle2 size={14} className="text-emerald-500" />
-                                  <span className="text-sm font-bold text-emerald-600">Displayed</span>
-                                </>
-                              ) : (
-                                <>
-                                  <XCircle size={14} className="text-rose-500" />
-                                  <span className="text-sm font-bold text-rose-600">Not Detected</span>
-                                </>
-                              )}
-                            </div>
-                          </div>
+                        {/* Empathy Score */}
+                        {(call.languageAssessment.empathy !== undefined || call.languageAssessment.empathy_displayed !== undefined) && (
+                          (() => {
+                            const empathyScore = typeof call.languageAssessment.empathy === 'number'
+                              ? call.languageAssessment.empathy
+                              : (call.languageAssessment.empathy_displayed ? 7 : 3);
+                            return (
+                              <div className="bg-slate-50 rounded-xl p-3">
+                                <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider block mb-1">Empathy</span>
+                                <div className="flex items-center gap-2">
+                                  <span className={`text-sm font-bold ${empathyScore >= 8 ? 'text-emerald-600' :
+                                    empathyScore >= 5 ? 'text-amber-600' : 'text-rose-600'
+                                  }`}>
+                                    {empathyScore}/10
+                                  </span>
+                                  <div className="flex-1 h-1.5 bg-slate-200 rounded-full overflow-hidden">
+                                    <div
+                                      className={`h-full rounded-full ${empathyScore >= 8 ? 'bg-emerald-500' :
+                                        empathyScore >= 5 ? 'bg-amber-500' : 'bg-rose-500'
+                                      }`}
+                                      style={{ width: `${empathyScore * 10}%` }}
+                                    />
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          })()
                         )}
 
                         {/* Professionalism Score */}

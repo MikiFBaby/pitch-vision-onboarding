@@ -131,13 +131,38 @@ export async function POST(req: Request) {
             .update({ last_login: new Date().toISOString() })
             .eq('id', user.id);
 
-        // 3. Determine redirect path based on role
-        const redirectTo = user.profile_completed ? `/${user.role}` : '/onboarding';
-
-        // 4. Determine admin status (CTO, executives with specific emails get universal access)
+        // 3. Determine admin status (CTO, executives with specific emails get universal access)
         const adminEmails = ['miki@pitchperfectsolutions.net'];
         const adminRoles = ['executive']; // CTO, CEO, President all map to 'executive'
         const isAdmin = adminEmails.includes(user.email?.toLowerCase()) || adminRoles.includes(user.role);
+
+        // 4. Compute portal access for agents (global toggle + per-agent override)
+        let portalAccess = true;
+        if (user.role === 'agent' && !isAdmin) {
+            if (user.portal_access_override === 'granted') {
+                portalAccess = true;
+            } else if (user.portal_access_override === 'blocked') {
+                portalAccess = false;
+            } else {
+                // Check global config
+                const { data: config } = await supabaseAdmin
+                    .from('app_config')
+                    .select('value')
+                    .eq('key', 'agent_portal_access')
+                    .maybeSingle();
+                portalAccess = config?.value === 'enabled';
+            }
+        }
+
+        // 5. Determine redirect path
+        let redirectTo: string;
+        if (!user.profile_completed) {
+            redirectTo = '/onboarding';
+        } else if (portalAccess) {
+            redirectTo = `/${user.role}`;
+        } else {
+            redirectTo = '/onboarding/complete';
+        }
 
         return NextResponse.json({
             success: true,
@@ -150,7 +175,8 @@ export async function POST(req: Request) {
                 first_name: user.first_name,
                 last_name: user.last_name,
                 avatar_url: user.avatar_url,
-                is_admin: isAdmin // Universal portal access
+                is_admin: isAdmin,
+                portal_access: portalAccess,
             },
             redirectTo
         });

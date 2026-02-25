@@ -10,6 +10,7 @@ import AttritionKnowledgeGraph from "@/components/hr/AttritionKnowledgeGraph";
 import NetGrowthTrendChart from "@/components/hr/NetGrowthTrendChart";
 
 import HRAbsenceHeatmap from "@/components/hr/HRAbsenceHeatmap";
+import HRAttendanceFeed from "@/components/hr/HRAttendanceFeed";
 
 export default function HRDashboard() {
     const { user, profile } = useAuth();
@@ -56,7 +57,10 @@ export default function HRDashboard() {
                 {/* Section 3: Net Growth Trend (own date filter) */}
                 <NetGrowthTrendChart />
 
-                {/* Section 4: Absence Patterns + Attendance Watch List (Side by Side) */}
+                {/* Section 4: Today's Attendance Feed */}
+                <HRAttendanceFeed />
+
+                {/* Section 5: Absence Patterns + Attendance Watch List (Side by Side) */}
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                     <HRAbsenceHeatmap />
                     <HRAttendanceWatchList />

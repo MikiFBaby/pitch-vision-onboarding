@@ -142,11 +142,30 @@ export default function HRTrendsAnalytics() {
     };
 
     const processReasonData = (nonBooked: any[]) => {
+        // Normalize free-text reasons into canonical categories
+        const normalizeReason = (raw: string): string => {
+            const lower = raw.toLowerCase().trim();
+            // Sick variants
+            if (lower === 'sick' || lower === 'left sick' || lower === 'called in sick' || lower === 'feeling sick') return 'Sick';
+            // Won't be in variants (typos, shorthand)
+            if (/^won'?t\s*be\s*(in|on)$/i.test(lower) || /^wnt\s*be\s*(in|on)$/i.test(lower) || lower === 'not coming in' || lower === 'won\'t make it') return 'Won\'t be in';
+            // Left early / Leaving early
+            if (lower === 'left early' || lower === 'leaving early' || lower === 'leave early' || lower === 'left earl') return 'Left early';
+            // Late variants
+            if (lower === 'late' || lower === 'running late' || lower === 'will be late') return 'Late';
+            // Tech issue variants
+            if (lower === 'tech issue' || lower === 'tech issues' || lower === 'technical issue' || lower === 'technical issues' || lower === 'computer issue') return 'Tech issue';
+            // No warning / no call no show
+            if (lower === 'no warning' || lower === 'no call no show' || lower === 'ncns' || lower === 'no show') return 'No warning';
+            // Default: title-case the original
+            return raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
+        };
+
         const counts: Record<string, number> = {};
         nonBooked.forEach(item => {
             const rawReason = (item.Reason || '').trim();
             if (!rawReason) return;
-            const reason = rawReason.charAt(0).toUpperCase() + rawReason.slice(1).toLowerCase();
+            const reason = normalizeReason(rawReason);
             counts[reason] = (counts[reason] || 0) + 1;
         });
 

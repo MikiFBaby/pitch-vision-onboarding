@@ -142,8 +142,39 @@ export async function GET(request: NextRequest) {
         if (mode === 'apply') {
             // --- DESTRUCTIVE operations (apply only) ---
 
-            // Add missing employees
+            // Add missing employees (with dedup guard)
             for (const { profile } of toAdd) {
+                // Dedup: check if slack_user_id or email already exists under a different name
+                const { data: existBySlack } = await supabaseAdmin
+                    .from('employee_directory')
+                    .select('id')
+                    .eq('slack_user_id', profile.slackUserId)
+                    .maybeSingle();
+
+                let existByEmail = null;
+                if (!existBySlack && profile.email) {
+                    const { data } = await supabaseAdmin
+                        .from('employee_directory')
+                        .select('id')
+                        .ilike('email', profile.email)
+                        .maybeSingle();
+                    existByEmail = data;
+                }
+
+                if (existBySlack || existByEmail) {
+                    const existId = (existBySlack || existByEmail)!.id;
+                    await supabaseAdmin
+                        .from('employee_directory')
+                        .update({
+                            slack_user_id: profile.slackUserId,
+                            slack_display_name: profile.displayName || profile.realName,
+                            ...(profile.image ? { user_image: profile.image } : {}),
+                        })
+                        .eq('id', existId);
+                    applied.push(`Dedup-linked: ${profile.realName}`);
+                    continue;
+                }
+
                 const { error } = await supabaseAdmin
                     .from('employee_directory')
                     .insert({

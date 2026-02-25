@@ -1,4 +1,4 @@
-import { NextRequest, NextResponse } from 'next/server';
+import { NextRequest, NextResponse, after } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import {
     verifySlackSignature,
@@ -8,7 +8,6 @@ import {
 import {
     writeToGoogleSheets,
     postAttendanceSummary,
-    PENDING_EXPIRY_MINUTES,
     type ParsedAttendanceEvent,
 } from '@/utils/slack-attendance';
 
@@ -55,6 +54,11 @@ export async function POST(request: NextRequest) {
 
     console.log(`[Slack Interactions] action=${actionId} pending=${pendingId} user=${actingUserId}`);
 
+    // Dropdown type override changes don't need server action — captured on Confirm click
+    if (actionId.startsWith('type_override_')) {
+        return NextResponse.json({ ok: true });
+    }
+
     // 4. Look up pending confirmation
     const { data: pending } = await supabaseAdmin
         .from('attendance_pending_confirmations')
@@ -79,31 +83,22 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ ok: true });
     }
 
-    // 7. Check expiry
-    const ageMs = Date.now() - new Date(pending.created_at).getTime();
-    if (ageMs > PENDING_EXPIRY_MINUTES * 60 * 1000) {
-        await supabaseAdmin
-            .from('attendance_pending_confirmations')
-            .update({ status: 'expired', resolved_at: new Date().toISOString() })
-            .eq('id', pendingId);
-
-        if (pending.message_ts) {
-            await updateSlackMessage(
-                pending.slack_channel_id,
-                pending.message_ts,
-                ':warning: This confirmation has expired. Please send your attendance update again.'
-            );
-        }
-        return NextResponse.json({ ok: true });
-    }
-
-    // 8. Handle actions
+    // 7. Handle actions asynchronously — return 200 immediately to Slack
     if (actionId === 'attendance_confirm') {
-        await handleConfirm(pending, pendingId);
+        if (pending.message_ts) {
+            await updateSlackMessage(pending.slack_channel_id, pending.message_ts, ':hourglass_flowing_sand: Processing...');
+        }
+        after(() => handleConfirm(pending, pendingId, payload).catch(err =>
+            console.error('[Slack Interactions] Confirm error:', err)));
     } else if (actionId === 'attendance_cancel') {
-        await handleCancel(pending, pendingId);
+        after(() => handleCancel(pending, pendingId).catch(err =>
+            console.error('[Slack Interactions] Cancel error:', err)));
     } else if (actionId === 'attendance_undo') {
-        await handleUndo(pending, pendingId);
+        if (pending.message_ts) {
+            await updateSlackMessage(pending.slack_channel_id, pending.message_ts, ':hourglass_flowing_sand: Undoing...');
+        }
+        after(() => handleUndo(pending, pendingId).catch(err =>
+            console.error('[Slack Interactions] Undo error:', err)));
     }
 
     return NextResponse.json({ ok: true });
@@ -113,11 +108,30 @@ export async function POST(request: NextRequest) {
 // Action Handlers
 // ---------------------------------------------------------------------------
 
-async function handleConfirm(pending: any, pendingId: string) {
+async function handleConfirm(pending: any, pendingId: string, payload?: any) {
     const events = pending.events as ParsedAttendanceEvent[];
 
-    // Write to Google Sheets
-    const result = await writeToGoogleSheets(events, pending.slack_user_id);
+    // Apply type overrides from dropdown selections
+    if (payload?.state?.values) {
+        const stateValues = payload.state.values;
+        events.forEach((evt: any, i: number) => {
+            const override = stateValues[`event_${i}`]?.[`type_override_${i}`]?.selected_option?.value;
+            if (override && ['planned', 'unplanned'].includes(override)) {
+                evt.event_type = override;
+            }
+        });
+    }
+
+    // Get reporter info up-front (needed for both Sheets + Supabase)
+    const profile = await getSlackUserProfile(pending.slack_user_id);
+    const reporterName = profile?.realName || pending.reported_by_name || 'HR Manager';
+    const reportedAt = pending.reported_at || new Date().toISOString();
+
+    // Write to Google Sheets (with reporter info)
+    const result = await writeToGoogleSheets(events, pending.slack_user_id, 'add', {
+        reportedByName: reporterName,
+        reportedAt: reportedAt,
+    });
 
     if (!result.success) {
         if (pending.message_ts) {
@@ -136,12 +150,18 @@ async function handleConfirm(pending: any, pendingId: string) {
         .update({ status: 'confirmed', resolved_at: new Date().toISOString() })
         .eq('id', pendingId);
 
+    // Insert directly into Supabase for immediate realtime UI update
+    // (next Sheets→Supabase sync cycle will cleanly replace these rows)
+    if (!result.dry_run) {
+        await insertAttendanceEventsToSupabase(events, reporterName, reportedAt);
+    }
+
     // Update Slack message
     const dryRunNote = result.dry_run ? ' _(dry run — not saved to Sheets)_' : '';
     const counts: string[] = [];
-    if (result.absences_added > 0) counts.push(`${result.absences_added} absence(s)`);
-    if (result.attendance_events_added > 0) counts.push(`${result.attendance_events_added} event(s)`);
-    const countStr = counts.length > 0 ? counts.join(' and ') : 'entries';
+    if (result.planned_added > 0) counts.push(`${result.planned_added} planned`);
+    if (result.unplanned_added > 0) counts.push(`${result.unplanned_added} unplanned`);
+    const countStr = counts.length > 0 ? counts.join(' + ') : 'entries';
 
     if (pending.message_ts) {
         await updateSlackMessage(
@@ -153,8 +173,6 @@ async function handleConfirm(pending: any, pendingId: string) {
 
     // Post summary to Slack + Teams channels
     if (!result.dry_run) {
-        const profile = await getSlackUserProfile(pending.slack_user_id);
-        const reporterName = profile?.realName || 'HR Manager';
         await postAttendanceSummary(events, reporterName, 'added');
     }
 }
@@ -197,6 +215,9 @@ async function handleUndo(pending: any, pendingId: string) {
         .update({ status: 'undone', resolved_at: new Date().toISOString() })
         .eq('id', pendingId);
 
+    // Delete from Supabase directly for immediate realtime UI update
+    await deleteAttendanceEventsFromSupabase(events);
+
     if (pending.message_ts) {
         await updateSlackMessage(
             pending.slack_channel_id,
@@ -209,4 +230,53 @@ async function handleUndo(pending: any, pendingId: string) {
     const profile = await getSlackUserProfile(pending.slack_user_id);
     const reporterName = profile?.realName || 'HR Manager';
     await postAttendanceSummary(events, reporterName, 'removed');
+}
+
+// ---------------------------------------------------------------------------
+// Direct Supabase writes for realtime UI updates
+// (Sheets→Supabase sync will cleanly replace these on next cycle)
+// ---------------------------------------------------------------------------
+
+async function insertAttendanceEventsToSupabase(
+    events: ParsedAttendanceEvent[],
+    reporterName: string,
+    reportedAt: string,
+) {
+    if (events.length === 0) return;
+
+    const rows = events.map(e => ({
+        'Agent Name': e.matched_employee_name || e.agent_name,
+        'Event Type': e.event_type,
+        'Date': e.date,
+        'Minutes': e.minutes || null,
+        'Reason': e.reason || null,
+        'Reported By': reporterName,
+        'Reported At': reportedAt,
+    }));
+
+    const { error } = await supabaseAdmin
+        .from('Attendance Events')
+        .insert(rows);
+
+    if (error) {
+        console.error('[Attendance] Direct Supabase insert failed (non-fatal):', error);
+    } else {
+        console.log(`[Attendance] Inserted ${rows.length} events directly to Supabase for realtime`);
+    }
+}
+
+async function deleteAttendanceEventsFromSupabase(events: ParsedAttendanceEvent[]) {
+    for (const e of events) {
+        const agentName = e.matched_employee_name || e.agent_name;
+        const { error } = await supabaseAdmin
+            .from('Attendance Events')
+            .delete()
+            .eq('Agent Name', agentName)
+            .eq('Event Type', e.event_type)
+            .eq('Date', e.date);
+
+        if (error) {
+            console.error(`[Attendance] Direct Supabase delete failed for ${agentName} (non-fatal):`, error);
+        }
+    }
 }

@@ -92,6 +92,24 @@ const SSN_ITEM_ID = "8a2fcd14-1595-4421-bb4d-ab50135163dc";
 const SIN_ITEM_ID = "2efe0756-a759-4527-8b63-8ce9e2713b44";
 const PAYROLL_USA_ITEM_ID = "c0a80121-0002-4000-8000-000000000005";
 const PAYROLL_CANADA_ITEM_ID = "c0a80121-0002-4000-8000-000000000006";
+const SCHEDULE_ITEM_ID = "c0a80121-0004-4000-8000-000000000001";
+
+const DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
+const DAY_LABELS = { monday: "Mon", tuesday: "Tue", wednesday: "Wed", thursday: "Thu", friday: "Fri", saturday: "Sat" } as const;
+
+interface ScheduleInputs {
+    monday: string;
+    tuesday: string;
+    wednesday: string;
+    thursday: string;
+    friday: string;
+    saturday: string;
+    firstBreak: string;
+    lunchBreak: string;
+    secondBreak: string;
+    notes: string;
+}
+const EMPTY_SCHEDULE: ScheduleInputs = { monday: "", tuesday: "", wednesday: "", thursday: "", friday: "", saturday: "", firstBreak: "", lunchBreak: "", secondBreak: "", notes: "" };
 
 const categoryConfig = {
     documents: {
@@ -433,6 +451,8 @@ export default function OnboardingPortal({ onAddNewHire }: OnboardingPortalProps
     const [skippingResume, setSkippingResume] = useState<string | null>(null);
     const [sendingAttestation, setSendingAttestation] = useState<string | null>(null);
     const [attestationModal, setAttestationModal] = useState<{ hireId: string; slug: string; hireName: string } | null>(null);
+    const [scheduleInputs, setScheduleInputs] = useState<Record<string, ScheduleInputs>>({});
+    const [savingSchedule, setSavingSchedule] = useState<string | null>(null);
 
     const handleSaveSlackId = async (hire: NewHire) => {
         if (!hire.employeeId) return;
@@ -453,6 +473,62 @@ export default function OnboardingPortal({ onAddNewHire }: OnboardingPortalProps
             console.error("Error saving Slack ID:", error);
         } finally {
             setSavingSlackId(null);
+        }
+    };
+
+    const handleSaveSchedule = async (hire: NewHire) => {
+        const sched = scheduleInputs[hire.id];
+        if (!sched) return;
+        const hasAnyDay = DAYS.some(d => sched[d].trim());
+        if (!hasAnyDay) return;
+
+        setSavingSchedule(hire.id);
+        try {
+            const res = await fetch("/api/hr/schedule", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    firstName: hire.firstName,
+                    lastName: hire.lastName,
+                    monday: sched.monday.trim() || "OFF",
+                    tuesday: sched.tuesday.trim() || "OFF",
+                    wednesday: sched.wednesday.trim() || "OFF",
+                    thursday: sched.thursday.trim() || "OFF",
+                    friday: sched.friday.trim() || "OFF",
+                    saturday: sched.saturday.trim() || "OFF",
+                    notes: sched.notes.trim(),
+                    firstBreak: sched.firstBreak.trim(),
+                    lunchBreak: sched.lunchBreak.trim(),
+                    secondBreak: sched.secondBreak.trim(),
+                }),
+            });
+            if (!res.ok) throw new Error("Schedule save failed");
+
+            // Store schedule summary in progress notes
+            const shiftSummary = DAYS.map(d => `${DAY_LABELS[d]}: ${sched[d].trim() || "OFF"}`).join(" | ");
+            const breakParts: string[] = [];
+            if (sched.firstBreak.trim()) breakParts.push(`1st: ${sched.firstBreak.trim()}`);
+            if (sched.lunchBreak.trim()) breakParts.push(`Lunch: ${sched.lunchBreak.trim()}`);
+            if (sched.secondBreak.trim()) breakParts.push(`2nd: ${sched.secondBreak.trim()}`);
+            const summary = shiftSummary + (breakParts.length ? ` // Breaks: ${breakParts.join(", ")}` : "") + (sched.notes.trim() ? ` // ${sched.notes.trim()}` : "");
+
+            const { data: existing } = await supabase
+                .from("onboarding_progress")
+                .select("id")
+                .eq("new_hire_id", hire.id)
+                .eq("checklist_item_id", SCHEDULE_ITEM_ID)
+                .maybeSingle();
+
+            if (existing) {
+                await supabase.from("onboarding_progress").update({ notes: summary }).eq("id", existing.id);
+            }
+
+            await updateChecklistItemStatus(hire.id, SCHEDULE_ITEM_ID, "completed");
+            fetchNewHires();
+        } catch (error) {
+            console.error("Error saving schedule:", error);
+        } finally {
+            setSavingSchedule(null);
         }
     };
 
@@ -1052,75 +1128,119 @@ export default function OnboardingPortal({ onAddNewHire }: OnboardingPortalProps
                                             className="overflow-hidden"
                                         >
                                             <div className="px-5 pb-6 border-t border-white/[0.08]">
-                                                {/* Contract Status Card */}
-                                                {hire.contractStatus !== "not_sent" && (
+                                                {/* Contract Status Banner */}
+                                                {hire.contractStatus !== "not_sent" && (() => {
+                                                    const cs = hire.contractStatus;
+                                                    const isSigned = cs === "signed";
+                                                    const isFailed = cs === "failed" || cs === "declined";
+                                                    const isWaiting = cs === "sent" || cs === "opened";
+                                                    const StatusIcon = contractStatusConfig[cs]?.icon || FileSignature;
+                                                    const steps = ["sent", "opened", "signed"] as const;
+                                                    const stepIdx = cs === "signed" ? 3 : cs === "opened" ? 2 : cs === "sent" ? 1 : 0;
+
+                                                    return (
                                                     <motion.div
                                                         initial={{ opacity: 0, y: 8 }}
                                                         animate={{ opacity: 1, y: 0 }}
                                                         transition={{ delay: 0.1 }}
-                                                        className={`mt-5 p-5 rounded-xl border ${
-                                                            hire.contractStatus === "signed"
-                                                                ? "bg-emerald-500/[0.04] border-emerald-500/[0.15]"
-                                                                : hire.contractStatus === "failed" || hire.contractStatus === "declined"
-                                                                ? "bg-red-500/[0.04] border-red-500/[0.15]"
-                                                                : "bg-white/[0.02] border-white/[0.06]"
+                                                        className={`mt-5 rounded-xl border overflow-hidden border-l-[3px] transition-all duration-200 ${
+                                                            isSigned
+                                                                ? "border-white/[0.08] border-l-emerald-400 hover:border-white/[0.12] hover:border-l-emerald-300"
+                                                                : isFailed
+                                                                ? "border-white/[0.08] border-l-red-400 hover:border-white/[0.12] hover:border-l-red-300"
+                                                                : "border-white/[0.08] border-l-amber-400 hover:border-white/[0.12] hover:border-l-amber-300"
                                                         }`}
                                                     >
-                                                        <div className="flex items-center justify-between">
-                                                            <div className="flex items-center gap-3">
-                                                                <div className={`p-2 rounded-lg ${
-                                                                    hire.contractStatus === "signed" ? "bg-emerald-500/10" :
-                                                                    hire.contractStatus === "failed" || hire.contractStatus === "declined" ? "bg-red-500/10" : "bg-white/[0.06]"
-                                                                }`}>
-                                                                    <FileSignature className={`w-4.5 h-4.5 ${
-                                                                        hire.contractStatus === "signed" ? "text-emerald-300" :
-                                                                        hire.contractStatus === "failed" || hire.contractStatus === "declined" ? "text-red-300" : "text-zinc-300"
-                                                                    }`} />
-                                                                </div>
-                                                                <div>
-                                                                    <p className="font-semibold text-white text-sm">Employment Contract</p>
-                                                                    <p className={`text-xs mt-0.5 ${
-                                                                        hire.contractStatus === "signed" ? "text-emerald-300/80" :
-                                                                        hire.contractStatus === "failed" || hire.contractStatus === "declined" ? "text-red-300/80" : "text-zinc-400"
+                                                        <div className={`px-5 py-4 transition-colors duration-200 ${
+                                                            isSigned ? "bg-emerald-500/[0.06] hover:bg-emerald-500/[0.09]" : isFailed ? "bg-red-500/[0.06] hover:bg-red-500/[0.09]" : "bg-white/[0.03] hover:bg-white/[0.05]"
+                                                        }`}>
+                                                            <div className="flex items-center justify-between">
+                                                                <div className="flex items-center gap-3.5">
+                                                                    <div className={`relative p-2.5 rounded-xl ${
+                                                                        isSigned ? "bg-emerald-500/15" :
+                                                                        isFailed ? "bg-red-500/15" : "bg-amber-500/10"
                                                                     }`}>
-                                                                        {contractStatusConfig[hire.contractStatus]?.label || hire.contractStatus}
-                                                                    </p>
-                                                                </div>
-                                                            </div>
-                                                            <div className="flex items-center gap-2">
-                                                                {hire.signedContractUrl && (
-                                                                    <a
-                                                                        href={hire.signedContractUrl}
-                                                                        target="_blank"
-                                                                        rel="noopener noreferrer"
-                                                                        className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-emerald-500/10 text-emerald-300 text-xs font-medium hover:bg-emerald-500/20 border border-emerald-500/20 transition-all duration-200"
-                                                                    >
-                                                                        <Download className="w-3.5 h-3.5" />
-                                                                        Download Signed
-                                                                        <ArrowUpRight className="w-3 h-3 opacity-60" />
-                                                                    </a>
-                                                                )}
-                                                                {hire.contractStatus !== "signed" && hire.contractStatus !== "not_sent" && (
-                                                                    <button
-                                                                        onClick={(e) => {
-                                                                            e.stopPropagation();
-                                                                            checkContractStatus(hire);
-                                                                        }}
-                                                                        disabled={checkingContractId === hire.id}
-                                                                        className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-white/[0.04] text-zinc-300 text-xs font-medium hover:bg-white/[0.08] border border-white/[0.06] transition-all duration-200 disabled:opacity-50"
-                                                                    >
-                                                                        {checkingContractId === hire.id ? (
-                                                                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                                                        ) : (
-                                                                            <RefreshCw className="w-3.5 h-3.5" />
+                                                                        <FileSignature className={`w-5 h-5 ${
+                                                                            isSigned ? "text-emerald-300" :
+                                                                            isFailed ? "text-red-300" : "text-amber-300"
+                                                                        }`} />
+                                                                        {/* Live status dot */}
+                                                                        <span className={`absolute -top-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-[#0c0f16] ${
+                                                                            isSigned ? "bg-emerald-400" :
+                                                                            isFailed ? "bg-red-400" : "bg-amber-400 animate-pulse"
+                                                                        }`} />
+                                                                    </div>
+                                                                    <div>
+                                                                        <div className="flex items-center gap-2">
+                                                                            <p className="font-semibold text-white text-sm">Employment Contract</p>
+                                                                            <span className={`inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${
+                                                                                isSigned ? "bg-emerald-500/15 text-emerald-300" :
+                                                                                isFailed ? "bg-red-500/15 text-red-300" : "bg-amber-500/15 text-amber-300"
+                                                                            }`}>
+                                                                                <StatusIcon className="w-3 h-3" />
+                                                                                {contractStatusConfig[cs]?.label || cs}
+                                                                            </span>
+                                                                        </div>
+                                                                        {/* Mini pipeline steps */}
+                                                                        {!isFailed && (
+                                                                            <div className="flex items-center gap-2 mt-2">
+                                                                                {steps.map((step, i) => (
+                                                                                    <div key={step} className="flex items-center gap-2">
+                                                                                        <div className={`flex items-center gap-1.5 text-xs font-medium ${
+                                                                                            i < stepIdx ? "text-emerald-300/80" :
+                                                                                            i === stepIdx ? (isSigned ? "text-emerald-300/80" : "text-amber-300/80") : "text-white/25"
+                                                                                        }`}>
+                                                                                            <div className={`w-2 h-2 rounded-full ${
+                                                                                                i < stepIdx ? "bg-emerald-400" :
+                                                                                                i === stepIdx ? (isSigned ? "bg-emerald-400" : "bg-amber-400") : "bg-white/15"
+                                                                                            }`} />
+                                                                                            {step === "sent" ? "Sent" : step === "opened" ? "Opened" : "Signed"}
+                                                                                        </div>
+                                                                                        {i < steps.length - 1 && (
+                                                                                            <div className={`w-5 h-px ${i < stepIdx ? "bg-emerald-500/40" : "bg-white/10"}`} />
+                                                                                        )}
+                                                                                    </div>
+                                                                                ))}
+                                                                            </div>
                                                                         )}
-                                                                        Check Status
-                                                                    </button>
-                                                                )}
+                                                                    </div>
+                                                                </div>
+                                                                <div className="flex items-center gap-2">
+                                                                    {hire.signedContractUrl && (
+                                                                        <a
+                                                                            href={hire.signedContractUrl}
+                                                                            target="_blank"
+                                                                            rel="noopener noreferrer"
+                                                                            className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-emerald-500/10 text-emerald-300 text-xs font-medium hover:bg-emerald-500/20 border border-emerald-500/20 transition-all duration-200"
+                                                                        >
+                                                                            <Download className="w-3.5 h-3.5" />
+                                                                            Download Signed
+                                                                            <ArrowUpRight className="w-3 h-3 opacity-60" />
+                                                                        </a>
+                                                                    )}
+                                                                    {!isSigned && cs !== "not_sent" && (
+                                                                        <button
+                                                                            onClick={(e) => {
+                                                                                e.stopPropagation();
+                                                                                checkContractStatus(hire);
+                                                                            }}
+                                                                            disabled={checkingContractId === hire.id}
+                                                                            className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-white/[0.06] text-zinc-300 text-xs font-medium hover:bg-white/[0.10] border border-white/[0.10] transition-all duration-200 disabled:opacity-50"
+                                                                        >
+                                                                            {checkingContractId === hire.id ? (
+                                                                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                                                            ) : (
+                                                                                <RefreshCw className="w-3.5 h-3.5" />
+                                                                            )}
+                                                                            Check Status
+                                                                        </button>
+                                                                    )}
+                                                                </div>
                                                             </div>
                                                         </div>
                                                     </motion.div>
-                                                )}
+                                                    );
+                                                })()}
 
                                                 {/* Category Progress Overview */}
                                                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-5">
@@ -1306,6 +1426,7 @@ export default function OnboardingPortal({ onAddNewHire }: OnboardingPortalProps
                                                                         const isResumeItem = item.id === RESUME_ITEM_ID;
                                                                         const isSsnSinItem = item.id === SSN_ITEM_ID || item.id === SIN_ITEM_ID;
                                                                         const isPayrollItem = item.id === PAYROLL_USA_ITEM_ID || item.id === PAYROLL_CANADA_ITEM_ID;
+                                                                        const isScheduleItem = item.id === SCHEDULE_ITEM_ID;
                                                                         const isAutoManaged = isContractItem || isMaterialsSent || isPayrollItem || isSsnSinItem;
                                                                         const payrollProvider = item.id === PAYROLL_USA_ITEM_ID ? "DecisionHR" : "Payworks";
 
@@ -1315,6 +1436,7 @@ export default function OnboardingPortal({ onAddNewHire }: OnboardingPortalProps
                                                                             if (isMaterialsSent) return PackageCheck;
                                                                             if (isPortalTraining) return MonitorPlay;
                                                                             if (isSlackSetup) return MessageSquare;
+                                                                            if (isScheduleItem) return Calendar;
                                                                             if (isPayrollItem) return Building2;
                                                                             if (item.title.includes("Zoom")) return Video;
                                                                             if (item.title.includes("Supervised")) return Headphones;
@@ -1420,6 +1542,12 @@ export default function OnboardingPortal({ onAddNewHire }: OnboardingPortalProps
                                                                                     ) : isSlackSetup ? (
                                                                                         <p className="text-xs text-zinc-400 mt-0.5 truncate">
                                                                                             {hire.slackId ? `@${hire.slackId}` : "Enter Slack ID to complete"}
+                                                                                        </p>
+                                                                                    ) : isScheduleItem ? (
+                                                                                        <p className="text-xs text-zinc-400 mt-0.5 truncate">
+                                                                                            {item.status === "completed" && item.notes
+                                                                                                ? item.notes
+                                                                                                : "Set Mon-Sat shift times"}
                                                                                         </p>
                                                                                     ) : isSsnSinItem ? (
                                                                                         <p className="text-xs text-zinc-400 mt-0.5 truncate">
@@ -1633,6 +1761,117 @@ export default function OnboardingPortal({ onAddNewHire }: OnboardingPortalProps
                                                                                         <Hash className="w-3 h-3" />
                                                                                         {hire.slackId}
                                                                                     </span>
+                                                                                </div>
+                                                                            )}
+                                                                            {/* Schedule Assignment inline form */}
+                                                                            {isScheduleItem && item.status !== "completed" && (
+                                                                                <div className="mt-3 pl-8 space-y-3" onClick={(e) => e.stopPropagation()}>
+                                                                                    {/* Shift times grid */}
+                                                                                    <div>
+                                                                                        <p className="text-[10px] font-semibold text-zinc-300 uppercase tracking-wider mb-1.5">Shift Times</p>
+                                                                                        <div className="grid grid-cols-6 gap-2">
+                                                                                            {DAYS.map(day => (
+                                                                                                <div key={day} className="space-y-1">
+                                                                                                    <label className="text-[10px] font-semibold text-zinc-300 uppercase tracking-wider">{DAY_LABELS[day]}</label>
+                                                                                                    <input
+                                                                                                        type="text"
+                                                                                                        placeholder="9:00 AM - 5:00 PM"
+                                                                                                        value={scheduleInputs[hire.id]?.[day] || ""}
+                                                                                                        onChange={(e) => setScheduleInputs(prev => ({
+                                                                                                            ...prev,
+                                                                                                            [hire.id]: { ...(prev[hire.id] || EMPTY_SCHEDULE), [day]: e.target.value }
+                                                                                                        }))}
+                                                                                                        className="w-full px-2 py-1.5 rounded-md bg-white/[0.08] border border-white/[0.12] text-white text-[11px] placeholder-zinc-500 focus:outline-none focus:border-emerald-500/40 focus:bg-white/[0.10] transition-all"
+                                                                                                    />
+                                                                                                </div>
+                                                                                            ))}
+                                                                                        </div>
+                                                                                    </div>
+                                                                                    {/* Break times */}
+                                                                                    <div>
+                                                                                        <p className="text-[10px] font-semibold text-zinc-300 uppercase tracking-wider mb-1.5">Breaks</p>
+                                                                                        <div className="grid grid-cols-3 gap-2">
+                                                                                            {([["firstBreak", "1st Break"], ["lunchBreak", "Lunch"], ["secondBreak", "2nd Break"]] as const).map(([field, label]) => (
+                                                                                                <div key={field} className="space-y-1">
+                                                                                                    <label className="text-[10px] font-semibold text-zinc-300 uppercase tracking-wider">{label}</label>
+                                                                                                    <input
+                                                                                                        type="text"
+                                                                                                        placeholder={field === "lunchBreak" ? "12:00 - 1:00 PM" : "10:30 - 10:45 AM"}
+                                                                                                        value={scheduleInputs[hire.id]?.[field] || ""}
+                                                                                                        onChange={(e) => setScheduleInputs(prev => ({
+                                                                                                            ...prev,
+                                                                                                            [hire.id]: { ...(prev[hire.id] || EMPTY_SCHEDULE), [field]: e.target.value }
+                                                                                                        }))}
+                                                                                                        className="w-full px-2 py-1.5 rounded-md bg-white/[0.08] border border-white/[0.12] text-white text-[11px] placeholder-zinc-500 focus:outline-none focus:border-emerald-500/40 focus:bg-white/[0.10] transition-all"
+                                                                                                    />
+                                                                                                </div>
+                                                                                            ))}
+                                                                                        </div>
+                                                                                    </div>
+                                                                                    {/* Notes */}
+                                                                                    <div>
+                                                                                        <label className="text-[10px] font-semibold text-zinc-300 uppercase tracking-wider">Comments</label>
+                                                                                        <textarea
+                                                                                            placeholder="Additional notes (e.g. training schedule, ramp-up hours, timezone)"
+                                                                                            value={scheduleInputs[hire.id]?.notes || ""}
+                                                                                            onChange={(e) => setScheduleInputs(prev => ({
+                                                                                                ...prev,
+                                                                                                [hire.id]: { ...(prev[hire.id] || EMPTY_SCHEDULE), notes: e.target.value }
+                                                                                            }))}
+                                                                                            rows={2}
+                                                                                            className="w-full mt-1 px-2 py-1.5 rounded-md bg-white/[0.08] border border-white/[0.12] text-white text-[11px] placeholder-zinc-500 focus:outline-none focus:border-emerald-500/40 focus:bg-white/[0.10] transition-all resize-none"
+                                                                                        />
+                                                                                    </div>
+                                                                                    <div className="flex items-center gap-2">
+                                                                                        <button
+                                                                                            onClick={() => {
+                                                                                                setScheduleInputs(prev => ({
+                                                                                                    ...prev,
+                                                                                                    [hire.id]: { ...EMPTY_SCHEDULE, monday: "8:45 AM - 6:00 PM", tuesday: "8:45 AM - 6:00 PM", wednesday: "8:45 AM - 6:00 PM", thursday: "8:45 AM - 6:00 PM", friday: "8:45 AM - 6:00 PM", saturday: "OFF", firstBreak: "11:00 - 11:15 AM", lunchBreak: "1:00 - 2:00 PM", secondBreak: "4:00 - 4:15 PM" }
+                                                                                                }));
+                                                                                            }}
+                                                                                            className="px-2.5 py-1 rounded-md bg-white/[0.06] text-zinc-300 text-[10px] hover:bg-white/[0.10] hover:text-white border border-white/[0.10] transition-all"
+                                                                                        >
+                                                                                            Full-Time Template
+                                                                                        </button>
+                                                                                        <button
+                                                                                            onClick={() => {
+                                                                                                setScheduleInputs(prev => ({
+                                                                                                    ...prev,
+                                                                                                    [hire.id]: { ...EMPTY_SCHEDULE, monday: "8:45 AM - 4:00 PM", tuesday: "8:45 AM - 4:00 PM", wednesday: "8:45 AM - 4:00 PM", thursday: "8:45 AM - 4:00 PM", friday: "8:45 AM - 4:00 PM", saturday: "OFF", firstBreak: "10:30 - 10:45 AM", lunchBreak: "12:30 - 1:00 PM", secondBreak: "" }
+                                                                                                }));
+                                                                                            }}
+                                                                                            className="px-2.5 py-1 rounded-md bg-white/[0.06] text-zinc-300 text-[10px] hover:bg-white/[0.10] hover:text-white border border-white/[0.10] transition-all"
+                                                                                        >
+                                                                                            Part-Time Template
+                                                                                        </button>
+                                                                                        <div className="flex-1" />
+                                                                                        <button
+                                                                                            onClick={() => handleSaveSchedule(hire)}
+                                                                                            disabled={!scheduleInputs[hire.id] || !DAYS.some(d => scheduleInputs[hire.id]?.[d]?.trim()) || savingSchedule === hire.id}
+                                                                                            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-300 text-xs font-medium hover:bg-emerald-500/20 border border-emerald-500/20 transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed"
+                                                                                        >
+                                                                                            {savingSchedule === hire.id ? (
+                                                                                                <Loader2 className="w-3 h-3 animate-spin" />
+                                                                                            ) : (
+                                                                                                <CheckCircle2 className="w-3 h-3" />
+                                                                                            )}
+                                                                                            Save Schedule
+                                                                                        </button>
+                                                                                    </div>
+                                                                                </div>
+                                                                            )}
+                                                                            {/* Show saved schedule when completed */}
+                                                                            {isScheduleItem && item.status === "completed" && item.notes && (
+                                                                                <div className="mt-2 pl-8 space-y-0.5">
+                                                                                    {item.notes.split(" // ").map((part, i) => (
+                                                                                        <div key={i} className="inline-flex items-center gap-1 text-xs text-emerald-300/70">
+                                                                                            {i === 0 && <Calendar className="w-3 h-3 mr-0.5 shrink-0" />}
+                                                                                            {i === 1 && <Clock className="w-3 h-3 mr-0.5 shrink-0" />}
+                                                                                            {i === 2 && <MessageSquare className="w-3 h-3 mr-0.5 shrink-0" />}
+                                                                                            <span>{part}</span>
+                                                                                        </div>
+                                                                                    ))}
                                                                                 </div>
                                                                             )}
                                                                             {/* SSN/SIN number inline input with validation */}

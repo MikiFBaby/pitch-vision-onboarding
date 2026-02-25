@@ -18,7 +18,8 @@ import {
     ChevronRight,
     ChevronLeft,
     CheckCircle2,
-    MessageSquare
+    MessageSquare,
+    Phone,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import Image from 'next/image';
@@ -58,6 +59,7 @@ export default function OnboardingPage() {
         firstName: '',
         lastName: '',
         nickname: '',
+        phone: '',
         bio: '',
         interests: [] as string[],
         avatarUrl: AVATAR_OPTIONS[0].url,
@@ -80,6 +82,7 @@ export default function OnboardingPage() {
                 firstName: profile.first_name || prev.firstName || '',
                 lastName: profile.last_name || prev.lastName || '',
                 nickname: profile.nickname || prev.nickname || '',
+                phone: profile.phone || prev.phone || '',
                 bio: profile.bio || prev.bio || '',
                 interests: (profile.interests && profile.interests.length > 0) ? profile.interests : prev.interests,
                 avatarUrl: prev.avatarUrl === AVATAR_OPTIONS[0].url ? (profile.avatar_url || AVATAR_OPTIONS[0].url) : prev.avatarUrl,
@@ -103,6 +106,13 @@ export default function OnboardingPage() {
     };
 
     const handleNext = () => {
+        // Stage 0 validation — phone is required
+        if (currentStage === 0 && !formData.phone.trim()) {
+            setError('Phone number is required.');
+            return;
+        }
+        setError(null);
+
         if (currentStage < STAGES.length - 1) {
             setCurrentStage(prev => prev + 1);
         } else {
@@ -308,6 +318,22 @@ export default function OnboardingPage() {
                                             placeholder="e.g. JB, Maverick"
                                             className="bg-white/10 border-white/20 focus:border-emerald-500/80 focus:bg-white/15 h-14 rounded-xl text-lg text-white placeholder:text-white/30 transition-all shadow-lg"
                                         />
+                                    </motion.div>
+                                </div>
+
+                                <div className="space-y-3">
+                                    <Label className="text-xs font-bold text-white/90 uppercase tracking-widest pl-1">Phone Number <span className="text-red-400">*</span></Label>
+                                    <motion.div whileFocus={{ scale: 1.02 }} whileHover={{ scale: 1.01 }} className="origin-left">
+                                        <div className="relative">
+                                            <Phone className="absolute left-5 top-1/2 -translate-y-1/2 w-5 h-5 text-white/40" />
+                                            <Input
+                                                value={formData.phone}
+                                                onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                                                placeholder="+1 (555) 123-4567"
+                                                type="tel"
+                                                className="bg-white/10 border-white/20 focus:border-emerald-500/80 focus:bg-white/15 h-14 rounded-xl pl-14 text-lg text-white placeholder:text-white/30 transition-all shadow-lg"
+                                            />
+                                        </div>
                                     </motion.div>
                                 </div>
 

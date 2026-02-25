@@ -7,6 +7,7 @@ import { motion } from "framer-motion";
 import EmployeeProfileDrawer from "./EmployeeProfileDrawer";
 import DeleteConfirmationModal from "./DeleteConfirmationModal";
 import { calculateWeeklyHours, WEEKDAYS } from "@/lib/hr-utils";
+import { detectCampaignType, getPerformanceTier, isPilotCampaign, type PerformanceTier } from "@/utils/dialedin-heatmap";
 
 interface Employee {
     id: string;
@@ -28,6 +29,8 @@ interface Employee {
     contract_signed_at: string | null;
     hourly_wage: number | null;
     training_start_date: string | null;
+    docuseal_submission_id: string | null;
+    current_campaigns?: string[] | null;
 }
 
 export default function EmployeeTable() {
@@ -213,9 +216,15 @@ export default function EmployeeTable() {
     // Dropdown Filters
     const [countryFilter, setCountryFilter] = useState<'all' | 'Canada' | 'USA' | 'unknown'>('all');
     const [employmentFilter, setEmploymentFilter] = useState<'all' | 'full-time' | 'part-time' | 'unknown'>('all');
+    const [campaignFilter, setCampaignFilter] = useState<'all' | 'Medicare' | 'ACA' | 'Medicare WhatIF' | 'Hospital' | 'Meals' | 'Home Care' | 'none'>('all');
     const [statusFilter, setStatusFilter] = useState<'active' | 'pending' | 'terminated' | 'all'>('active');
     const [scheduleMap, setScheduleMap] = useState<Map<string, { hours: number; ft: boolean }>>(new Map());
     const [scheduleLoading, setScheduleLoading] = useState(true);
+
+    // Performance filter (agents only — campaign-specific tiers)
+    const [performanceFilter, setPerformanceFilter] = useState<'all' | PerformanceTier>('all');
+    const [perfMap, setPerfMap] = useState<Record<string, { adjusted_tph: number | null; tph: number; skill: string | null }>>({});
+    const [perfLoading, setPerfLoading] = useState(true);
 
     // Load all schedules once for PT/FT classification
     const loadSchedules = useCallback(async () => {
@@ -289,6 +298,58 @@ export default function EmployeeTable() {
     }, []);
 
     useEffect(() => { loadSchedules(); }, [loadSchedules]);
+
+    // Load performance data for tier coloring
+    useEffect(() => {
+        (async () => {
+            setPerfLoading(true);
+            try {
+                const res = await fetch('/api/hr/performance-bulk');
+                if (res.ok) {
+                    const json = await res.json();
+                    setPerfMap(json.agents || {});
+                }
+            } catch (err) {
+                console.error('Error loading performance data:', err);
+            } finally {
+                setPerfLoading(false);
+            }
+        })();
+    }, []);
+
+    // Match employee to perf data (fuzzy name matching)
+    const getAgentPerf = useCallback((emp: Employee) => {
+        const f = (emp.first_name || '').trim().toLowerCase();
+        const l = (emp.last_name || '').trim().toLowerCase();
+        const fullName = `${f} ${l}`;
+        // Exact match
+        if (perfMap[fullName]) return perfMap[fullName];
+        // Last + first initial
+        const initKey = `${f[0] || ''}. ${l}`;
+        for (const [key, val] of Object.entries(perfMap)) {
+            if (key === initKey) return val;
+        }
+        // Partial: first name + starts with last
+        for (const [key, val] of Object.entries(perfMap)) {
+            const parts = key.split(' ');
+            const pf = parts[0];
+            const pl = parts.slice(1).join(' ');
+            if (pf === f && (pl.startsWith(l) || l.startsWith(pl))) return val;
+        }
+        return null;
+    }, [perfMap]);
+
+    // Get performance tier for an employee
+    const getEmployeeTier = useCallback((emp: Employee): PerformanceTier | null => {
+        if ((emp.role || '').toLowerCase() !== 'agent') return null;
+        const perf = getAgentPerf(emp);
+        if (isPilotCampaign(emp.current_campaigns, perf?.skill)) return null; // pilot verticals — no metrics yet
+        if (!perf) return null;
+        const tph = perf.adjusted_tph ?? perf.tph;
+        if (tph <= 0) return null;
+        const campaign = detectCampaignType(emp.current_campaigns);
+        return getPerformanceTier(tph, campaign);
+    }, [getAgentPerf]);
 
     // Role tab matching helper (shared by statusCounts + filterEmployees)
     const matchesRoleTab = useCallback((emp: Employee, tab: string): boolean => {
@@ -569,12 +630,29 @@ export default function EmployeeTable() {
                 if (empType !== employmentFilter) return false;
             }
 
+            // Campaign Filter (partial match for pilot verticals like "Home Care MI", "Home Care NY")
+            if (campaignFilter !== 'all') {
+                const campaigns: string[] = emp.current_campaigns || [];
+                if (campaignFilter === 'none') {
+                    if (campaigns.length > 0) return false;
+                } else {
+                    const joined = campaigns.join(' ').toLowerCase();
+                    if (!joined.includes(campaignFilter.toLowerCase())) return false;
+                }
+            }
+
+            // Performance Tier Filter (agents only)
+            if (performanceFilter !== 'all') {
+                const tier = getEmployeeTier(emp);
+                if (tier !== performanceFilter) return false;
+            }
+
             // Tab Filter
             return matchesRoleTab(emp, activeTab);
         });
     };
 
-    const filteredEmployees = filterEmployees(employees);
+    let filteredEmployees = filterEmployees(employees);
 
     // Pagination Logic
     const totalPages = Math.ceil(filteredEmployees.length / itemsPerPage);
@@ -741,9 +819,35 @@ export default function EmployeeTable() {
                             <option value="part-time">Part-Time (&lt;30 hrs)</option>
                             <option value="unknown">No Schedule</option>
                         </select>
-                        {(countryFilter !== 'all' || employmentFilter !== 'all') && (
+                        <select
+                            value={campaignFilter}
+                            onChange={(e) => { setCampaignFilter(e.target.value as any); setCurrentPage(1); }}
+                            className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent cursor-pointer"
+                        >
+                            <option value="all">All Campaigns</option>
+                            <option value="Medicare">Medicare</option>
+                            <option value="ACA">ACA</option>
+                            <option value="Medicare WhatIF">Medicare WhatIF</option>
+                            <option value="Hospital">Hospital</option>
+                            <option value="Meals">Meals</option>
+                            <option value="Home Care">Home Care</option>
+                            <option value="none">No Campaign</option>
+                        </select>
+                        <select
+                            value={performanceFilter}
+                            onChange={(e) => { setPerformanceFilter(e.target.value as any); setCurrentPage(1); }}
+                            disabled={perfLoading}
+                            className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent cursor-pointer disabled:opacity-50 disabled:cursor-wait"
+                        >
+                            <option value="all">All Performance</option>
+                            <option value="green">Green (Top)</option>
+                            <option value="gray">Gray (Neutral)</option>
+                            <option value="amber">Amber (Below Avg)</option>
+                            <option value="red">Red (Critical)</option>
+                        </select>
+                        {(countryFilter !== 'all' || employmentFilter !== 'all' || campaignFilter !== 'all' || performanceFilter !== 'all') && (
                             <button
-                                onClick={() => { setCountryFilter('all'); setEmploymentFilter('all'); setCurrentPage(1); }}
+                                onClick={() => { setCountryFilter('all'); setEmploymentFilter('all'); setCampaignFilter('all'); setPerformanceFilter('all'); setCurrentPage(1); }}
                                 className="px-2.5 py-1.5 text-xs font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
                             >
                                 Clear filters
@@ -828,22 +932,28 @@ export default function EmployeeTable() {
                                             )}
                                             <td className="px-6 py-4">
                                                 <div className="flex items-center gap-3">
-                                                    <div className="h-10 w-10 rounded-full bg-gray-100 overflow-hidden border border-gray-200 flex-shrink-0">
-                                                        {employee.user_image ? (
+                                                    <div className="h-10 w-10 rounded-full bg-gray-100 overflow-hidden border border-gray-200 flex-shrink-0 relative">
+                                                        <div className="h-full w-full flex items-center justify-center bg-blue-100 text-blue-600 font-semibold">
+                                                            {employee.first_name?.[0]}{employee.last_name?.[0]}
+                                                        </div>
+                                                        {employee.user_image && (
                                                             <img
                                                                 src={employee.user_image}
                                                                 alt={employee.first_name}
-                                                                className="h-full w-full object-cover"
+                                                                className="absolute inset-0 h-full w-full object-cover"
+                                                                onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
                                                             />
-                                                        ) : (
-                                                            <div className="h-full w-full flex items-center justify-center bg-blue-100 text-blue-600 font-semibold">
-                                                                {employee.first_name?.[0]}{employee.last_name?.[0]}
-                                                            </div>
                                                         )}
                                                     </div>
-                                                    <div className="font-medium text-gray-900">
+                                                    <span className="font-medium text-gray-900 flex items-center gap-1.5">
                                                         {employee.first_name} {employee.last_name}
-                                                    </div>
+                                                        {(() => {
+                                                            const tier = getEmployeeTier(employee);
+                                                            if (!tier) return null;
+                                                            const dotColor = tier === 'green' ? 'bg-emerald-500' : tier === 'amber' ? 'bg-amber-500' : tier === 'red' ? 'bg-red-500' : 'bg-gray-400';
+                                                            return <span className={`inline-block h-2 w-2 rounded-full ${dotColor}`} title={`Performance: ${tier}`} />;
+                                                        })()}
+                                                    </span>
                                                 </div>
                                             </td>
                                             <td className="px-6 py-4">

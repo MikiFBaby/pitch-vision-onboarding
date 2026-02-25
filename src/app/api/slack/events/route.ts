@@ -6,6 +6,7 @@ import {
     normalizeName,
     namesMatch,
 } from '@/utils/slack-helpers';
+import { CAMPAIGN_CHANNEL_IDS, CHANNEL_TO_CAMPAIGN } from '@/lib/slack-config';
 
 const CHANNEL_ID = process.env.SLACK_HIRES_CHANNEL_ID || '';
 
@@ -48,22 +49,38 @@ export async function POST(request: NextRequest) {
     if (payload.type === 'event_callback') {
         const event = payload.event;
 
-        // Only process channel events for the configured channel
-        if (CHANNEL_ID && event.channel !== CHANNEL_ID) {
+        const isMainChannel = CHANNEL_ID && event.channel === CHANNEL_ID;
+        const isCampaignChannel = CAMPAIGN_CHANNEL_IDS.has(event.channel);
+
+        if (!isMainChannel && !isCampaignChannel) {
             return NextResponse.json({ ok: true });
         }
 
-        if (event.type === 'member_joined_channel') {
-            // Fire and forget — respond to Slack immediately, process async
-            handleNewHire(event.user).catch(err =>
-                console.error('[Slack Events] handleNewHire error:', err)
-            );
-        }
-
-        if (event.type === 'member_left_channel') {
-            handleTermination(event.user).catch(err =>
-                console.error('[Slack Events] handleTermination error:', err)
-            );
+        if (isMainChannel) {
+            // Main hires channel — hire/termination detection
+            if (event.type === 'member_joined_channel') {
+                handleNewHire(event.user).catch(err =>
+                    console.error('[Slack Events] handleNewHire error:', err)
+                );
+            }
+            if (event.type === 'member_left_channel') {
+                handleTermination(event.user).catch(err =>
+                    console.error('[Slack Events] handleTermination error:', err)
+                );
+            }
+        } else if (isCampaignChannel) {
+            // Campaign channels — real-time campaign assignment sync
+            const campaignName = CHANNEL_TO_CAMPAIGN[event.channel];
+            if (event.type === 'member_joined_channel') {
+                handleCampaignJoin(event.user, campaignName).catch(err =>
+                    console.error('[Slack Events] handleCampaignJoin error:', err)
+                );
+            }
+            if (event.type === 'member_left_channel') {
+                handleCampaignLeave(event.user, campaignName).catch(err =>
+                    console.error('[Slack Events] handleCampaignLeave error:', err)
+                );
+            }
         }
     }
 
@@ -107,7 +124,7 @@ async function handleNewHire(slackUserId: string) {
         const { data: byEmail } = await supabaseAdmin
             .from('employee_directory')
             .select('id, employee_status')
-            .eq('email', profile.email)
+            .ilike('email', profile.email)
             .limit(1)
             .maybeSingle();
         existing = byEmail;
@@ -306,5 +323,62 @@ async function matchHiredRecord(profile: {
     }
 
     return null;
+}
+
+// ---------------------------------------------------------------------------
+// Campaign Channel: member_joined_channel / member_left_channel
+// ---------------------------------------------------------------------------
+
+async function handleCampaignJoin(slackUserId: string, campaignName: string) {
+    console.log(`[Slack Events] Campaign join: ${campaignName} user=${slackUserId}`);
+
+    const { data: emp } = await supabaseAdmin
+        .from('employee_directory')
+        .select('id, current_campaigns')
+        .eq('slack_user_id', slackUserId)
+        .maybeSingle();
+
+    if (!emp) return; // Not in directory — skip silently
+
+    const campaigns: string[] = emp.current_campaigns || [];
+    if (!campaigns.includes(campaignName)) {
+        const { error } = await supabaseAdmin
+            .from('employee_directory')
+            .update({ current_campaigns: [...campaigns, campaignName].sort() })
+            .eq('id', emp.id);
+
+        if (error) {
+            console.error(`[Slack Events] Campaign join update error:`, error);
+        } else {
+            console.log(`[Slack Events] Added campaign ${campaignName} for ${slackUserId}`);
+        }
+    }
+}
+
+async function handleCampaignLeave(slackUserId: string, campaignName: string) {
+    console.log(`[Slack Events] Campaign leave: ${campaignName} user=${slackUserId}`);
+
+    const { data: emp } = await supabaseAdmin
+        .from('employee_directory')
+        .select('id, current_campaigns')
+        .eq('slack_user_id', slackUserId)
+        .maybeSingle();
+
+    if (!emp) return;
+
+    const campaigns: string[] = emp.current_campaigns || [];
+    const updated = campaigns.filter(c => c !== campaignName);
+    if (updated.length !== campaigns.length) {
+        const { error } = await supabaseAdmin
+            .from('employee_directory')
+            .update({ current_campaigns: updated.length > 0 ? updated : null })
+            .eq('id', emp.id);
+
+        if (error) {
+            console.error(`[Slack Events] Campaign leave update error:`, error);
+        } else {
+            console.log(`[Slack Events] Removed campaign ${campaignName} for ${slackUserId}`);
+        }
+    }
 }
 

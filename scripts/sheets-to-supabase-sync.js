@@ -179,8 +179,9 @@ function onSheetChange(e) {
       if (SHEET_TABLE_MAP[sheetName]) {
         if (!hasSheetChanged(sheetName)) return; // Skip if content unchanged
         logToSheet('onChange', 'INFO', 'Change detected (' + changeType + ') in "' + sheetName + '".');
-        syncSheet(sheetName);
-        updateSheetHash(sheetName);
+        var success = syncSheet(sheetName);
+        // Only update hash if sync succeeded — otherwise smartSyncAll will retry
+        if (success) updateSheetHash(sheetName);
       }
     }
   } catch (err) {
@@ -199,8 +200,9 @@ function onSheetEdit(e) {
     if (SHEET_TABLE_MAP[sheetName]) {
       Utilities.sleep(2000);
       if (!hasSheetChanged(sheetName)) return; // Skip if content unchanged
-      syncSheet(sheetName);
-      updateSheetHash(sheetName);
+      var success = syncSheet(sheetName);
+      // Only update hash if sync succeeded — otherwise smartSyncAll will retry
+      if (success) updateSheetHash(sheetName);
     }
   } catch (err) {
     logToSheet('onSheetEdit', 'ERROR', err.message);
@@ -257,6 +259,9 @@ function smartSyncAll() {
 
     var msg = 'Smart sync done. Synced: ' + synced + ', Skipped (unchanged): ' + skipped + (failed > 0 ? ', Failed: ' + failed : '') + '.';
     logToSheet('smartSyncAll', failed > 0 ? 'WARN' : 'OK', msg);
+
+    // Write heartbeat so the monitoring cron knows the trigger is alive
+    writeHeartbeat(synced, skipped, failed);
   } finally {
     lock.releaseLock();
   }
@@ -292,6 +297,8 @@ function syncAll() {
     }
     var msg = 'Full sync complete. Synced: ' + synced + ', Failed: ' + failed + '.';
     logToSheet('syncAll', failed > 0 ? 'WARN' : 'OK', msg);
+
+    writeHeartbeat(synced, 0, failed);
   } finally {
     lock.releaseLock();
   }
@@ -300,6 +307,7 @@ function syncAll() {
 /**
  * Syncs a single sheet by name. Acquires script lock, runs the sync,
  * then releases. Used by trigger handlers (onChange, onEdit).
+ * Returns true if sync succeeded, false if it failed or was skipped.
  */
 function syncSheet(sheetName) {
   var lock = LockService.getScriptLock();
@@ -307,11 +315,11 @@ function syncSheet(sheetName) {
     lock.waitLock(30000);
   } catch (e) {
     logToSheet(sheetName, 'INFO', 'Sync skipped — another sync in progress (lock timeout).');
-    return;
+    return false;
   }
 
   try {
-    syncSheetInternal(sheetName);
+    return syncSheetInternal(sheetName);
   } finally {
     lock.releaseLock();
   }
@@ -396,6 +404,37 @@ function resetAllHashes() {
   try { SpreadsheetApp.getUi().alert(msg); } catch (e) {}
 }
 
+// ---------------------------------------------------------------------------
+// Heartbeat — lets the Vercel monitoring cron know the trigger is alive
+// ---------------------------------------------------------------------------
+
+/**
+ * Writes a heartbeat timestamp to the sync_heartbeat table in Supabase.
+ * Called at the end of every smartSyncAll run (even when all sheets are skipped).
+ * The Vercel cron at /api/cron/sync-health checks this timestamp and alerts
+ * if the heartbeat goes stale (trigger stopped firing).
+ */
+function writeHeartbeat(synced, skipped, failed) {
+  try {
+    var config = getSupabaseConfig();
+    var url = config.url + '/rest/v1/sync_heartbeat?id=eq.1';
+    UrlFetchApp.fetch(url, {
+      method: 'patch',
+      headers: getSupabaseHeaders(config, { 'Prefer': 'return=minimal' }),
+      payload: JSON.stringify({
+        last_beat: new Date().toISOString(),
+        synced_count: synced || 0,
+        skipped_count: skipped || 0,
+        failed_count: failed || 0
+      }),
+      muteHttpExceptions: true
+    });
+  } catch (e) {
+    // Non-fatal: don't let heartbeat failure block syncs
+    logToSheet('heartbeat', 'WARN', 'Heartbeat write failed: ' + e.message);
+  }
+}
+
 /**
  * Verifies the Supabase API key is working by making a lightweight health check.
  * Run this after setting up credentials or if syncs are failing with 401.
@@ -441,23 +480,99 @@ function syncAgentSchedule() {
     var data = getSheetData(sheetName);
     if (!data || data.length === 0) { logToSheet(sheetName, 'WARN', 'No data rows. Skipping.'); return; }
     var rows = [];
+    var sheetNames = {}; // Track names from sheet for onboarding cleanup
     for (var i = 0; i < data.length; i++) {
       var row = data[i];
       if (isBlank(row[0]) && isBlank(row[1])) continue;
+      var fn = trimVal(row[0]);
+      var ln = trimVal(row[1]);
       rows.push({
-        'First Name': trimVal(row[0]),
-        'Last Name': trimVal(row[1]),
+        'First Name': fn,
+        'Last Name': ln,
         'Monday': trimVal(row[2]),
         'Tuesday': trimVal(row[3]),
         'Wednesday': trimVal(row[4]),
         'Thursday': trimVal(row[5]),
         'Friday': trimVal(row[6]),
         'Notes': trimVal(row[7]),
-        'is_active': parseBoolean(row[8], true)
+        'is_active': parseBoolean(row[8], true),
+        'source': 'sheets'
       });
+      sheetNames[(fn + ' ' + ln).toLowerCase().trim()] = true;
     }
-    atomicReplaceSync(tableName, rows, sheetName);
+    // Use source-aware sync: only delete sheets/legacy rows, preserve onboarding rows
+    atomicReplaceSyncSourceAware(tableName, rows, sheetName, sheetNames);
   } catch (err) { logToSheet(sheetName, 'ERROR', err.message); throw err; }
+}
+
+/**
+ * Source-aware atomic replace for Agent Schedule.
+ * Preserves rows with source='onboarding' during sync.
+ * Cleans up onboarding rows once a matching sheets row exists.
+ */
+function atomicReplaceSyncSourceAware(tableName, newRows, logSource, sheetNames) {
+  logToSheet(logSource, 'INFO', 'Source-aware sync: ' + newRows.length + ' rows -> "' + tableName + '"');
+
+  var config = getSupabaseConfig();
+  var encodedTable = encodeURIComponent(tableName);
+
+  // Step 1: Collect IDs of non-onboarding rows (sheets + legacy null source)
+  var oldIds = [];
+  var offset = 0;
+  var pageSize = 1000;
+  while (true) {
+    var url = config.url + '/rest/v1/' + encodedTable
+      + '?select=id&or=(source.is.null,source.eq.sheets)&order=id&offset=' + offset + '&limit=' + pageSize;
+    var resp = UrlFetchApp.fetch(url, { method: 'get', headers: getSupabaseHeaders(config), muteHttpExceptions: true });
+    if (resp.getResponseCode() !== 200) {
+      logToSheet(logSource, 'ERROR', 'Failed to fetch IDs: HTTP ' + resp.getResponseCode());
+      throw new Error('Failed to fetch IDs: HTTP ' + resp.getResponseCode());
+    }
+    var rows = JSON.parse(resp.getContentText());
+    if (!rows || rows.length === 0) break;
+    for (var i = 0; i < rows.length; i++) oldIds.push(rows[i].id);
+    if (rows.length < pageSize) break;
+    offset += pageSize;
+  }
+  logToSheet(logSource, 'INFO', 'Found ' + oldIds.length + ' sheets/legacy rows to replace (onboarding rows preserved).');
+
+  // Step 2: Insert all new rows
+  var inserted = 0;
+  for (var i = 0; i < newRows.length; i += BATCH_SIZE) {
+    var batch = newRows.slice(i, i + BATCH_SIZE);
+    insertRows(tableName, batch, logSource);
+    inserted += batch.length;
+  }
+
+  // Step 3: Delete old sheets/legacy rows
+  if (oldIds.length > 0) {
+    deleteRowsByIds(tableName, oldIds, logSource);
+  }
+
+  // Step 4: Clean up onboarding rows that now have a matching sheets row
+  var onbOffset = 0;
+  var onbCleanup = [];
+  while (true) {
+    var onbUrl = config.url + '/rest/v1/' + encodedTable
+      + '?select=id,' + encodeURIComponent('"First Name"') + ',' + encodeURIComponent('"Last Name"')
+      + '&source=eq.onboarding&offset=' + onbOffset + '&limit=' + pageSize;
+    var onbResp = UrlFetchApp.fetch(onbUrl, { method: 'get', headers: getSupabaseHeaders(config), muteHttpExceptions: true });
+    if (onbResp.getResponseCode() !== 200) break;
+    var onbRows = JSON.parse(onbResp.getContentText());
+    if (!onbRows || onbRows.length === 0) break;
+    for (var j = 0; j < onbRows.length; j++) {
+      var key = ((onbRows[j]['First Name'] || '') + ' ' + (onbRows[j]['Last Name'] || '')).toLowerCase().trim();
+      if (sheetNames[key]) onbCleanup.push(onbRows[j].id);
+    }
+    if (onbRows.length < pageSize) break;
+    onbOffset += pageSize;
+  }
+  if (onbCleanup.length > 0) {
+    deleteRowsByIds(tableName, onbCleanup, logSource);
+    logToSheet(logSource, 'INFO', 'Cleaned up ' + onbCleanup.length + ' onboarding rows now covered by sheets.');
+  }
+
+  logToSheet(logSource, 'OK', 'Sync complete: +' + inserted + ' new, -' + oldIds.length + ' old in "' + tableName + '".');
 }
 
 /**
@@ -587,7 +702,10 @@ function syncAttendanceEvents() {
         'Date': parsedDate || trimVal(row[2]),
         'Minutes': isNaN(minutes) ? null : minutes,
         'Reason': trimVal(row[4]),
-        'Reported By': trimVal(row[5])
+        'Shift Start': trimVal(row[5]),
+        'Campaign': trimVal(row[6]),
+        'Reported By': trimVal(row[7]),
+        'Reported At': trimVal(row[8])
       });
     }
     atomicReplaceSync(tableName, rows, sheetName);
@@ -1189,9 +1307,22 @@ function parseDateDDMMYYYY(val) {
   str = str.replace(/\/\//g, '/');
   var match = str.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
   if (match) {
-    var day = padZero(parseInt(match[1], 10));
-    var month = padZero(parseInt(match[2], 10));
-    return match[3] + '-' + month + '-' + day;
+    var a = parseInt(match[1], 10);
+    var b = parseInt(match[2], 10);
+    var year = match[3];
+    var day, month;
+    // Smart detection: if either number > 12, it must be the day
+    if (a > 12 && b <= 12) {
+      // a is definitely the day (DD/MM/YYYY)
+      day = a; month = b;
+    } else if (b > 12 && a <= 12) {
+      // b is definitely the day, so format is MM/DD/YYYY
+      day = b; month = a;
+    } else {
+      // Both <= 12: ambiguous, assume DD/MM/YYYY (expected format)
+      day = a; month = b;
+    }
+    return year + '-' + padZero(month) + '-' + padZero(day);
   }
   var d = new Date(str);
   if (!isNaN(d.getTime())) return formatDateISO(d);
@@ -1203,11 +1334,16 @@ function formatDateISO(d) {
 }
 
 /**
- * Validates that a string is a proper ISO date (YYYY-MM-DD).
+ * Validates that a string is a proper ISO date (YYYY-MM-DD) with valid ranges.
+ * Rejects month > 12 or day > 31 to prevent Supabase "date/time field out of range" errors.
  */
 function isValidISODate(str) {
   if (!str) return false;
-  return /^\d{4}-\d{2}-\d{2}$/.test(String(str));
+  var match = String(str).match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (!match) return false;
+  var month = parseInt(match[2], 10);
+  var day = parseInt(match[3], 10);
+  return month >= 1 && month <= 12 && day >= 1 && day <= 31;
 }
 
 function padZero(n) {

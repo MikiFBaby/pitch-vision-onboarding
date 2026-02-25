@@ -84,6 +84,38 @@ export const ALL_DAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday',
 export const FULL_TIME_HOURS_THRESHOLD = 30;
 
 /**
+ * Normalize schedule time strings for consistent display:
+ * - Semicolons → colons ("3;45" → "3:45")
+ * - Fix 12:xx AM → 12:xx PM (no shifts start at midnight)
+ * - Normalize AM/PM format ("p.m." / "pm" → "PM")
+ * - Ensure space before AM/PM ("3:45PM" → "3:45 PM")
+ * - Consistent dash spacing ("3:45 PM-5:00 PM" → "3:45 PM - 5:00 PM")
+ */
+export function normalizeShiftTime(shift: string | null | undefined): string {
+    if (!shift || typeof shift !== 'string') return shift || '';
+
+    let s = shift;
+
+    // Semicolons → colons (data entry typo)
+    s = s.replace(/;/g, ':');
+
+    // Fix 12:xx AM → 12:xx PM (no shifts start at midnight)
+    s = s.replace(/\b(12:\d{2})\s*(a\.?\s*m\.?)/gi, '$1 PM');
+
+    // Normalize AM/PM: strip dots, uppercase ("a.m." / "am" / "p.m." / "pm" → "AM" / "PM")
+    s = s.replace(/\ba\.?\s*m\.?\b/gi, 'AM');
+    s = s.replace(/\bp\.?\s*m\.?\b/gi, 'PM');
+
+    // Ensure space before AM/PM ("3:45PM" → "3:45 PM")
+    s = s.replace(/(\d)(AM|PM)/gi, '$1 $2');
+
+    // Consistent dash spacing ("3:45 PM-5:00 PM" → "3:45 PM - 5:00 PM")
+    s = s.replace(/\s*[-–]\s*/g, ' - ');
+
+    return s;
+}
+
+/**
  * Parse a shift time string like "8:45 a.m - 6:00 p.m." and return duration in hours
  * Returns 0 for "OFF", empty, or invalid shifts
  */
@@ -93,9 +125,12 @@ export function parseShiftDuration(shift: string | null | undefined): number {
     const trimmed = shift.trim().toLowerCase();
     if (trimmed === 'off' || trimmed === '' || trimmed === '-') return 0;
 
+    // Normalize semicolons → colons before parsing (data entry typo: "3;45")
+    const normalized = shift.replace(/;/g, ':');
+
     // Match pattern: "8:45 a.m - 6:00 p.m." or similar variations
     const timePattern = /(\d{1,2}):?(\d{2})?\s*(a\.?m\.?|p\.?m\.?)\s*[-–]\s*(\d{1,2}):?(\d{2})?\s*(a\.?m\.?|p\.?m\.?)/i;
-    const match = shift.match(timePattern);
+    const match = normalized.match(timePattern);
 
     if (!match) return 0;
 
@@ -107,9 +142,11 @@ export function parseShiftDuration(shift: string | null | undefined): number {
     const endPeriod = match[6].replace(/\./g, '').toLowerCase();
 
     // Convert to 24-hour format
+    // Fix data entry error: 12:xx AM start is always a typo for 12:xx PM (no shifts start at midnight)
+    const correctedStartPeriod = (startPeriod === 'am' && startHour === 12) ? 'pm' : startPeriod;
     let start24 = startHour;
-    if (startPeriod === 'pm' && startHour !== 12) start24 += 12;
-    if (startPeriod === 'am' && startHour === 12) start24 = 0;
+    if (correctedStartPeriod === 'pm' && startHour !== 12) start24 += 12;
+    if (correctedStartPeriod === 'am' && startHour === 12) start24 = 0;
 
     let end24 = endHour;
     if (endPeriod === 'pm' && endHour !== 12) end24 += 12;

@@ -226,6 +226,25 @@ async function handleAttendanceFlow(
     console.log('[Attendance Process] Resolving agent names...');
     const resolvedEvents = await resolveAgentNames(events);
 
+    // Reject unmatched names — require all names to match a real employee
+    const unmatchedEvents = resolvedEvents.filter(e => e.match_confidence === 'none');
+    if (unmatchedEvents.length > 0) {
+        const lines = unmatchedEvents.map(e => {
+            if (e.ambiguous_matches && e.ambiguous_matches.length > 0) {
+                const options = e.ambiguous_matches.map(n => `_${n}_`).join(', ');
+                return `• *${e.agent_name}* — multiple matches found: ${options}. Please use the full name.`;
+            }
+            return `• *${e.agent_name}* — no match found in the employee directory.`;
+        });
+
+        await postAttendanceBotMessage(
+            channelId,
+            `:warning: I couldn't match the following name(s) to an active employee:\n\n${lines.join('\n')}\n\n` +
+            `Please try again with the employee's full name as it appears in the directory.`
+        );
+        return NextResponse.json({ ok: true, result: 'unmatched_names' });
+    }
+
     // Store pending confirmation
     const { data: pending, error: insertError } = await supabaseAdmin
         .from('attendance_pending_confirmations')
@@ -283,7 +302,7 @@ async function handleUndoRequest(slackUserId: string, channelId: string) {
     if (!recent) {
         await postAttendanceBotMessage(
             channelId,
-            `No confirmed attendance entries found in the last ${UNDO_WINDOW_MINUTES} minutes to undo.`
+            `No confirmed attendance entries found in the last 24 hours to undo.`
         );
         return;
     }

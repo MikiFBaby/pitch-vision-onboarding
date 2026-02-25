@@ -4,7 +4,7 @@ import React, { useEffect, useState, useMemo, useCallback } from "react";
 import { supabase } from "@/lib/supabase-client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Users, Clock, CalendarCheck, AlertTriangle } from "lucide-react";
+import { Users, Clock, CalendarCheck, AlertTriangle, ArrowLeft, Ban } from "lucide-react";
 import { deduplicateBookedOff, deduplicateUnplannedOff } from '@/lib/hr-utils';
 
 interface HRWorkforceOverviewProps {
@@ -28,6 +28,16 @@ function getEffectiveWorkDay() {
     return { dayOfWeek, effectiveDate, isWeekend };
 }
 
+/** Format "13 Feb 2026" from Sheets to "2026-02-13" for comparison */
+function parseDateDMonYYYY(s: string): string {
+    const months: Record<string, string> = { Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06', Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12' };
+    const parts = (s || '').trim().split(/\s+/);
+    if (parts.length === 3 && months[parts[1]]) {
+        return `${parts[2]}-${months[parts[1]]}-${parts[0].padStart(2, '0')}`;
+    }
+    return s;
+}
+
 export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewProps) {
     const [loading, setLoading] = useState(true);
     const [todayStats, setTodayStats] = useState({
@@ -36,6 +46,9 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
         absent: 0,
         bookedOff: 0,
         unplannedOff: 0,
+        lateCount: 0,
+        earlyLeaveCount: 0,
+        noShowCount: 0,
     });
 
     const { dayOfWeek, effectiveDate, isWeekend } = useMemo(() => getEffectiveWorkDay(), []);
@@ -69,14 +82,12 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
                 const lnParts = ln.split(/[\s-]+/);
                 const lnLast = lnParts[lnParts.length - 1];
                 const lnFirst = lnParts[0];
-                // Add all key variants
                 [
                     `${fn} ${ln}`, `${fnN} ${lnN}`,
                     `${fnFirst} ${ln}`, `${fnFirstN} ${lnN}`,
                     `${fn} ${lnLast}`, `${fn} ${lnFirst}`,
                     `${fnFirst} ${lnLast}`, `${fnFirstN} ${normName(lnLast)}`,
                 ].forEach(k => activeEmployeeKeys.add(k));
-                // Track for prefix matching
                 if (!activeFirstToLasts.has(fnFirst)) activeFirstToLasts.set(fnFirst, []);
                 activeFirstToLasts.get(fnFirst)!.push(lnN);
             });
@@ -98,7 +109,6 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
                     || activeEmployeeKeys.has(`${fn} ${lnFirst}`)
                     || activeEmployeeKeys.has(`${fnFirst} ${lnLast}`)
                     || activeEmployeeKeys.has(`${fnFirstN} ${normName(lnLast)}`)) return true;
-                // Prefix matching
                 const dirLns = activeFirstToLasts.get(fnFirst) || activeFirstToLasts.get(fnFirstN) || [];
                 return dirLns.some(d => lnN.startsWith(d) || d.startsWith(lnN) || lnN.includes(d) || d.includes(lnN));
             };
@@ -120,10 +130,11 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
                 from += PAGE_SIZE;
             }
 
-            // 3. Absences for the effective working date (Google Sheets = source of truth)
-            const [bookedRes, unplannedRes] = await Promise.all([
+            // 3. Absences + Attendance Events for the effective date
+            const [bookedRes, unplannedRes, attendanceRes] = await Promise.all([
                 supabase.from('Booked Days Off').select('*').eq('Date', date),
                 supabase.from('Non Booked Days Off').select('*').eq('Date', date),
+                supabase.from('Attendance Events').select('"Agent Name", "Event Type", "Date"'),
             ]);
 
             if (bookedRes.error) console.error('Booked Days Off error:', bookedRes.error);
@@ -134,7 +145,19 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
 
             const normalize = (name: string) => (name || '').trim().toLowerCase();
 
-            // 4. Scheduled count: Active employees with a shift today
+            // 4. Attendance Events for today (late, early_leave)
+            const todayAttendanceEvents = (attendanceRes.data || []).filter((ae: any) => {
+                const aeDate = ae['Date'] || '';
+                // Handle both ISO "2026-02-13" and "13 Feb 2026" formats
+                const normalized = aeDate.includes('-') ? aeDate : parseDateDMonYYYY(aeDate);
+                return normalized === date;
+            });
+
+            const lateCount = todayAttendanceEvents.filter((ae: any) => (ae['Event Type'] || '').toLowerCase() === 'late').length;
+            const earlyLeaveCount = todayAttendanceEvents.filter((ae: any) => (ae['Event Type'] || '').toLowerCase() === 'early_leave').length;
+            const noShowCount = 0; // No longer tracked separately — NCNS is now unplanned
+
+            // 5. Scheduled count: Active employees with a shift today
             const seenAgents = new Set<string>();
             let totalScheduled = 0;
 
@@ -154,8 +177,7 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
                 }
             });
 
-            // 5. Absences: Google Sheets = source of truth. Count ALL unique names directly.
-            //    If an agent is on both lists, count them as booked (not double-counted).
+            // 6. Absences: Google Sheets = source of truth
             const bookedNames = new Set(bookedOff.map(b => normalize(b['Agent Name'])));
             const bookedCount = bookedNames.size;
 
@@ -171,22 +193,15 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
 
             const totalAbsent = bookedCount + unplannedCount;
 
-            console.log('[Workforce]', {
-                effectiveDate: date,
-                dayOfWeek: day,
-                totalActive,
-                totalScheduled,
-                bookedCount,
-                unplannedCount,
-                totalAbsent,
-            });
-
             setTodayStats({
                 totalActive,
                 totalScheduled,
                 absent: totalAbsent,
                 bookedOff: bookedCount,
                 unplannedOff: unplannedCount,
+                lateCount,
+                earlyLeaveCount,
+                noShowCount,
             });
 
         } catch (error) {
@@ -204,6 +219,7 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
             supabase.channel('workforce_booked').on('postgres_changes', { event: '*', schema: 'public', table: 'Booked Days Off' }, () => fetchData()).subscribe(),
             supabase.channel('workforce_nonbooked').on('postgres_changes', { event: '*', schema: 'public', table: 'Non Booked Days Off' }, () => fetchData()).subscribe(),
             supabase.channel('workforce_directory').on('postgres_changes', { event: '*', schema: 'public', table: 'employee_directory' }, () => fetchData()).subscribe(),
+            supabase.channel('workforce_attendance').on('postgres_changes', { event: '*', schema: 'public', table: 'Attendance Events' }, () => fetchData()).subscribe(),
         ];
 
         return () => { channels.forEach(c => supabase.removeChannel(c)); };
@@ -218,6 +234,7 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
         : 100;
 
     const totalAbsent = todayStats.bookedOff + todayStats.unplannedOff;
+    const hasEvents = todayStats.lateCount > 0 || todayStats.earlyLeaveCount > 0;
 
     return (
         <Card className="bg-gradient-to-br from-indigo-500/10 to-purple-500/10 border-white/10 text-white overflow-hidden">
@@ -266,6 +283,30 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
                     </div>
                 </div>
 
+                {/* Attendance Events Row (Late / Early Leave) */}
+                {hasEvents && (
+                    <div className="grid grid-cols-2 gap-3 mt-4">
+                        {todayStats.lateCount > 0 && (
+                            <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-2.5 text-center">
+                                <div className="flex items-center justify-center gap-1.5">
+                                    <Clock className="w-3.5 h-3.5 text-yellow-400" />
+                                    <span className="text-lg font-bold text-yellow-400">{todayStats.lateCount}</span>
+                                </div>
+                                <div className="text-[11px] text-yellow-300/80 font-medium mt-0.5">Late</div>
+                            </div>
+                        )}
+                        {todayStats.earlyLeaveCount > 0 && (
+                            <div className="bg-orange-500/10 border border-orange-500/20 rounded-lg p-2.5 text-center">
+                                <div className="flex items-center justify-center gap-1.5">
+                                    <ArrowLeft className="w-3.5 h-3.5 text-orange-400" />
+                                    <span className="text-lg font-bold text-orange-400">{todayStats.earlyLeaveCount}</span>
+                                </div>
+                                <div className="text-[11px] text-orange-300/80 font-medium mt-0.5">Early Leave</div>
+                            </div>
+                        )}
+                    </div>
+                )}
+
                 {/* Absence Breakdown Bar (Booked vs Unplanned) */}
                 {totalAbsent > 0 ? (
                     <>
@@ -292,9 +333,9 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
                             </span>
                         </div>
                     </>
-                ) : (
+                ) : !hasEvents ? (
                     <div className="mt-4 text-xs text-white/60 text-center">No absences today</div>
-                )}
+                ) : null}
             </CardContent>
         </Card>
     );

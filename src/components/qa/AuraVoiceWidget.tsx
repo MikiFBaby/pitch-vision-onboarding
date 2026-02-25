@@ -30,7 +30,7 @@ export const AuraVoiceWidget: React.FC = () => {
 
     // Hide completely on login/auth pages
     const isAuraView = searchParams?.get('view') === 'aura';
-    const isHiddenCompletely = pathname?.startsWith('/login') || pathname?.startsWith('/auth') || pathname?.startsWith('/onboarding') || pathname === '/';
+    const isHiddenCompletely = pathname?.startsWith('/login') || pathname?.startsWith('/auth') || pathname?.startsWith('/onboarding') || pathname?.startsWith('/hr') || pathname?.startsWith('/qa') || pathname === '/';
 
     // On Aura page: show expanded widget when open, but hide collapsed orb (there's one in the input bar)
     const hideCollapsedOrb = isAuraView;

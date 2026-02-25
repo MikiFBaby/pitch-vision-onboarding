@@ -80,7 +80,7 @@ export function transformRow(row: DatabaseCallRow): CallData {
             }
 
             const dbScore = parseScore(row.compliance_score ?? row.call_score);
-            if (dbScore > 0) return dbScore;
+            if (dbScore > 0) return Math.min(dbScore, 100);
 
             // Fallback: Calculate from checklist if DB score is 0/missing
             const parsedChecklist = parseJsonField(row.checklist, []) as any[];

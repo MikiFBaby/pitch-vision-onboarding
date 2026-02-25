@@ -22,13 +22,14 @@ export default function InteractiveChart({
 }: InteractiveChartProps) {
     const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
 
-    const maxValue = Math.max(...data.map(d => d.value));
+    const maxValue = Math.max(...data.map(d => d.value)) || 1;
     const padding = 20;
     const chartWidth = 400;
     const chartHeight = height;
+    const divisor = data.length > 1 ? data.length - 1 : 1;
 
     const points = data.map((d, i) => {
-        const x = (i / (data.length - 1)) * chartWidth;
+        const x = (i / divisor) * chartWidth;
         const y = chartHeight - (d.value / maxValue) * (chartHeight - padding * 2) - padding;
         return { x, y };
     });

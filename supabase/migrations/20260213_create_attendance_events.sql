@@ -8,10 +8,13 @@ CREATE TABLE IF NOT EXISTS "Attendance Events" (
     "created_at" TIMESTAMPTZ DEFAULT NOW(),
     "Agent Name" TEXT NOT NULL,
     "Event Type" TEXT NOT NULL,
-    "Date" DATE NOT NULL,
+    "Date" TEXT NOT NULL,
     "Minutes" INTEGER,
     "Reason" TEXT,
-    "Reported By" TEXT
+    "Shift Start" TEXT,
+    "Campaign" TEXT,
+    "Reported By" TEXT,
+    "Reported At" TEXT
 );
 
 CREATE INDEX idx_attendance_events_agent ON "Attendance Events"("Agent Name");
@@ -49,6 +52,8 @@ CREATE TABLE IF NOT EXISTS attendance_pending_confirmations (
     message_ts TEXT,
     events JSONB NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
+    reported_by_name TEXT,
+    reported_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ DEFAULT NOW(),
     resolved_at TIMESTAMPTZ
 );

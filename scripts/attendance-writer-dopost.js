@@ -69,7 +69,7 @@ function doPost(e) {
 
     var events = payload.events || [];
     if (events.length === 0) {
-      return jsonResponse({ success: true, absences_added: 0, attendance_events_added: 0 });
+      return jsonResponse({ success: true, planned_added: 0, unplanned_added: 0, attendance_events_added: 0 });
     }
 
     var action = payload.action || 'add';
@@ -95,47 +95,48 @@ function doPost(e) {
 
 function handleAdd(events) {
   var ss = SpreadsheetApp.openById(SPREADSHEET_ID);
-  var absenceCount = 0;
-  var attendanceCount = 0;
+  var plannedCount = 0;
+  var unplannedCount = 0;
 
   for (var i = 0; i < events.length; i++) {
     var evt = events[i];
+    var dateStr = formatDateForSheet(evt.date);
 
-    if (evt.event_type === 'absent') {
-      // Append to "Non Booked Days Off " tab (note: trailing space in tab name)
+    if (evt.event_type === 'planned') {
+      // Append to "Booked Days Off" tab
+      var bdSheet = ss.getSheetByName('Booked Days Off ') || ss.getSheetByName('Booked Days Off');
+      if (bdSheet) {
+        bdSheet.appendRow([
+          evt.agent_name,                     // Agent Name (col A)
+          dateStr                             // Date (col B)
+        ]);
+        plannedCount++;
+      } else {
+        Logger.log('WARNING: "Booked Days Off" sheet not found');
+      }
+
+    } else {
+      // unplanned (including legacy no_show) → "Non Booked Days Off" tab
       var nbSheet = ss.getSheetByName('Non Booked Days Off ') || ss.getSheetByName('Non Booked Days Off');
       if (nbSheet) {
         nbSheet.appendRow([
-          evt.agent_name,                       // Agent Name (col A)
-          evt.reason || 'Unplanned absence',    // Reason (col B)
-          formatDateForSheet(evt.date)           // Date (col C) — "D Mon YYYY"
+          evt.agent_name,                     // Agent Name (col A)
+          evt.reason || 'Unplanned absence',  // Reason (col B)
+          dateStr                             // Date (col C) — "D Mon YYYY"
         ]);
-        absenceCount++;
+        unplannedCount++;
       } else {
         Logger.log('WARNING: "Non Booked Days Off" sheet not found');
       }
-    } else {
-      // late, early_leave, no_show → Append to "Attendance Events" tab
-      var aeSheet = getOrCreateAttendanceEventsSheet(ss);
-      aeSheet.appendRow([
-        evt.agent_name,                         // Agent Name (col A)
-        evt.event_type,                         // Event Type (col B)
-        formatDateForSheet(evt.date),           // Date (col C)
-        evt.minutes || '',                      // Minutes (col D)
-        evt.reason || '',                       // Reason (col E)
-        evt.reported_by_name || '',             // Reported By Name (col F)
-        formatTimestamp(evt.reported_at),        // Reported At (col G)
-        formatTimestamp(evt.confirmed_at)        // Confirmed At (col H)
-      ]);
-      attendanceCount++;
     }
   }
 
-  Logger.log('Added: ' + absenceCount + ' absences, ' + attendanceCount + ' attendance events');
+  Logger.log('Added: ' + plannedCount + ' planned, ' + unplannedCount + ' unplanned');
   return jsonResponse({
     success: true,
-    absences_added: absenceCount,
-    attendance_events_added: attendanceCount
+    planned_added: plannedCount,
+    unplanned_added: unplannedCount,
+    attendance_events_added: 0
   });
 }
 
@@ -151,17 +152,23 @@ function handleDelete(events) {
     var evt = events[i];
     var dateStr = formatDateForSheet(evt.date);
 
-    if (evt.event_type === 'absent') {
+    if (evt.event_type === 'planned') {
+      // Delete from "Booked Days Off" tab
+      var bdSheet = ss.getSheetByName('Booked Days Off ') || ss.getSheetByName('Booked Days Off');
+      if (bdSheet) {
+        if (deleteMatchingRow(bdSheet, evt.agent_name, dateStr, null)) deletedCount++;
+      }
+
+    } else {
+      // unplanned (including legacy no_show) → "Non Booked Days Off" tab
       var nbSheet = ss.getSheetByName('Non Booked Days Off ') || ss.getSheetByName('Non Booked Days Off');
       if (nbSheet) {
-        var deleted = deleteMatchingRow(nbSheet, evt.agent_name, dateStr, null);
-        if (deleted) deletedCount++;
+        if (deleteMatchingRow(nbSheet, evt.agent_name, dateStr, null)) deletedCount++;
       }
-    } else {
+      // Also try legacy "Attendance Events" sheet for old no_show entries
       var aeSheet = ss.getSheetByName('Attendance Events');
       if (aeSheet) {
-        var deleted = deleteMatchingRow(aeSheet, evt.agent_name, dateStr, evt.event_type);
-        if (deleted) deletedCount++;
+        deleteMatchingRow(aeSheet, evt.agent_name, dateStr, evt.event_type);
       }
     }
   }
@@ -169,7 +176,8 @@ function handleDelete(events) {
   Logger.log('Deleted: ' + deletedCount + ' rows');
   return jsonResponse({
     success: true,
-    absences_added: 0,
+    planned_added: 0,
+    unplanned_added: 0,
     attendance_events_added: 0,
     rows_deleted: deletedCount
   });
@@ -207,22 +215,6 @@ function deleteMatchingRow(sheet, agentName, dateStr, eventType) {
 // ============================================================================
 // HELPERS
 // ============================================================================
-
-/**
- * Gets or creates the "Attendance Events" sheet with headers.
- */
-function getOrCreateAttendanceEventsSheet(ss) {
-  var sheet = ss.getSheetByName('Attendance Events');
-  if (!sheet) {
-    sheet = ss.insertSheet('Attendance Events');
-    sheet.getRange(1, 1, 1, 8).setValues([[
-      'Agent Name', 'Event Type', 'Date', 'Minutes', 'Reason', 'Reported By', 'Reported At', 'Confirmed At'
-    ]]);
-    sheet.getRange(1, 1, 1, 8).setFontWeight('bold');
-    Logger.log('Created "Attendance Events" sheet with headers');
-  }
-  return sheet;
-}
 
 /**
  * Converts ISO date "2026-02-13" to sheet format "13 Feb 2026" (D Mon YYYY).

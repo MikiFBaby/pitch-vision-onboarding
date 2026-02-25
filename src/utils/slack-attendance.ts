@@ -11,12 +11,13 @@ export const ATTENDANCE_SIGNING_SECRET = process.env.SLACK_ATTENDANCE_SIGNING_SE
 
 export interface ParsedAttendanceEvent {
     agent_name: string;
-    event_type: 'absent' | 'late' | 'early_leave' | 'no_show';
+    event_type: 'planned' | 'unplanned';
     date: string; // YYYY-MM-DD
     minutes: number | null;
     reason: string | null;
     matched_employee_name?: string;
     match_confidence?: 'exact' | 'fuzzy' | 'none';
+    ambiguous_matches?: string[]; // When first-name-only yields multiple matches
 }
 
 export interface PendingConfirmation {
@@ -32,7 +33,8 @@ export interface PendingConfirmation {
 
 export interface SheetsWriteResult {
     success: boolean;
-    absences_added: number;
+    planned_added: number;
+    unplanned_added: number;
     attendance_events_added: number;
     error?: string;
     dry_run?: boolean;
@@ -43,21 +45,33 @@ export interface SheetsWriteResult {
 // ---------------------------------------------------------------------------
 
 export const EVENT_TYPE_EMOJI: Record<string, string> = {
+    planned: ':palm_tree:',
+    unplanned: ':warning:',
+    // Legacy types for backward compat
+    no_show: ':warning:',
     absent: ':red_circle:',
     late: ':clock3:',
     early_leave: ':arrow_left:',
-    no_show: ':no_entry_sign:',
 };
 
 export const EVENT_TYPE_LABEL: Record<string, string> = {
+    planned: 'Planned',
+    unplanned: 'Unplanned',
+    // Legacy types for backward compat
+    no_show: 'Unplanned',
     absent: 'Absent',
     late: 'Late',
     early_leave: 'Early Leave',
-    no_show: 'No Show',
 };
 
-export const PENDING_EXPIRY_MINUTES = 30;
-export const UNDO_WINDOW_MINUTES = 15;
+export const LEGACY_TYPE_MAP: Record<string, string> = {
+    absent: 'unplanned',
+    late: 'unplanned',
+    early_leave: 'unplanned',
+    no_show: 'unplanned',
+};
+
+export const UNDO_WINDOW_MINUTES = 1440; // 24 hours
 
 // ---------------------------------------------------------------------------
 // Authorization
@@ -108,26 +122,30 @@ Today's date is ${todayStr}. Yesterday was ${yesterdayStr}.
 
 For each event found, extract:
 - agent_name: Full name of the agent as provided (required)
-- event_type: One of "absent", "late", "early_leave", "no_show" (required)
-  - "absent" = called out, called in sick, not coming in, taking day off, PTO, vacation, sick day
-  - "late" = arrived late, came in late, was tardy, showed up late
-  - "early_leave" = left early, leaving early, had to go, cut short
-  - "no_show" = no call no show, NCNS, didn't show up, no contact
+- event_type: One of "planned", "unplanned" (required)
+  - "planned" = booked day off, vacation, PTO, scheduled absence, pre-approved leave, taking a day off they arranged in advance
+  - "unplanned" = called out sick, car trouble, emergency, came in late, left early, unexpected absence, tardy, any absence that was NOT pre-arranged, no call no show (NCNS), ghosted, didn't show up, abandoned shift
 - date: The date in YYYY-MM-DD format. "today" = ${todayStr}. "yesterday" = ${yesterdayStr}. If a day name like "Monday" is used, use the most recent past occurrence. If no date is mentioned, default to ${todayStr}. (required)
-- minutes: For late/early_leave, the number of minutes if mentioned. "15 min late" = 15, "an hour late" = 60, "half hour" = 30. If not specified, null.
-- reason: The reason if given (e.g., "sick", "car trouble", "doctor appointment", "family emergency"). If not specified, null.
+- minutes: If a duration or lateness is mentioned, extract as minutes. "15 min late" = 15, "an hour late" = 60, "half hour" = 30. If not specified, null.
+- reason: The reason if given (e.g., "sick", "car trouble", "doctor appointment", "family emergency", "PTO", "vacation"). If not specified, null.
 
 Return ONLY a JSON array of events. If you cannot parse any valid events from the message, return an empty array [].
 
 Examples:
-Input: "Sarah called out sick today"
-Output: [{"agent_name":"Sarah","event_type":"absent","date":"${todayStr}","minutes":null,"reason":"sick"}]
+Input: "Sarah has PTO on Friday"
+Output: [{"agent_name":"Sarah","event_type":"planned","date":"${todayStr}","minutes":null,"reason":"PTO"}]
 
-Input: "John was 15 min late, and Mike left early at 3pm due to a doctor appointment"
-Output: [{"agent_name":"John","event_type":"late","date":"${todayStr}","minutes":15,"reason":null},{"agent_name":"Mike","event_type":"early_leave","date":"${todayStr}","minutes":null,"reason":"doctor appointment"}]
+Input: "John called out sick today"
+Output: [{"agent_name":"John","event_type":"unplanned","date":"${todayStr}","minutes":null,"reason":"sick"}]
+
+Input: "Mike was 15 min late, and Lisa left early due to a doctor appointment"
+Output: [{"agent_name":"Mike","event_type":"unplanned","date":"${todayStr}","minutes":15,"reason":"late"},{"agent_name":"Lisa","event_type":"unplanned","date":"${todayStr}","minutes":null,"reason":"doctor appointment — left early"}]
 
 Input: "NCNS for David Brown yesterday"
-Output: [{"agent_name":"David Brown","event_type":"no_show","date":"${yesterdayStr}","minutes":null,"reason":null}]`;
+Output: [{"agent_name":"David Brown","event_type":"unplanned","date":"${yesterdayStr}","minutes":null,"reason":"no call no show"}]
+
+Input: "Sarah is taking vacation next Monday and Tuesday"
+Output: [{"agent_name":"Sarah","event_type":"planned","date":"YYYY-MM-DD","minutes":null,"reason":"vacation"},{"agent_name":"Sarah","event_type":"planned","date":"YYYY-MM-DD","minutes":null,"reason":"vacation"}]`;
 
     try {
         const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -172,7 +190,7 @@ Output: [{"agent_name":"David Brown","event_type":"no_show","date":"${yesterdayS
         // Validate and clean events
         return parsed.filter((e: any) =>
             e.agent_name &&
-            ['absent', 'late', 'early_leave', 'no_show'].includes(e.event_type) &&
+            ['planned', 'unplanned'].includes(e.event_type) &&
             e.date && /^\d{4}-\d{2}-\d{2}$/.test(e.date)
         ).map((e: any) => ({
             agent_name: String(e.agent_name).trim(),
@@ -246,7 +264,14 @@ export async function resolveAgentNames(events: ParsedAttendanceEvent[]): Promis
                     match_confidence: 'fuzzy' as const,
                 };
             }
-            // Multiple matches for first name — can't disambiguate, keep original
+            if (firstNameMatches.length > 1) {
+                // Multiple matches — return candidates so we can show them
+                return {
+                    ...event,
+                    match_confidence: 'none' as const,
+                    ambiguous_matches: firstNameMatches.map(m => `${m.first_name} ${m.last_name}`.trim()),
+                };
+            }
         }
 
         return {
@@ -260,26 +285,13 @@ export async function resolveAgentNames(events: ParsedAttendanceEvent[]): Promis
 // Block Kit Builders
 // ---------------------------------------------------------------------------
 
+const TYPE_DROPDOWN_OPTIONS = [
+    { text: { type: 'plain_text' as const, text: ':palm_tree: Planned', emoji: true }, value: 'planned' },
+    { text: { type: 'plain_text' as const, text: ':warning: Unplanned', emoji: true }, value: 'unplanned' },
+];
+
 export function buildConfirmationBlocks(events: ParsedAttendanceEvent[], pendingId: string): any[] {
-    const eventLines = events.map(e => {
-        const emoji = EVENT_TYPE_EMOJI[e.event_type] || ':question:';
-        const label = EVENT_TYPE_LABEL[e.event_type] || e.event_type;
-        const name = e.matched_employee_name || e.agent_name;
-        const nameWarning = e.match_confidence === 'none' ? ' :warning: _(name not found in directory)_' : '';
-        const fuzzyNote = e.match_confidence === 'fuzzy' && e.matched_employee_name !== e.agent_name
-            ? ` _(matched from "${e.agent_name}")_`
-            : '';
-
-        let detail = label;
-        if (e.minutes) detail += ` (${e.minutes} min)`;
-        if (e.reason) detail += ` — ${e.reason}`;
-
-        const dateFormatted = formatDateForDisplay(e.date);
-
-        return `${emoji} *${name}*${fuzzyNote}${nameWarning} — ${detail} — ${dateFormatted}`;
-    });
-
-    return [
+    const blocks: any[] = [
         {
             type: 'header',
             text: { type: 'plain_text', text: 'Attendance Update', emoji: true },
@@ -288,36 +300,62 @@ export function buildConfirmationBlocks(events: ParsedAttendanceEvent[], pending
             type: 'section',
             text: {
                 type: 'mrkdwn',
-                text: 'I parsed the following from your message:',
+                text: 'I parsed the following from your message. Use the dropdowns to change the type if needed:',
             },
-        },
-        {
-            type: 'section',
-            text: {
-                type: 'mrkdwn',
-                text: eventLines.join('\n'),
-            },
-        },
-        {
-            type: 'actions',
-            elements: [
-                {
-                    type: 'button',
-                    text: { type: 'plain_text', text: 'Confirm All', emoji: true },
-                    style: 'primary',
-                    action_id: 'attendance_confirm',
-                    value: pendingId,
-                },
-                {
-                    type: 'button',
-                    text: { type: 'plain_text', text: 'Cancel', emoji: true },
-                    style: 'danger',
-                    action_id: 'attendance_cancel',
-                    value: pendingId,
-                },
-            ],
         },
     ];
+
+    events.forEach((e, i) => {
+        const name = e.matched_employee_name || e.agent_name;
+        const nameWarning = e.match_confidence === 'none' ? ' :warning: _(name not found in directory)_' : '';
+        const fuzzyNote = e.match_confidence === 'fuzzy' && e.matched_employee_name !== e.agent_name
+            ? ` _(matched from "${e.agent_name}")_`
+            : '';
+
+        let detail = '';
+        if (e.reason) detail += ` — ${e.reason}`;
+
+        const dateFormatted = formatDateForDisplay(e.date);
+
+        const initialOption = TYPE_DROPDOWN_OPTIONS.find(o => o.value === e.event_type) || TYPE_DROPDOWN_OPTIONS[1];
+
+        blocks.push({
+            type: 'section',
+            block_id: `event_${i}`,
+            text: {
+                type: 'mrkdwn',
+                text: `*${name}*${fuzzyNote}${nameWarning}${detail} — ${dateFormatted}`,
+            },
+            accessory: {
+                type: 'static_select',
+                action_id: `type_override_${i}`,
+                initial_option: initialOption,
+                options: TYPE_DROPDOWN_OPTIONS,
+            },
+        });
+    });
+
+    blocks.push({
+        type: 'actions',
+        elements: [
+            {
+                type: 'button',
+                text: { type: 'plain_text', text: 'Confirm All', emoji: true },
+                style: 'primary',
+                action_id: 'attendance_confirm',
+                value: pendingId,
+            },
+            {
+                type: 'button',
+                text: { type: 'plain_text', text: 'Cancel', emoji: true },
+                style: 'danger',
+                action_id: 'attendance_cancel',
+                value: pendingId,
+            },
+        ],
+    });
+
+    return blocks;
 }
 
 export function buildUndoBlocks(events: ParsedAttendanceEvent[], pendingId: string): any[] {
@@ -325,7 +363,8 @@ export function buildUndoBlocks(events: ParsedAttendanceEvent[], pendingId: stri
         const emoji = EVENT_TYPE_EMOJI[e.event_type] || ':question:';
         const name = e.matched_employee_name || e.agent_name;
         const label = EVENT_TYPE_LABEL[e.event_type] || e.event_type;
-        return `${emoji} *${name}* — ${label} — ${formatDateForDisplay(e.date)}`;
+        const reason = e.reason ? ` — ${e.reason}` : '';
+        return `${emoji} *${name}* — ${label}${reason} — ${formatDateForDisplay(e.date)}`;
     });
 
     return [
@@ -381,13 +420,14 @@ export async function writeToGoogleSheets(
     const isDryRun = process.env.ATTENDANCE_DRY_RUN === 'true';
 
     if (isDryRun) {
-        const absences = events.filter(e => e.event_type === 'absent').length;
-        const others = events.length - absences;
+        const planned = events.filter(e => e.event_type === 'planned').length;
+        const unplanned = events.filter(e => e.event_type === 'unplanned').length;
         console.log('[Attendance DRY RUN] Would write to Sheets:', JSON.stringify(events, null, 2));
         return {
             success: true,
-            absences_added: absences,
-            attendance_events_added: others,
+            planned_added: planned,
+            unplanned_added: unplanned,
+            attendance_events_added: events.length,
             dry_run: true,
         };
     }
@@ -396,14 +436,13 @@ export async function writeToGoogleSheets(
     const secret = process.env.ATTENDANCE_WEBHOOK_SECRET;
 
     if (!webhookUrl) {
-        return { success: false, absences_added: 0, attendance_events_added: 0, error: 'GOOGLE_SHEETS_WEBHOOK_URL not set' };
+        return { success: false, planned_added: 0, unplanned_added: 0, attendance_events_added: 0, error: 'GOOGLE_SHEETS_WEBHOOK_URL not set' };
     }
 
-    // Enrich events with shift start time and campaign (non-absences only)
+    // Enrich events with shift start time and campaign
     let shiftMap: Record<string, string> = {};
     let campaignMap: Record<string, string> = {};
-    const nonAbsences = events.filter(e => e.event_type !== 'absent');
-    if (action === 'add' && nonAbsences.length > 0) {
+    if (action === 'add' && events.length > 0) {
         try {
             // Fetch schedules + campaigns in parallel
             const [schedRes, hiredRes] = await Promise.all([
@@ -419,7 +458,7 @@ export async function writeToGoogleSheets(
                 const ln = (row['Last Name'] || '').trim();
                 const key = `${fn} ${ln}`.trim().toLowerCase();
 
-                nonAbsences.forEach(e => {
+                events.forEach(e => {
                     const agentKey = (e.matched_employee_name || e.agent_name).toLowerCase();
                     if (agentKey.includes(fn.toLowerCase()) && agentKey.includes(ln.toLowerCase()) && fn && ln) {
                         const eventDate = new Date(e.date + 'T12:00:00');
@@ -477,17 +516,18 @@ export async function writeToGoogleSheets(
         const data = await res.json();
         if (!data.success) {
             console.error('[Attendance] Sheets write failed:', data.error);
-            return { success: false, absences_added: 0, attendance_events_added: 0, error: data.error };
+            return { success: false, planned_added: 0, unplanned_added: 0, attendance_events_added: 0, error: data.error };
         }
 
         return {
             success: true,
-            absences_added: data.absences_added || 0,
+            planned_added: data.planned_added || 0,
+            unplanned_added: data.unplanned_added || 0,
             attendance_events_added: data.attendance_events_added || 0,
         };
     } catch (err: any) {
         console.error('[Attendance] Sheets write error:', err);
-        return { success: false, absences_added: 0, attendance_events_added: 0, error: err.message };
+        return { success: false, planned_added: 0, unplanned_added: 0, attendance_events_added: 0, error: err.message };
     }
 }
 
@@ -502,29 +542,24 @@ export async function postAttendanceSummary(
 ): Promise<void> {
     const channelId = process.env.SLACK_ATTENDANCE_CHANNEL_ID;
 
-    const absences = events.filter(e => e.event_type === 'absent');
-    const lates = events.filter(e => e.event_type === 'late');
-    const earlyLeaves = events.filter(e => e.event_type === 'early_leave');
-    const noShows = events.filter(e => e.event_type === 'no_show');
+    const planned = events.filter(e => e.event_type === 'planned');
+    const unplanned = events.filter(e => e.event_type !== 'planned'); // unplanned + legacy no_show
 
     const verb = action === 'added' ? 'recorded' : 'removed';
     const icon = action === 'added' ? ':clipboard:' : ':rewind:';
 
     const lines: string[] = [];
-    if (absences.length > 0) {
-        lines.push(`:red_circle: *Absences ${verb}*: ${absences.map(e => e.matched_employee_name || e.agent_name).join(', ')}`);
-    }
-    if (lates.length > 0) {
-        lines.push(`:clock3: *Lates ${verb}*: ${lates.map(e => {
+    if (planned.length > 0) {
+        lines.push(`:palm_tree: *Planned absences ${verb}*: ${planned.map(e => {
             const name = e.matched_employee_name || e.agent_name;
-            return e.minutes ? `${name} (${e.minutes} min)` : name;
+            return e.reason ? `${name} (${e.reason})` : name;
         }).join(', ')}`);
     }
-    if (earlyLeaves.length > 0) {
-        lines.push(`:arrow_left: *Early leaves ${verb}*: ${earlyLeaves.map(e => e.matched_employee_name || e.agent_name).join(', ')}`);
-    }
-    if (noShows.length > 0) {
-        lines.push(`:no_entry_sign: *No-shows ${verb}*: ${noShows.map(e => e.matched_employee_name || e.agent_name).join(', ')}`);
+    if (unplanned.length > 0) {
+        lines.push(`:warning: *Unplanned absences ${verb}*: ${unplanned.map(e => {
+            const name = e.matched_employee_name || e.agent_name;
+            return e.reason ? `${name} (${e.reason})` : name;
+        }).join(', ')}`);
     }
 
     const summary = lines.join('\n');
@@ -539,10 +574,8 @@ export async function postAttendanceSummary(
 
     // Post to Teams channel
     const teamsFacts = [];
-    if (absences.length > 0) teamsFacts.push({ name: `Absences ${verb}`, value: absences.map(e => e.matched_employee_name || e.agent_name).join(', ') });
-    if (lates.length > 0) teamsFacts.push({ name: `Lates ${verb}`, value: lates.map(e => e.matched_employee_name || e.agent_name).join(', ') });
-    if (earlyLeaves.length > 0) teamsFacts.push({ name: `Early leaves ${verb}`, value: earlyLeaves.map(e => e.matched_employee_name || e.agent_name).join(', ') });
-    if (noShows.length > 0) teamsFacts.push({ name: `No-shows ${verb}`, value: noShows.map(e => e.matched_employee_name || e.agent_name).join(', ') });
+    if (planned.length > 0) teamsFacts.push({ name: `Planned ${verb}`, value: planned.map(e => e.matched_employee_name || e.agent_name).join(', ') });
+    if (unplanned.length > 0) teamsFacts.push({ name: `Unplanned ${verb}`, value: unplanned.map(e => e.matched_employee_name || e.agent_name).join(', ') });
 
     await postTeamsWebhook(
         `Attendance Update by ${reportedByName}`,
@@ -662,7 +695,7 @@ Return ONLY a JSON object with these fields:
 - "reply": (for greeting/unknown) a short, friendly reply from Sam
 
 Intent definitions:
-- "attendance": Reporting someone is absent, late, left early, or no-showed. Examples: "Sarah called out sick", "NCNS for John", "Mike was 15 min late"
+- "attendance": Reporting someone is absent, late, left early, no-showed, or booking PTO/vacation. Examples: "Sarah called out sick", "NCNS for John", "Mike was 15 min late", "Sarah has PTO Friday"
 - "channel_remove": Requesting to remove/kick someone from a Slack channel. Examples: "remove THE GRINCH from the channel", "kick John Smith"
 - "channel_add": Requesting to add/invite someone to a Slack channel. Examples: "add John to the channel", "invite Sarah Smith"
 - "employee_lookup": Asking about who someone is, looking up an employee. Examples: "who is Sarah?", "look up John Smith", "tell me about Mike"
@@ -844,7 +877,9 @@ export function buildHelpMessage(): string {
     return `:wave: *Hi! I'm Sam, your HR & operations assistant.*\n\n` +
         `Here's everything I can do:\n\n` +
         `:clipboard: *Attendance*\n` +
-        `• _\"Sarah called out sick today\"_ — report absences, lates, no-shows\n` +
+        `• _\"Sarah has PTO Friday\"_ — planned absences, PTO, vacation\n` +
+        `• _\"John called out sick today\"_ — unplanned absences\n` +
+        `• _\"NCNS for David\"_ — no call no show (tracked as unplanned)\n` +
         `• _\"who's out today?\"_ — see all absences for a date\n` +
         `• _\"attendance for Sarah this week\"_ — view someone's attendance history\n` +
         `• *undo* — undo your last attendance entry\n\n` +

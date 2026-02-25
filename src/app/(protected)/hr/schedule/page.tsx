@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import { supabase } from "@/lib/supabase-client";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Calendar, Coffee, Clock, Search, Users, Activity, BarChart2 } from "lucide-react";
+import { Calendar, Coffee, Clock, Search, Users, Activity, BarChart2, AlertTriangle, ArrowLeft, Ban } from "lucide-react";
 import StatsCard from "@/components/dashboard/StatsCard";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,7 +12,8 @@ import {
     AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from "recharts";
 import { motion, AnimatePresence } from "framer-motion";
-import ScheduleAIChat from "@/components/hr/schedule/ScheduleAIChat";
+import { normalizeShiftTime } from "@/lib/hr-utils";
+
 import EmployeeProfileDrawer from "@/components/hr/EmployeeProfileDrawer";
 
 function formatBreakTime(raw: string | null | undefined): string {
@@ -34,6 +35,9 @@ export default function AgentSchedulePage() {
     const [breakData, setBreakData] = useState<any[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchQuery, setSearchQuery] = useState("");
+
+    // Attendance overlay: agent name → event types for today
+    const [todayAttendanceMap, setTodayAttendanceMap] = useState<Map<string, string[]>>(new Map());
 
     // Metrics State
     const [agentsToday, setAgentsToday] = useState(0);
@@ -63,7 +67,7 @@ export default function AgentSchedulePage() {
         const fetchData = async () => {
             setLoading(true);
             try {
-                const [schedules, breaks, activeEmployees] = await Promise.all([
+                const [schedules, breaks, activeEmployees, aeRes] = await Promise.all([
                     fetchAllRows('Agent Schedule'),
                     fetchAllRows('Agent Break Schedule'),
                     supabase
@@ -72,7 +76,29 @@ export default function AgentSchedulePage() {
                         .eq('employee_status', 'Active')
                         .eq('role', 'Agent')
                         .then(res => res.data || []),
+                    supabase.from('Attendance Events').select('"Agent Name", "Event Type", "Date"'),
                 ]);
+
+                // Build today's attendance map for overlay badges
+                const now = new Date();
+                const todayISO = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+                const months: Record<string, string> = { Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06', Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12' };
+                const aeMap = new Map<string, string[]>();
+                (aeRes.data || []).forEach((ae: any) => {
+                    const rawDate = (ae['Date'] || '').toString().trim();
+                    let dateStr = rawDate;
+                    if (!rawDate.includes('-')) {
+                        const parts = rawDate.split(/\s+/);
+                        if (parts.length === 3 && months[parts[1]]) dateStr = `${parts[2]}-${months[parts[1]]}-${parts[0].padStart(2, '0')}`;
+                    }
+                    if (dateStr !== todayISO) return;
+                    const name = (ae['Agent Name'] || '').trim().toLowerCase();
+                    const type = (ae['Event Type'] || '').toLowerCase();
+                    if (!name || !type) return;
+                    if (!aeMap.has(name)) aeMap.set(name, []);
+                    aeMap.get(name)!.push(type);
+                });
+                setTodayAttendanceMap(aeMap);
 
                 // Normalize: strip periods, suffixes (jr/sr/ii/iii), hyphens for comparison
                 const norm = (s: string) => s.replace(/\./g, '').replace(/\b(jr|sr|ii|iii|iv)\b/gi, '').replace(/-/g, '').replace(/\s+/g, ' ').trim();
@@ -162,11 +188,13 @@ export default function AgentSchedulePage() {
         const sub1 = supabase.channel('schedule-changes').on('postgres_changes', { event: '*', schema: 'public', table: 'Agent Schedule' }, () => fetchData()).subscribe();
         const sub2 = supabase.channel('break-changes').on('postgres_changes', { event: '*', schema: 'public', table: 'Agent Break Schedule' }, () => fetchData()).subscribe();
         const sub3 = supabase.channel('directory-schedule').on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'employee_directory' }, () => fetchData()).subscribe();
+        const sub4 = supabase.channel('schedule-attendance').on('postgres_changes', { event: '*', schema: 'public', table: 'Attendance Events' }, () => fetchData()).subscribe();
 
         return () => {
             sub1.unsubscribe();
             sub2.unsubscribe();
             sub3.unsubscribe();
+            sub4.unsubscribe();
         };
     }, []);
 
@@ -176,8 +204,8 @@ export default function AgentSchedulePage() {
         const hasAM = s.includes('a');
         // Remove all letters
         s = s.replace(/[a-z]/g, '');
-        // Replace dashes with colons for typos like "6-00"
-        s = s.replace(/-/g, ':');
+        // Replace semicolons and dashes with colons for typos like "3;45" or "6-00"
+        s = s.replace(/[;\-]/g, ':');
         const parts = s.split(':').filter(Boolean);
         let hours = parseInt(parts[0]) || 0;
         const minutes = parseInt(parts[1]) || 0;
@@ -457,13 +485,27 @@ export default function AgentSchedulePage() {
                                                             className="group hover:bg-white/10 border-l-2 border-transparent hover:border-l-2 hover:border-rose-500 transition-all duration-200 cursor-pointer"
                                                         >
                                                             <td className="px-6 py-4 font-bold text-white group-hover:text-rose-400 transition-colors">
-                                                                {row["First Name"]} {row["Last Name"]}
+                                                                <div className="flex items-center gap-2">
+                                                                    {row["First Name"]} {row["Last Name"]}
+                                                                    {(() => {
+                                                                        const name = `${row["First Name"]} ${row["Last Name"]}`.trim().toLowerCase();
+                                                                        const events = todayAttendanceMap.get(name);
+                                                                        if (!events || events.length === 0) return null;
+                                                                        return events.map((type, i) => {
+                                                                            if (type === 'late') return <span key={i} className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-yellow-400 bg-yellow-500/15 px-1.5 py-0.5 rounded-full"><Clock className="w-2.5 h-2.5" />Late</span>;
+                                                                            if (type === 'early_leave') return <span key={i} className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-orange-400 bg-orange-500/15 px-1.5 py-0.5 rounded-full"><ArrowLeft className="w-2.5 h-2.5" />Early</span>;
+                                                                            if (type === 'no_show') return <span key={i} className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-red-400 bg-red-500/15 px-1.5 py-0.5 rounded-full"><Ban className="w-2.5 h-2.5" />NCNS</span>;
+                                                                            if (type === 'absent') return <span key={i} className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-rose-400 bg-rose-500/15 px-1.5 py-0.5 rounded-full"><AlertTriangle className="w-2.5 h-2.5" />Absent</span>;
+                                                                            return null;
+                                                                        });
+                                                                    })()}
+                                                                </div>
                                                             </td>
-                                                            <td className="px-6 py-4 text-gray-300 group-hover:text-white transition-colors">{row.Monday || '-'}</td>
-                                                            <td className="px-6 py-4 text-gray-300 group-hover:text-white transition-colors">{row.Tuesday || '-'}</td>
-                                                            <td className="px-6 py-4 text-gray-300 group-hover:text-white transition-colors">{row.Wednesday || '-'}</td>
-                                                            <td className="px-6 py-4 text-gray-300 group-hover:text-white transition-colors">{row.Thursday || '-'}</td>
-                                                            <td className="px-6 py-4 text-gray-300 group-hover:text-white transition-colors">{row.Friday || '-'}</td>
+                                                            <td className="px-6 py-4 text-gray-300 group-hover:text-white transition-colors">{normalizeShiftTime(row.Monday) || '-'}</td>
+                                                            <td className="px-6 py-4 text-gray-300 group-hover:text-white transition-colors">{normalizeShiftTime(row.Tuesday) || '-'}</td>
+                                                            <td className="px-6 py-4 text-gray-300 group-hover:text-white transition-colors">{normalizeShiftTime(row.Wednesday) || '-'}</td>
+                                                            <td className="px-6 py-4 text-gray-300 group-hover:text-white transition-colors">{normalizeShiftTime(row.Thursday) || '-'}</td>
+                                                            <td className="px-6 py-4 text-gray-300 group-hover:text-white transition-colors">{normalizeShiftTime(row.Friday) || '-'}</td>
                                                             <td className="px-6 py-4 text-white/50 italic group-hover:text-white/80 transition-colors">{row.Notes}</td>
                                                         </motion.tr>
                                                     ))}
@@ -554,8 +596,6 @@ export default function AgentSchedulePage() {
                     </Tabs>
                 </div>
             </div>
-            <ScheduleAIChat scheduleData={scheduleData} />
-
             <EmployeeProfileDrawer
                 isOpen={isDrawerOpen}
                 onClose={() => setIsDrawerOpen(false)}

@@ -45,6 +45,12 @@ function ProtectedLayoutInner({
                 return;
             }
 
+            // Agent portal access gate — redirect to thank-you page if portal is disabled
+            if (profile.role === 'agent' && currentSection === 'agent' && !profile.portal_access) {
+                router.push('/onboarding/complete');
+                return;
+            }
+
             if (protectedRoles.includes(currentSection)) {
                 // If the current section doesn't match the user's role (and they are not admin/super user), redirect
                 /*

@@ -26,7 +26,15 @@ import {
     GraduationCap,
     FileBarChart,
     UserPlus,
-    Coins
+    Coins,
+    Rocket,
+    Upload,
+    Bell,
+    ClipboardCheck,
+    DollarSign,
+    Wallet,
+    Activity,
+    Trophy,
 } from "lucide-react";
 import { motion } from "framer-motion";
 import { PitchVisionLogo } from "@/components/ui/pitch-vision-logo";
@@ -283,6 +291,19 @@ export function SidebarInner() {
             ];
         }
 
+        if (role === 'executive') {
+            return [
+                { href: "/executive", icon: <LayoutDashboard size={20} />, label: "Command Center" },
+                { href: "/executive/operations", icon: <Activity size={20} />, label: "Operations" },
+                { href: "/executive/revenue", icon: <DollarSign size={20} />, label: "Revenue" },
+                { href: "/executive/pnl", icon: <TrendingUp size={20} />, label: "P&L" },
+                { href: "/executive/expenses", icon: <Wallet size={20} />, label: "Expenses" },
+                { href: "/executive/roster", icon: <Trophy size={20} />, label: "GM Roster" },
+                { href: "/executive/analytics", icon: <BarChart3 size={20} />, label: "Analytics" },
+                { href: "/executive/settings", icon: <Settings size={20} />, label: "Settings" },
+            ];
+        }
+
         if (role === 'partner') {
             return [
                 ...commonItems.slice(0, 1),
@@ -294,12 +315,14 @@ export function SidebarInner() {
         if (role === 'hr') {
             return [
                 { href: "/hr", icon: <LayoutDashboard size={20} />, label: "Dashboard" },
+                { href: "/hr/attendance", icon: <ClipboardCheck size={20} />, label: "Attendance" },
                 { href: "/hr/onboarding", icon: <UserPlus size={20} />, label: "Agent Onboarding" },
                 { href: "/hr/directory", icon: <Users size={20} />, label: "Employee Directory" },
                 { href: "/hr/calendar", icon: <Calendar size={20} />, label: "Training Calendar" },
                 { href: "/hr/schedule", icon: <Clock size={20} />, label: "Agent Schedule" },
                 { href: "/hr/reports", icon: <FileBarChart size={20} />, label: "Reports" },
                 { href: "/hr/pitch-points", icon: <Coins size={20} />, label: "Pitch Points" },
+                { href: "/hr/launch", icon: <Rocket size={20} />, label: "Launch Control" },
                 { href: "/hr/settings", icon: <Settings size={20} />, label: "Settings" },
             ];
         }

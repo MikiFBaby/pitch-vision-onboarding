@@ -5,8 +5,18 @@ import { supabase } from "@/lib/supabase-client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { motion } from "framer-motion";
-import { CalendarDays } from "lucide-react";
+import { CalendarDays, Clock, ArrowLeft, Ban } from "lucide-react";
 import { deduplicateBookedOff, deduplicateUnplannedOff } from '@/lib/hr-utils';
+
+/** Parse "13 Feb 2026" to ISO "2026-02-13" */
+function parseDateDMonYYYY(s: string): string {
+    const months: Record<string, string> = { Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06', Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12' };
+    const parts = (s || '').trim().split(/\s+/);
+    if (parts.length === 3 && months[parts[1]]) {
+        return `${parts[2]}-${months[parts[1]]}-${parts[0].padStart(2, '0')}`;
+    }
+    return s;
+}
 
 interface DayData {
     day: string;
@@ -15,6 +25,12 @@ interface DayData {
     booked: number;
     unplanned: number;
     total: number;
+    lateCount: number;
+    earlyLeaveCount: number;
+    noShowCount: number;
+    todayLate: number;
+    todayEarlyLeave: number;
+    todayNoShow: number;
     isToday: boolean;
     todayBooked: number;
     todayUnplanned: number;
@@ -33,9 +49,10 @@ export default function HRAbsenceHeatmap() {
     const fetchData = useCallback(async () => {
         setLoading(true);
         try {
-            const [bookedRes, unplannedRes] = await Promise.all([
+            const [bookedRes, unplannedRes, aeRes] = await Promise.all([
                 supabase.from('Booked Days Off').select('"Date", "Agent Name"'),
                 supabase.from('Non Booked Days Off').select('"Date", "Agent Name", "Reason"'),
+                supabase.from('Attendance Events').select('"Date", "Event Type"'),
             ]);
 
             const booked = deduplicateBookedOff(bookedRes.data || []);
@@ -82,6 +99,23 @@ export default function HRAbsenceHeatmap() {
                 }
             });
 
+            // Attendance Events (late, early_leave) by day-of-week
+            const lateByDow: Record<number, number> = {};
+            const earlyByDow: Record<number, number> = {};
+            let todayLateCount = 0, todayEarlyCount = 0;
+
+            (aeRes.data || []).forEach((ae: any) => {
+                const rawDate = (ae['Date'] || '').toString().trim();
+                const dateStr = rawDate.includes('-') ? rawDate : parseDateDMonYYYY(rawDate);
+                const d = new Date(dateStr + 'T00:00:00');
+                const dow = d.getDay();
+                if (dow < 1 || dow > 5) return;
+                const type = (ae['Event Type'] || '').toLowerCase();
+                if (type === 'late') { lateByDow[dow] = (lateByDow[dow] || 0) + 1; if (dateStr === todayStr) todayLateCount++; }
+                else if (type === 'early_leave') { earlyByDow[dow] = (earlyByDow[dow] || 0) + 1; if (dateStr === todayStr) todayEarlyCount++; }
+                // no_show is now counted as unplanned (in Non Booked Days Off), skip here
+            });
+
             const data: DayData[] = [];
             for (let dow = 1; dow <= 5; dow++) {
                 const b = bookedByDow[dow] || 0;
@@ -113,6 +147,12 @@ export default function HRAbsenceHeatmap() {
                     booked: b,
                     unplanned: u,
                     total: b + u,
+                    lateCount: lateByDow[dow] || 0,
+                    earlyLeaveCount: earlyByDow[dow] || 0,
+                    noShowCount: 0, // Legacy — no longer tracked separately
+                    todayLate: isToday ? todayLateCount : 0,
+                    todayEarlyLeave: isToday ? todayEarlyCount : 0,
+                    todayNoShow: 0, // Legacy — no longer tracked separately
                     isToday,
                     todayBooked: isToday ? todayBookedCount : 0,
                     todayUnplanned: isToday ? todayUnplannedCount : 0,
@@ -141,6 +181,7 @@ export default function HRAbsenceHeatmap() {
         const channels = [
             supabase.channel('heatmap_booked').on('postgres_changes', { event: '*', schema: 'public', table: 'Booked Days Off' }, () => fetchData()).subscribe(),
             supabase.channel('heatmap_unplanned').on('postgres_changes', { event: '*', schema: 'public', table: 'Non Booked Days Off' }, () => fetchData()).subscribe(),
+            supabase.channel('heatmap_attendance').on('postgres_changes', { event: '*', schema: 'public', table: 'Attendance Events' }, () => fetchData()).subscribe(),
         ];
 
         return () => { channels.forEach(c => supabase.removeChannel(c)); };
@@ -184,7 +225,7 @@ export default function HRAbsenceHeatmap() {
     };
 
     return (
-        <Card className="bg-white/5 border-white/10 text-white overflow-hidden">
+        <Card className="bg-white/5 border-white/10 text-white overflow-hidden h-full">
             <CardHeader className="pb-2">
                 <CardTitle className="text-lg font-medium flex items-center gap-2">
                     <CalendarDays className="w-5 h-5 text-violet-400" />
@@ -210,7 +251,8 @@ export default function HRAbsenceHeatmap() {
                         {(() => {
                             const today = dayData.find(d => d.isToday);
                             if (!today || today.dow < 1 || today.dow > 5) return null;
-                            if (today.todayUnplanned === 0 && today.todayBooked === 0 && today.histDays === 0) return null;
+                            const hasAnyData = today.todayUnplanned > 0 || today.todayBooked > 0 || today.histDays > 0 || today.todayLate > 0 || today.todayEarlyLeave > 0 || today.todayNoShow > 0;
+                            if (!hasAnyData) return null;
 
                             const getDelta = (current: number, avg: number) =>
                                 avg > 0 ? Math.round(((current / avg) - 1) * 100) : null;
@@ -272,6 +314,27 @@ export default function HRAbsenceHeatmap() {
                                             </div>
                                         </div>
                                     </div>
+                                    {/* Attendance Events for Today */}
+                                    {(today.todayLate > 0 || today.todayEarlyLeave > 0 || today.todayNoShow > 0) && (
+                                        <div className="flex items-center gap-3 mt-2.5 pt-2.5 border-t border-white/10">
+                                            <span className="text-[11px] text-white/50 font-medium">Events:</span>
+                                            {today.todayLate > 0 && (
+                                                <span className="flex items-center gap-1 text-[11px] text-yellow-400 font-medium">
+                                                    <Clock className="w-3 h-3" /> {today.todayLate} Late
+                                                </span>
+                                            )}
+                                            {today.todayEarlyLeave > 0 && (
+                                                <span className="flex items-center gap-1 text-[11px] text-orange-400 font-medium">
+                                                    <ArrowLeft className="w-3 h-3" /> {today.todayEarlyLeave} Early
+                                                </span>
+                                            )}
+                                            {today.todayNoShow > 0 && (
+                                                <span className="flex items-center gap-1 text-[11px] text-red-400 font-medium">
+                                                    <Ban className="w-3 h-3" /> {today.todayNoShow} NCNS
+                                                </span>
+                                            )}
+                                        </div>
+                                    )}
                                 </div>
                             );
                         })()}
@@ -307,6 +370,13 @@ export default function HRAbsenceHeatmap() {
                                         <div className={`text-xs font-bold mt-1.5 ${style.text}`}>
                                             {aboveBelow}
                                         </div>
+
+                                        {(d.lateCount > 0 || d.earlyLeaveCount > 0) && (
+                                            <div className="flex items-center justify-center gap-1 mt-1.5">
+                                                {d.lateCount > 0 && <span className="text-[9px] text-yellow-400" title="Lates">{d.lateCount}L</span>}
+                                                {d.earlyLeaveCount > 0 && <span className="text-[9px] text-orange-400" title="Early Leaves">{d.earlyLeaveCount}E</span>}
+                                            </div>
+                                        )}
 
                                         {isPeak && (
                                             <div className="absolute -top-1 -right-1 w-2.5 h-2.5 bg-red-400 rounded-full animate-pulse ring-2 ring-red-400/30" />

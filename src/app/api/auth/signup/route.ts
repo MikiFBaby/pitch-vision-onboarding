@@ -3,7 +3,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 
 export async function POST(req: Request) {
     try {
-        const { firebaseUid, email, firstName, lastName, role } = await req.json();
+        const { firebaseUid, email, firstName, lastName, role, phone } = await req.json();
 
         if (!firebaseUid || !email) {
             return NextResponse.json({ error: 'Missing required fields' }, { status: 400 });
@@ -82,7 +82,8 @@ export async function POST(req: Request) {
                 avatar_url: finalAvatarUrl,
                 status: 'active',
                 profile_completed: !!(finalFirstName && finalLastName),
-                employee_id: directoryId // Store the link if it exists
+                employee_id: directoryId, // Store the link if it exists
+                ...(phone ? { phone } : {})
             }, { onConflict: 'firebase_uid' })
             .select()
             .single();
@@ -94,6 +95,14 @@ export async function POST(req: Request) {
                 details: error.details,
                 hint: error.hint
             }, { status: 500 });
+        }
+
+        // Sync phone to employee_directory if linked
+        if (phone && directoryId) {
+            await supabaseAdmin
+                .from('employee_directory')
+                .update({ phone })
+                .eq('id', directoryId);
         }
 
         return NextResponse.json({

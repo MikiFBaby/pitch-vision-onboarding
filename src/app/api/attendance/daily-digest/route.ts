@@ -53,11 +53,21 @@ async function buildAndPostDigest() {
     const attendanceEvents = attendanceResult.data || [];
     const scheduledCount = scheduleResult.data?.length || 0;
 
-    const lates = attendanceEvents.filter((e: any) => e['Event Type'] === 'late');
-    const earlyLeaves = attendanceEvents.filter((e: any) => e['Event Type'] === 'early_leave');
-    const noShows = attendanceEvents.filter((e: any) => e['Event Type'] === 'no_show');
+    // Build dedup set from Non Booked Days Off to avoid double-counting
+    // (Sam bot dual-writes unplanned to both tables)
+    const nbDedupKeys = new Set(absences.map((a: any) =>
+        (a['Agent Name'] || '').trim().toLowerCase()
+    ));
 
-    const totalAbsent = absences.length + noShows.length;
+    const planned = attendanceEvents.filter((e: any) => e['Event Type'] === 'planned');
+    const unplanned = attendanceEvents.filter((e: any) => {
+        if (!['unplanned', 'no_show', 'late', 'early_leave', 'absent'].includes(e['Event Type'])) return false;
+        // Skip if same agent already in Non Booked Days Off (dedup)
+        const name = (e['Agent Name'] || '').trim().toLowerCase();
+        return !nbDedupKeys.has(name);
+    });
+
+    const totalAbsent = absences.length + unplanned.length;
     const presentCount = Math.max(0, scheduledCount - totalAbsent);
     const attendanceRate = scheduledCount > 0
         ? Math.round((presentCount / scheduledCount) * 100)
@@ -74,42 +84,29 @@ async function buildAndPostDigest() {
         `:busts_in_silhouette: Scheduled: *${scheduledCount}* | :white_check_mark: Present: *${presentCount}* | :red_circle: Absent: *${totalAbsent}* | :chart_with_upwards_trend: Rate: *${attendanceRate}%*`,
     ];
 
-    if (absences.length > 0) {
+    if (planned.length > 0) {
         lines.push('');
-        lines.push(':red_circle: *Absences:*');
-        absences.forEach((a: any) => {
-            const reason = a['Reason'] ? ` — ${a['Reason']}` : '';
-            lines.push(`  • ${a['Agent Name']}${reason}`);
-        });
-    }
-
-    if (lates.length > 0) {
-        lines.push('');
-        lines.push(':clock3: *Lates:*');
-        lates.forEach((e: any) => {
-            const mins = e['Minutes'] ? ` (${e['Minutes']} min)` : '';
-            lines.push(`  • ${e['Agent Name']}${mins}`);
-        });
-    }
-
-    if (earlyLeaves.length > 0) {
-        lines.push('');
-        lines.push(':arrow_left: *Early Leaves:*');
-        earlyLeaves.forEach((e: any) => {
+        lines.push(':palm_tree: *Planned Absences:*');
+        planned.forEach((e: any) => {
             const reason = e['Reason'] ? ` — ${e['Reason']}` : '';
             lines.push(`  • ${e['Agent Name']}${reason}`);
         });
     }
 
-    if (noShows.length > 0) {
+    if (absences.length > 0 || unplanned.length > 0) {
         lines.push('');
-        lines.push(':no_entry_sign: *No-Shows:*');
-        noShows.forEach((e: any) => {
-            lines.push(`  • ${e['Agent Name']}`);
+        lines.push(':warning: *Unplanned Absences:*');
+        absences.forEach((a: any) => {
+            const reason = a['Reason'] ? ` — ${a['Reason']}` : '';
+            lines.push(`  • ${a['Agent Name']}${reason}`);
+        });
+        unplanned.forEach((e: any) => {
+            const reason = e['Reason'] ? ` — ${e['Reason']}` : '';
+            lines.push(`  • ${e['Agent Name']}${reason}`);
         });
     }
 
-    if (totalAbsent === 0 && lates.length === 0 && earlyLeaves.length === 0) {
+    if (totalAbsent === 0 && planned.length === 0 && unplanned.length === 0) {
         lines.push('');
         lines.push(':tada: Perfect attendance today!');
     }
@@ -131,11 +128,15 @@ async function buildAndPostDigest() {
         { name: 'Absent', value: String(totalAbsent) },
         { name: 'Attendance Rate', value: `${attendanceRate}%` },
     ];
-    if (absences.length > 0) {
-        teamsFacts.push({ name: 'Absences', value: absences.map((a: any) => a['Agent Name']).join(', ') });
+    if (planned.length > 0) {
+        teamsFacts.push({ name: 'Planned', value: planned.map((e: any) => e['Agent Name']).join(', ') });
     }
-    if (lates.length > 0) {
-        teamsFacts.push({ name: 'Lates', value: lates.map((e: any) => e['Agent Name']).join(', ') });
+    if (absences.length > 0 || unplanned.length > 0) {
+        const allUnplanned = [
+            ...absences.map((a: any) => a['Agent Name']),
+            ...unplanned.map((e: any) => e['Agent Name']),
+        ];
+        teamsFacts.push({ name: 'Unplanned', value: allUnplanned.join(', ') });
     }
 
     const teamsPosted = await postTeamsWebhook(
@@ -149,9 +150,8 @@ async function buildAndPostDigest() {
         scheduled: scheduledCount,
         present: presentCount,
         absent: totalAbsent,
-        lates: lates.length,
-        early_leaves: earlyLeaves.length,
-        no_shows: noShows.length,
+        planned: planned.length,
+        unplanned: absences.length + unplanned.length,
         attendance_rate: attendanceRate,
         slack_posted: slackPosted,
         teams_posted: teamsPosted,
