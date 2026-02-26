@@ -74,6 +74,9 @@ function normalizeDispKey(col: string): string {
     .replace(/\//g, '_');
 }
 
+// Paid hours = logged_in - wrap - pause + 1.16hr allowance (lunch/breaks)
+const BREAK_ALLOWANCE_MIN = 69.6; // 1.16 hours × 60
+
 // ═══════════════════════════════════════════════════════════
 // Daily KPIs (from AgentSummaryCampaign data)
 // ═══════════════════════════════════════════════════════════
@@ -82,15 +85,34 @@ export function computeDailyKPIs(
   agentSummary: AgentSummaryRow[],
   production: ProductionRow[] | undefined,
   reportDate: string,
+  agentAnalysis?: AgentAnalysisRow[],
 ): DailyKPIs {
   const totalDials = agentSummary.reduce((s, a) => s + a.dialed, 0);
   const totalConnects = agentSummary.reduce((s, a) => s + a.connects, 0);
   const totalContacts = agentSummary.reduce((s, a) => s + a.contacts, 0);
   const totalTransfers = agentSummary.reduce((s, a) => s + a.transfers, 0);
-  const totalHours = agentSummary.reduce((s, a) => s + a.hours_worked, 0);
   const totalTalkMin = agentSummary.reduce((s, a) => s + a.talk_time_min, 0);
   const totalWaitMin = agentSummary.reduce((s, a) => s + a.wait_time_min, 0);
   const totalWrapMin = agentSummary.reduce((s, a) => s + a.wrap_time_min, 0);
+
+  // Gross hours = total logged-in time
+  const totalGrossHours = agentSummary.reduce((s, a) => s + a.logged_in_time_min / 60, 0);
+
+  // Build per-agent pause lookup for paid hours calculation
+  const pauseByAgent = new Map<string, number>();
+  if (agentAnalysis) {
+    for (const row of agentAnalysis) {
+      const key = row.rep.toLowerCase();
+      pauseByAgent.set(key, (pauseByAgent.get(key) || 0) + (row.time_paused_min || 0));
+    }
+  }
+
+  // Paid hours = logged_in - wrap - pause + 1.16hr allowance
+  const totalPaidHours = agentSummary.reduce((s, a) => {
+    const pauseMin = pauseByAgent.get(a.rep.toLowerCase()) || 0;
+    const paidMin = a.logged_in_time_min - a.wrap_time_min - pauseMin + BREAK_ALLOWANCE_MIN;
+    return s + Math.max(paidMin, 0) / 60;
+  }, 0);
 
   // Disposition aggregation from production data
   const dispositions: Record<string, number> = {};
@@ -114,10 +136,14 @@ export function computeDailyKPIs(
   );
   const transferDisp = dispositions['transfer'] || 0;
 
-  // TPH distribution for qualified agents
+  // TPH distribution for qualified agents (using paid hours)
   const qualified = agentSummary
     .filter((a) => a.hours_worked >= THRESHOLDS.min_hours_qualified)
-    .map((a) => safeDiv(a.transfers, a.hours_worked))
+    .map((a) => {
+      const pauseMin = pauseByAgent.get(a.rep.toLowerCase()) || 0;
+      const paidHrs = Math.max(a.logged_in_time_min - a.wrap_time_min - pauseMin + BREAK_ALLOWANCE_MIN, 0) / 60;
+      return paidHrs > 0 ? a.transfers / paidHrs : 0;
+    })
     .sort((a, b) => a - b);
 
   let distribution: TPHDistribution | null = null;
@@ -142,15 +168,16 @@ export function computeDailyKPIs(
     total_connects: totalConnects,
     total_contacts: totalContacts,
     total_transfers: totalTransfers,
-    total_man_hours: round(totalHours, 1),
+    total_man_hours: round(totalGrossHours, 1),
+    total_paid_hours: round(totalPaidHours, 1),
     total_talk_time_min: round(totalTalkMin, 1),
     total_wait_time_min: round(totalWaitMin, 1),
     total_wrap_time_min: round(totalWrapMin, 1),
     connect_rate: round(safeDiv(totalConnects, totalDials) * 100, 2),
     contact_rate: round(safeDiv(totalContacts, totalConnects) * 100, 2),
     conversion_rate: round(safeDiv(totalTransfers, totalContacts) * 100, 2),
-    transfers_per_hour: round(safeDiv(totalTransfers, totalHours), 2),
-    dials_per_hour: round(safeDiv(totalDials, totalHours), 1),
+    transfers_per_hour: round(safeDiv(totalTransfers, totalPaidHours), 2),
+    dials_per_hour: round(safeDiv(totalDials, totalGrossHours), 1),
     dead_air_ratio: round(safeDiv(deadAirTotal, totalConnects) * 100, 2),
     hung_up_ratio: round(safeDiv(hungUpTotal, totalConnects) * 100, 2),
     waste_rate: round(safeDiv(wasteCount, totalConnects) * 100, 1),
@@ -199,9 +226,10 @@ export function computeAgentPerformance(
     const prodRows = prodByAgent.get(agentKey) || [];
     const pauseMin = pauseByAgent.get(agentKey) || 0;
 
-    // Adjusted TPH: effective_hours = (logged_in - pause - wrap + 30) / 60
-    const effectiveHours = (a.logged_in_time_min - pauseMin - a.wrap_time_min + 30) / 60;
-    const adjustedTph = effectiveHours > 0 ? round(a.transfers / effectiveHours, 2) : null;
+    // Paid hours = logged_in - wrap - pause + 1.16hr allowance (lunch/breaks)
+    const paidMin = a.logged_in_time_min - a.wrap_time_min - pauseMin + BREAK_ALLOWANCE_MIN;
+    const paidHours = Math.max(paidMin, 0) / 60;
+    const adjustedTph = paidHours > 0 ? round(a.transfers / paidHours, 2) : null;
 
     // Merge dispositions from production rows
     const dispositions: Record<string, number> = {};
@@ -236,6 +264,8 @@ export function computeAgentPerformance(
       pause_time_min: round(pauseMin, 2),
       tph: round(tph, 2),
       adjusted_tph: adjustedTph,
+      paid_time_hours: round(paidHours, 2),
+      sla_hr: round(a.sla_hr, 2),
       connects_per_hour: round(a.connects_per_hour, 2),
       connect_rate: round(safeDiv(a.connects, a.dialed) * 100, 2),
       conversion_rate: round(safeDiv(a.transfers, a.contacts) * 100, 2),
@@ -533,6 +563,7 @@ export function processDay(
       agentSummary,
       production.length > 0 ? production : undefined,
       reportDate,
+      agentAnalysis.length > 0 ? agentAnalysis : undefined,
     );
     agentPerformance = computeAgentPerformance(
       agentSummary,
@@ -588,6 +619,7 @@ export function processDay(
       total_contacts: totalContacts,
       total_transfers: totalTransfers,
       total_man_hours: round(totalHours, 1),
+      total_paid_hours: round(totalHours, 1), // Fallback: no agent-level data for paid calc
       total_talk_time_min: 0,
       total_wait_time_min: 0,
       total_wrap_time_min: 0,

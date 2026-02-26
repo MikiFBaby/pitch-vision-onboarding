@@ -37,6 +37,22 @@ export async function GET(request: NextRequest) {
     }
   }
 
+  // Handle recompute request — recompute KPIs for specific dates with current formula
+  const recomputeDates = request.nextUrl.searchParams.get('recompute_dates');
+  if (recomputeDates) {
+    const dates = recomputeDates.split(',').map(d => d.trim()).filter(Boolean);
+    const results: { date: string; success: boolean; error?: string }[] = [];
+    for (const date of dates) {
+      try {
+        await computeAndStore([], date, []);
+        results.push({ date, success: true });
+      } catch (err) {
+        results.push({ date, success: false, error: err instanceof Error ? err.message : 'Unknown' });
+      }
+    }
+    return NextResponse.json({ recomputed: results });
+  }
+
   const imapUser = process.env.SMTP_USER;
   const imapPass = process.env.SMTP_PASS;
   if (!imapUser || !imapPass) {

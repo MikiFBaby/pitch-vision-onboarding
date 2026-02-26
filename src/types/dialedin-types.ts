@@ -264,6 +264,7 @@ export interface DailyKPIs {
   total_contacts: number;
   total_transfers: number;
   total_man_hours: number;
+  total_paid_hours: number;
   total_talk_time_min: number;
   total_wait_time_min: number;
   total_wrap_time_min: number;
@@ -316,6 +317,8 @@ export interface AgentPerformance {
   pause_time_min: number;
   tph: number;
   adjusted_tph: number | null;
+  paid_time_hours: number | null;
+  sla_hr: number;
   connects_per_hour: number;
   connect_rate: number;
   conversion_rate: number;
