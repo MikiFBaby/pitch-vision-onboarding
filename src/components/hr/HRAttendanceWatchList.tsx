@@ -312,11 +312,10 @@ Pitch Perfect Solutions`,
         setLoading(true);
 
         try {
-            // Parallel fetch: employee directory, live absences (with dates), attendance events (with dates)
-            const [empRes, absRes, aeRes] = await Promise.all([
+            // Parallel fetch: employee directory + Non Booked Days Off (sole absence source)
+            const [empRes, absRes] = await Promise.all([
                 supabase.from('employee_directory').select('id, first_name, last_name, email').eq('employee_status', 'Active'),
                 supabase.from('Non Booked Days Off').select('"Agent Name", "Reason", "Date"'),
-                supabase.from('Attendance Events').select('"Agent Name", "Event Type", "Date"'),
             ]);
 
             const emailMap = new Map<string, string>();
@@ -338,24 +337,23 @@ Pitch Perfect Solutions`,
             const priorCutoff = new Date(now);
             priorCutoff.setDate(priorCutoff.getDate() - 28);
 
-            // Count absences per agent + trend buckets + recent per-type
-            // Also build dedup set to avoid double-counting events that appear in both tables
-            // (Sam bot dual-writes unplanned to "Non Booked Days Off" AND "Attendance Events")
+            // Count absences per agent from Non Booked Days Off (sole source)
+            // Scored by recency: 90-day lookback for chronic patterns, 14/28 days for trend
             const absenceCounts = new Map<string, number>();
             const recentAbsenceCounts = new Map<string, number>();
             const recentAbsences = new Map<string, number>();
             const priorAbsences = new Map<string, number>();
-            const nbDedupKeys = new Set<string>(); // name|date keys from Non Booked Days Off
+            const seen = new Set<string>(); // agent|date dedup
             (absRes.data || []).forEach((row: any) => {
                 const name = (row['Agent Name'] || '').trim().toLowerCase();
-                if (!name) return;
+                if (!name || !(row['Reason'] || '').trim()) return;
 
                 const dateRaw = (row['Date'] || '').trim();
                 const d = parseAbsenceDate(dateRaw);
-
-                // Track name|date for dedup against Attendance Events (all dates, not just recent)
                 const isoDate = d ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` : dateRaw;
-                nbDedupKeys.add(`${name}|${isoDate}`);
+                const dedupKey = `${name}|${isoDate}`;
+                if (seen.has(dedupKey)) return;
+                seen.add(dedupKey);
 
                 // Skip events older than 90 days for scoring
                 if (d && d < lookbackCutoff) return;
@@ -372,47 +370,7 @@ Pitch Perfect Solutions`,
                 }
             });
 
-            // Build attendance event counts per agent + trend buckets + recent per-type
-            const WEIGHTS: Record<string, number> = { planned: 0.5, unplanned: 1.5, no_show: 1.5, late: 1, early_leave: 1, absent: 1.5 };
-            type AEEntry = { planned: number; unplanned: number; score: number; recentPlanned: number; recentUnplanned: number };
-            const aeCounts = new Map<string, AEEntry>();
-            (aeRes.data || []).forEach((row: any) => {
-                const name = (row['Agent Name'] || '').trim().toLowerCase();
-                const type = (row['Event Type'] || '').trim().toLowerCase();
-                if (!name) return;
-
-                // Skip unplanned AE rows that already exist in Non Booked Days Off (dual-write dedup)
-                if (type === 'unplanned') {
-                    const dateRaw = (row['Date'] || '').trim();
-                    const d = parseAbsenceDate(dateRaw);
-                    const isoDate = d ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` : dateRaw;
-                    if (nbDedupKeys.has(`${name}|${isoDate}`)) return;
-                }
-
-                // Skip events older than 90 days for scoring
-                const dCheck = parseAbsenceDate((row['Date'] || '').trim());
-                if (dCheck && dCheck < lookbackCutoff) return;
-
-                if (!aeCounts.has(name)) aeCounts.set(name, { planned: 0, unplanned: 0, score: 0, recentPlanned: 0, recentUnplanned: 0 });
-                const entry = aeCounts.get(name)!;
-                // Map legacy types to new categories (no_show → unplanned)
-                if (type === 'planned') entry.planned++;
-                else entry.unplanned++; // unplanned, no_show, late, early_leave, absent
-                entry.score += WEIGHTS[type] || 1;
-
-                const d = parseAbsenceDate(row['Date']);
-                if (d) {
-                    if (d >= recentCutoff) {
-                        recentAbsences.set(name, (recentAbsences.get(name) || 0) + 1);
-                        if (type === 'planned') entry.recentPlanned++;
-                        else entry.recentUnplanned++; // unplanned, no_show, late, early_leave, absent
-                    } else if (d >= priorCutoff) {
-                        priorAbsences.set(name, (priorAbsences.get(name) || 0) + 1);
-                    }
-                }
-            });
-
-            // Compute trend per agent
+            // Compute trend per agent (14d vs prior 14d)
             const getTrend = (nameLower: string): { trend: Trend; recent: number; prior: number } => {
                 const recent = recentAbsences.get(nameLower) || 0;
                 const prior = priorAbsences.get(nameLower) || 0;
@@ -422,56 +380,30 @@ Pitch Perfect Solutions`,
                 return { trend: 'stable', recent, prior };
             };
 
-            // Merge absences with attendance events
+            // Build watch list from NB absence counts
             const agentMap = new Map<string, WatchListAgent>();
-
-            // Seed from absence counts (Non Booked Days Off = unplanned)
-            absenceCounts.forEach((absenceCount, nameLower) => {
+            absenceCounts.forEach((count, nameLower) => {
                 if (!activeNames.has(nameLower)) return;
-                const ae = aeCounts.get(nameLower);
                 const { trend, recent, prior } = getTrend(nameLower);
-                const rAbsence = recentAbsenceCounts.get(nameLower) || 0;
-                const rPlanned = ae?.recentPlanned || 0;
-                const rUnplanned = (ae?.recentUnplanned || 0);
+                const recentCount = recentAbsenceCounts.get(nameLower) || 0;
                 agentMap.set(nameLower, {
                     name: toTitleCase(nameLower),
-                    plannedCount: ae?.planned || 0,
-                    unplannedCount: absenceCount + (ae?.unplanned || 0),
-                    occurrenceScore: (absenceCount * 1.5) + (ae?.score || 0),
-                    recentScore: (rAbsence * 1.5) + (rPlanned * 0.5) + (rUnplanned * 1.5),
+                    plannedCount: 0,
+                    unplannedCount: count,
+                    occurrenceScore: count * 1.5,
+                    recentScore: recentCount * 1.5,
                     isActive: true,
                     email: emailMap.get(nameLower),
                     employeeId: idMap.get(nameLower),
                     trend,
                     recentCount: recent,
                     priorCount: prior,
-                    recentPlannedCount: rPlanned,
-                    recentUnplannedCount: rAbsence + rUnplanned,
+                    recentPlannedCount: 0,
+                    recentUnplannedCount: recentCount,
                 });
             });
 
-            // Add agents who only have attendance events (no absences from NB Days Off)
-            aeCounts.forEach((ae, nameLower) => {
-                if (agentMap.has(nameLower) || !activeNames.has(nameLower)) return;
-                const { trend, recent, prior } = getTrend(nameLower);
-                agentMap.set(nameLower, {
-                    name: toTitleCase(nameLower),
-                    plannedCount: ae.planned,
-                    unplannedCount: ae.unplanned,
-                    occurrenceScore: ae.score,
-                    recentScore: (ae.recentPlanned * 0.5) + (ae.recentUnplanned * 1.5),
-                    isActive: true,
-                    email: emailMap.get(nameLower),
-                    employeeId: idMap.get(nameLower),
-                    trend,
-                    recentCount: recent,
-                    priorCount: prior,
-                    recentPlannedCount: ae.recentPlanned,
-                    recentUnplannedCount: ae.recentUnplanned,
-                });
-            });
-
-            // Only flag agents with recent (14d) activity OR chronic pattern (3+ unplanned in 90 days)
+            // Only flag agents with recent (14d) activity OR chronic pattern (3+ in 90 days)
             const processed = Array.from(agentMap.values())
                 .filter(a => a.recentScore > 0 || a.occurrenceScore >= 4.5);
 
@@ -490,7 +422,6 @@ Pitch Perfect Solutions`,
         // Real-time subscriptions for instant updates
         const channels = [
             supabase.channel('attendance_watchlist_absences').on('postgres_changes', { event: '*', schema: 'public', table: 'Non Booked Days Off' }, fetchData).subscribe(),
-            supabase.channel('attendance_watchlist_events').on('postgres_changes', { event: '*', schema: 'public', table: 'Attendance Events' }, fetchData).subscribe(),
         ];
 
         // 15-minute polling backup — Supabase real-time can occasionally disconnect
