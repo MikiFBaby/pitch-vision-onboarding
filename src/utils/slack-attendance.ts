@@ -35,7 +35,6 @@ export interface SheetsWriteResult {
     success: boolean;
     planned_added: number;
     unplanned_added: number;
-    attendance_events_added: number;
     error?: string;
     dry_run?: boolean;
 }
@@ -153,7 +152,12 @@ Output: [{"agent_name":"Hiam Elsayed","event_type":"unplanned","date":"${todaySt
 Input: "John Smith - car trouble, Lisa Park - internet down"
 Output: [{"agent_name":"John Smith","event_type":"unplanned","date":"${todayStr}","minutes":null,"reason":"car trouble"},{"agent_name":"Lisa Park","event_type":"unplanned","date":"${todayStr}","minutes":null,"reason":"internet down"}]
 
-NOTE: The format "Name - reason" is a common shorthand used by HR. The part before the dash is always the agent name, and the part after is the reason. If the reason doesn't clearly indicate planned (PTO, vacation, booked day off), default to "unplanned".`;
+NOTE: The format "Name - reason" is a common shorthand used by HR. The part before the dash is always the agent name, and the part after is the reason. If the reason doesn't clearly indicate planned (PTO, vacation, booked day off), default to "unplanned".
+
+IMPORTANT: Strip conversational greetings and filler words from agent names. Words like "Hey", "Hi", "Hello", "So", "Yeah", "Ok", "Oh" at the start of a message are greetings directed at you, NOT part of the agent's name. For example:
+- "Hey Ade is absent today" → agent_name is "Ade", NOT "Hey Ade"
+- "Hi, John called out sick" → agent_name is "John", NOT "Hi John"
+- "So Sarah has PTO" → agent_name is "Sarah", NOT "So Sarah"`;
 
     try {
         const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
@@ -163,7 +167,7 @@ NOTE: The format "Name - reason" is a common shorthand used by HR. The part befo
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-                model: 'google/gemini-2.0-flash-001',
+                model: 'anthropic/claude-haiku-4-5-20251001',
                 messages: [
                     { role: 'system', content: systemPrompt },
                     { role: 'user', content: text },
@@ -195,13 +199,16 @@ NOTE: The format "Name - reason" is a common shorthand used by HR. The part befo
             }
         }
 
+        // Strip leading greetings/filler that AI may leave on agent names
+        const greetingPrefixes = /^(hey|hi|hello|so|yeah|ok|oh|yo|sup)\b[,\s]*/i;
+
         // Validate and clean events
         return parsed.filter((e: any) =>
             e.agent_name &&
             ['planned', 'unplanned'].includes(e.event_type) &&
             e.date && /^\d{4}-\d{2}-\d{2}$/.test(e.date)
         ).map((e: any) => ({
-            agent_name: String(e.agent_name).trim(),
+            agent_name: String(e.agent_name).trim().replace(greetingPrefixes, '').trim(),
             event_type: e.event_type as ParsedAttendanceEvent['event_type'],
             date: e.date,
             minutes: typeof e.minutes === 'number' ? e.minutes : null,
@@ -217,6 +224,51 @@ NOTE: The format "Name - reason" is a common shorthand used by HR. The part befo
 // Name Resolution
 // ---------------------------------------------------------------------------
 
+/** Simple Levenshtein distance for typo tolerance */
+function levenshtein(a: string, b: string): number {
+    const m = a.length, n = b.length;
+    if (m === 0) return n;
+    if (n === 0) return m;
+    const dp: number[] = Array.from({ length: n + 1 }, (_, i) => i);
+    for (let i = 1; i <= m; i++) {
+        let prev = i - 1;
+        dp[0] = i;
+        for (let j = 1; j <= n; j++) {
+            const temp = dp[j];
+            dp[j] = a[i - 1] === b[j - 1] ? prev : 1 + Math.min(prev, dp[j], dp[j - 1]);
+            prev = temp;
+        }
+    }
+    return dp[n];
+}
+
+/** Find closest employee names by edit distance. Returns top N suggestions. */
+function findClosestNames(
+    input: string,
+    employees: { first_name: string; last_name: string }[],
+    maxResults: number = 3,
+): string[] {
+    const inputLower = input.toLowerCase();
+    const scored = employees.map(e => {
+        const fn = (e.first_name || '').toLowerCase();
+        const ln = (e.last_name || '').toLowerCase();
+        const full = `${fn} ${ln}`.trim();
+        // Best of: distance to full name, first name, or last name
+        const distFull = levenshtein(inputLower, full);
+        const distFirst = levenshtein(inputLower, fn);
+        const distLast = levenshtein(inputLower, ln);
+        const bestDist = Math.min(distFull, distFirst, distLast);
+        return { name: `${e.first_name} ${e.last_name}`.trim(), dist: bestDist };
+    });
+    // Only suggest names within a reasonable edit distance (max 3 edits or 40% of input length)
+    const threshold = Math.max(3, Math.ceil(inputLower.length * 0.4));
+    return scored
+        .filter(s => s.dist <= threshold && s.dist > 0)
+        .sort((a, b) => a.dist - b.dist)
+        .slice(0, maxResults)
+        .map(s => s.name);
+}
+
 export async function resolveAgentNames(events: ParsedAttendanceEvent[]): Promise<ParsedAttendanceEvent[]> {
     if (events.length === 0) return events;
 
@@ -230,56 +282,70 @@ export async function resolveAgentNames(events: ParsedAttendanceEvent[]): Promis
 
     return events.map(event => {
         const inputName = event.agent_name;
+        const inputLower = inputName.toLowerCase();
+        const isSingleWord = !inputName.includes(' ');
 
-        // Try exact match first
-        const exactMatch = employees.find(e => {
-            const fullName = `${e.first_name} ${e.last_name}`.trim();
-            return fullName.toLowerCase() === inputName.toLowerCase();
+        // Helper to build a match result
+        const matched = (e: typeof employees[0], confidence: 'exact' | 'fuzzy') => ({
+            ...event,
+            matched_employee_name: `${e.first_name} ${e.last_name}`.trim(),
+            match_confidence: confidence,
         });
 
-        if (exactMatch) {
-            return {
-                ...event,
-                matched_employee_name: `${exactMatch.first_name} ${exactMatch.last_name}`.trim(),
-                match_confidence: 'exact' as const,
-            };
-        }
-
-        // Try fuzzy match via namesMatch()
-        const fuzzyMatch = employees.find(e => {
-            const fullName = `${e.first_name} ${e.last_name}`.trim();
-            return namesMatch(fullName, inputName);
+        const ambiguous = (matches: typeof employees) => ({
+            ...event,
+            match_confidence: 'none' as const,
+            ambiguous_matches: matches.map(m => `${m.first_name} ${m.last_name}`.trim()),
         });
 
-        if (fuzzyMatch) {
-            return {
-                ...event,
-                matched_employee_name: `${fuzzyMatch.first_name} ${fuzzyMatch.last_name}`.trim(),
-                match_confidence: 'fuzzy' as const,
-            };
-        }
+        // Tier 1: Exact full-name match
+        const exactMatch = employees.find(e =>
+            `${e.first_name} ${e.last_name}`.trim().toLowerCase() === inputLower
+        );
+        if (exactMatch) return matched(exactMatch, 'exact');
 
-        // Try first-name-only match (if input is just a first name)
-        if (!inputName.includes(' ')) {
-            const firstNameMatches = employees.filter(e =>
-                e.first_name.toLowerCase() === inputName.toLowerCase()
+        // Tier 2: Fuzzy match via namesMatch() (handles middle names, compound last names)
+        const fuzzyMatch = employees.find(e =>
+            namesMatch(`${e.first_name} ${e.last_name}`.trim(), inputName)
+        );
+        if (fuzzyMatch) return matched(fuzzyMatch, 'fuzzy');
+
+        // Tier 3: First-name exact match (single word input only)
+        if (isSingleWord) {
+            const firstNameExact = employees.filter(e =>
+                (e.first_name || '').toLowerCase() === inputLower
             );
-            if (firstNameMatches.length === 1) {
-                const m = firstNameMatches[0];
-                return {
-                    ...event,
-                    matched_employee_name: `${m.first_name} ${m.last_name}`.trim(),
-                    match_confidence: 'fuzzy' as const,
-                };
-            }
-            if (firstNameMatches.length > 1) {
-                // Multiple matches — return candidates so we can show them
-                return {
-                    ...event,
-                    match_confidence: 'none' as const,
-                    ambiguous_matches: firstNameMatches.map(m => `${m.first_name} ${m.last_name}`.trim()),
-                };
-            }
+            if (firstNameExact.length === 1) return matched(firstNameExact[0], 'fuzzy');
+            if (firstNameExact.length > 1) return ambiguous(firstNameExact);
+        }
+
+        // Tier 4: First-name prefix match (e.g., "Ade" → "Adebowale", min 3 chars)
+        if (isSingleWord && inputName.length >= 3) {
+            const prefixMatches = employees.filter(e =>
+                (e.first_name || '').toLowerCase().startsWith(inputLower)
+            );
+            if (prefixMatches.length === 1) return matched(prefixMatches[0], 'fuzzy');
+            if (prefixMatches.length >= 2 && prefixMatches.length <= 5) return ambiguous(prefixMatches);
+        }
+
+        // Tier 5: Substring match on first or last name (min 3 chars)
+        if (inputName.length >= 3) {
+            const substringMatches = employees.filter(e =>
+                (e.first_name || '').toLowerCase().includes(inputLower) ||
+                (e.last_name || '').toLowerCase().includes(inputLower)
+            );
+            if (substringMatches.length === 1) return matched(substringMatches[0], 'fuzzy');
+            if (substringMatches.length >= 2 && substringMatches.length <= 5) return ambiguous(substringMatches);
+        }
+
+        // Tier 6: Close-match suggestions via edit distance (for typos)
+        const suggestions = findClosestNames(inputName, employees, 3);
+        if (suggestions.length > 0) {
+            return {
+                ...event,
+                match_confidence: 'none' as const,
+                ambiguous_matches: suggestions,
+            };
         }
 
         return {
@@ -435,7 +501,6 @@ export async function writeToGoogleSheets(
             success: true,
             planned_added: planned,
             unplanned_added: unplanned,
-            attendance_events_added: events.length,
             dry_run: true,
         };
     }
@@ -444,7 +509,7 @@ export async function writeToGoogleSheets(
     const secret = process.env.ATTENDANCE_WEBHOOK_SECRET;
 
     if (!webhookUrl) {
-        return { success: false, planned_added: 0, unplanned_added: 0, attendance_events_added: 0, error: 'GOOGLE_SHEETS_WEBHOOK_URL not set' };
+        return { success: false, planned_added: 0, unplanned_added: 0, error: 'GOOGLE_SHEETS_WEBHOOK_URL not set' };
     }
 
     // Enrich events with shift start time and campaign
@@ -524,18 +589,17 @@ export async function writeToGoogleSheets(
         const data = await res.json();
         if (!data.success) {
             console.error('[Attendance] Sheets write failed:', data.error);
-            return { success: false, planned_added: 0, unplanned_added: 0, attendance_events_added: 0, error: data.error };
+            return { success: false, planned_added: 0, unplanned_added: 0, error: data.error };
         }
 
         return {
             success: true,
             planned_added: data.planned_added || 0,
             unplanned_added: data.unplanned_added || 0,
-            attendance_events_added: data.attendance_events_added || 0,
         };
     } catch (err: any) {
         console.error('[Attendance] Sheets write error:', err);
-        return { success: false, planned_added: 0, unplanned_added: 0, attendance_events_added: 0, error: err.message };
+        return { success: false, planned_added: 0, unplanned_added: 0, error: err.message };
     }
 }
 
@@ -750,7 +814,7 @@ Examples:
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-                model: 'google/gemini-2.0-flash-001',
+                model: 'anthropic/claude-haiku-4-5-20251001',
                 messages: [
                     { role: 'system', content: systemPrompt },
                     { role: 'user', content: text },

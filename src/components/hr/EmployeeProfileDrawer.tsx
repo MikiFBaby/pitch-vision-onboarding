@@ -300,24 +300,35 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
         const fullName = `${firstName} ${lastName}`.trim().toLowerCase();
         if (!fullName) { setAttendanceEvents([]); return; }
 
-        const { data, error } = await supabase
-            .from('Attendance Events')
-            .select('*')
-            .order('id', { ascending: false });
+        // Fetch from both absence tables
+        const [bookedRes, unbookedRes] = await Promise.all([
+            supabase.from('Booked Days Off').select('*').order('id', { ascending: false }),
+            supabase.from('Non Booked Days Off').select('*').order('id', { ascending: false }),
+        ]);
 
-        if (error || !data) { setAttendanceEvents([]); return; }
+        const nameMatch = (rowName: string) => {
+            const n = rowName.trim().toLowerCase();
+            return n === fullName || n.includes(fullName) || fullName.includes(n);
+        };
 
-        const matched = data.filter((row: any) => {
-            const rowName = (row['Agent Name'] || '').trim().toLowerCase();
-            return rowName === fullName || rowName.includes(fullName) || fullName.includes(rowName);
+        const events: { eventType: string; date: string; minutes: number | null; reason: string | null }[] = [];
+
+        // Booked Days Off → planned
+        (bookedRes.data || []).filter((r: any) => nameMatch(r['Agent Name'] || '')).forEach((r: any) => {
+            events.push({ eventType: 'planned', date: r['Date'] || '', minutes: null, reason: null });
         });
 
-        setAttendanceEvents(matched.map((row: any) => ({
-            eventType: (row['Event Type'] || '').toLowerCase(),
-            date: row['Date'] || '',
-            minutes: row['Minutes'] ? parseInt(row['Minutes'], 10) : null,
-            reason: row['Reason'] || null,
-        })));
+        // Non Booked Days Off → unplanned
+        (unbookedRes.data || []).filter((r: any) => nameMatch(r['Agent Name'] || '')).forEach((r: any) => {
+            events.push({
+                eventType: 'unplanned',
+                date: r['Date'] || '',
+                minutes: null,
+                reason: (r['Reason'] || '').toString().trim() || null,
+            });
+        });
+
+        setAttendanceEvents(events);
     };
 
     const fetchPerformanceStats = async (firstName: string, lastName: string) => {

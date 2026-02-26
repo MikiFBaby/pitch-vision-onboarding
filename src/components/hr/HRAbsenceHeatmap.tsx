@@ -213,7 +213,7 @@ export default function HRAbsenceHeatmap() {
                 </p>
                 <div className="mt-2 px-3 py-2.5 rounded-lg bg-white/[0.04] border border-white/10">
                     <p className="text-sm text-white/90 leading-relaxed">
-                        <strong className="text-white">What this shows:</strong> The average number of absences per weekday, calculated from running totals across all recorded history. <span className="text-rose-400 font-medium">Unplanned</span> = call-offs and no-shows (from Attendance Events + Non Booked Days Off). <span className="text-blue-300 font-medium">Booked</span> = pre-approved time off (from Booked Days Off). Use this to spot which days are most likely to face staffing gaps.
+                        <strong className="text-white">What this shows:</strong> The average number of absences per weekday, calculated from running totals across all recorded history. <span className="text-rose-400 font-medium">Unplanned</span> = call-offs and no-shows (from Non Booked Days Off). <span className="text-blue-300 font-medium">Booked</span> = pre-approved time off (from Booked Days Off). Use this to spot which days are most likely to face staffing gaps.
                     </p>
                 </div>
             </CardHeader>

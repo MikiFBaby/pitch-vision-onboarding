@@ -251,6 +251,10 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
                         <AlertTriangle className="w-6 h-6 mx-auto mb-2 text-amber-400" />
                         <div className="text-3xl font-bold text-amber-400">{todayStats.absent}</div>
                         <div className="text-sm text-white/90 mt-1 font-semibold tracking-wide">Absent</div>
+                        <div className="flex items-center justify-center gap-3 mt-1.5">
+                            <span className="text-[11px] text-blue-400 font-medium">{todayStats.bookedOff} Planned</span>
+                            <span className="text-[11px] text-rose-400 font-medium">{todayStats.unplannedOff} Unplanned</span>
+                        </div>
                     </div>
 
                     {/* Attendance Rate */}
@@ -263,42 +267,34 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
                     </div>
                 </div>
 
-                {/* Absence Breakdown Bar — Booked + Unplanned = Absent */}
-                {totalAbsent > 0 ? (
-                    <>
-                        <div className="mt-4 h-4 bg-white/10 rounded-full overflow-hidden flex">
-                            {todayStats.bookedOff > 0 && (
-                                <div
-                                    className="bg-blue-400 h-full transition-all"
-                                    style={{ width: `${(todayStats.bookedOff / totalAbsent) * 100}%` }}
-                                    title={`Booked Time Off: ${todayStats.bookedOff}`}
-                                />
-                            )}
-                            {todayStats.unplannedOff > 0 && (
-                                <div
-                                    className="bg-rose-500 h-full transition-all"
-                                    style={{ width: `${(todayStats.unplannedOff / totalAbsent) * 100}%` }}
-                                    title={`Unplanned Absence: ${todayStats.unplannedOff}`}
-                                />
-                            )}
-                        </div>
-                        <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-white/80 mt-2 font-medium">
-                            {todayStats.bookedOff > 0 && (
-                                <span className="flex items-center gap-1.5">
-                                    <span className="w-3 h-3 rounded-full bg-blue-400 inline-block" />
-                                    Booked: {todayStats.bookedOff}
-                                </span>
-                            )}
-                            {todayStats.unplannedOff > 0 && (
-                                <span className="flex items-center gap-1.5">
-                                    <span className="w-3 h-3 rounded-full bg-rose-500 inline-block" />
-                                    Unplanned: {todayStats.unplannedOff}
-                                </span>
-                            )}
-                        </div>
-                    </>
-                ) : (
-                    <div className="mt-4 text-xs text-white/60 text-center">No absences today</div>
+                {/* Absence Breakdown — always show both categories */}
+                <div className="mt-4 flex flex-wrap gap-x-4 gap-y-1 text-sm text-white/80 font-medium">
+                    <span className="flex items-center gap-1.5">
+                        <span className="w-3 h-3 rounded-full bg-blue-400 inline-block" />
+                        Planned: {todayStats.bookedOff}
+                    </span>
+                    <span className="flex items-center gap-1.5">
+                        <span className="w-3 h-3 rounded-full bg-rose-500 inline-block" />
+                        Unplanned: {todayStats.unplannedOff}
+                    </span>
+                </div>
+                {totalAbsent > 0 && (
+                    <div className="mt-2 h-4 bg-white/10 rounded-full overflow-hidden flex">
+                        {todayStats.bookedOff > 0 && (
+                            <div
+                                className="bg-blue-400 h-full transition-all"
+                                style={{ width: `${(todayStats.bookedOff / totalAbsent) * 100}%` }}
+                                title={`Planned Time Off: ${todayStats.bookedOff}`}
+                            />
+                        )}
+                        {todayStats.unplannedOff > 0 && (
+                            <div
+                                className="bg-rose-500 h-full transition-all"
+                                style={{ width: `${(todayStats.unplannedOff / totalAbsent) * 100}%` }}
+                                title={`Unplanned Absence: ${todayStats.unplannedOff}`}
+                            />
+                        )}
+                    </div>
                 )}
             </CardContent>
         </Card>

@@ -4,27 +4,21 @@ import React, { useEffect, useState, useCallback } from "react";
 import { supabase } from "@/lib/supabase-client";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
-import { Activity, Clock, ArrowLeft, Ban, AlertCircle, CalendarDays } from "lucide-react";
+import { Activity, AlertCircle, CalendarDays } from "lucide-react";
 
 interface AttendanceEvent {
     id: string;
     agentName: string;
-    eventType: string;
+    eventType: 'planned' | 'unplanned';
     date: string;
-    minutes: number | null;
     reason: string | null;
     reportedBy: string;
     reportedAt: string;
 }
 
-const EVENT_CONFIG: Record<string, { icon: typeof Clock; color: string; bgColor: string; label: string }> = {
+const EVENT_CONFIG: Record<string, { icon: typeof CalendarDays; color: string; bgColor: string; label: string }> = {
     planned: { icon: CalendarDays, color: 'text-blue-400', bgColor: 'bg-blue-500/15', label: 'Planned' },
     unplanned: { icon: AlertCircle, color: 'text-amber-400', bgColor: 'bg-amber-500/15', label: 'Unplanned' },
-    no_show: { icon: AlertCircle, color: 'text-amber-400', bgColor: 'bg-amber-500/15', label: 'Unplanned' }, // Legacy — displayed as unplanned
-    // Legacy types for historical data
-    late: { icon: Clock, color: 'text-yellow-400', bgColor: 'bg-yellow-500/15', label: 'Late' },
-    early_leave: { icon: ArrowLeft, color: 'text-orange-400', bgColor: 'bg-orange-500/15', label: 'Early Leave' },
-    absent: { icon: AlertCircle, color: 'text-rose-400', bgColor: 'bg-rose-500/15', label: 'Absent' },
 };
 
 /** Parse "13 Feb 2026" to ISO */
@@ -57,49 +51,39 @@ export default function HRAttendanceFeed() {
             const today = new Date();
             const todayStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
 
-            // Fetch all attendance events and filter today's client-side (handles both date formats)
-            const { data, error } = await supabase
-                .from('Attendance Events')
+            // Fetch unplanned absences only (Non Booked Days Off)
+            const { data: unbookedData } = await supabase
+                .from('Non Booked Days Off')
                 .select('*')
-                .order('id', { ascending: false });
+                .eq('Date', todayStr);
 
-            if (error) {
-                console.error('Attendance Events error:', error);
-                setEvents([]);
-                return;
-            }
+            const merged: AttendanceEvent[] = [];
 
-            const todayEvents = (data || [])
-                .filter((row: any) => {
-                    const d = row['Date'] || '';
-                    const normalized = d.includes('-') ? d : parseDateDMonYYYY(d);
-                    return normalized === todayStr;
-                })
-                .map((row: any) => {
-                    let reason = (row['Reason'] || '').toString().trim();
-                    let shiftStart = (row['Shift Start'] || '').toString().trim();
-                    let reportedBy = (row['Reported By'] || '').toString().trim();
-                    let reportedAt = (row['Reported At'] || '').toString().trim();
-
-                    // Fix sheet sync column misalignment: Reported By → Reason, Reported At → Shift Start
-                    const isPersonName = (v: string) => v && v.length >= 3 && !/^\d/.test(v) && !/\d{2}:\d{2}/.test(v) && !/[ap]\.?m\.?/i.test(v) && !v.includes('@') && /^[A-Z][a-z]+\s+[A-Z]/.test(v);
-                    const isTimestamp = (v: string) => v && (/^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s/.test(v) || /^\d{4}-\d{2}-\d{2}T/.test(v));
-                    if (isPersonName(reason) && !reportedBy) { reportedBy = reason; reason = ''; }
-                    if (isTimestamp(shiftStart) && !reportedAt) { reportedAt = shiftStart; }
-
-                    return {
-                        id: row.id,
-                        agentName: row['Agent Name'] || '',
-                        eventType: (row['Event Type'] || '').toLowerCase(),
-                        date: row['Date'] || '',
-                        minutes: row['Minutes'] ? parseInt(row['Minutes'], 10) : null,
-                        reason: reason || null,
-                        reportedBy,
-                        reportedAt,
-                    };
+            (unbookedData || []).forEach((row: any) => {
+                merged.push({
+                    id: row.id,
+                    agentName: row['Agent Name'] || '',
+                    eventType: 'unplanned',
+                    date: row['Date'] || '',
+                    reason: (row['Reason'] || '').toString().trim() || null,
+                    reportedBy: (row['Reported By'] || '').toString().trim(),
+                    reportedAt: '',
                 });
+            });
 
-            setEvents(todayEvents);
+            // Dedup by agent name + date (case-insensitive)
+            const seen = new Set<string>();
+            const deduped = merged.filter(e => {
+                const key = `${e.agentName.toLowerCase()}|${e.date}`;
+                if (seen.has(key)) return false;
+                seen.add(key);
+                return true;
+            });
+
+            // Sort by name
+            deduped.sort((a, b) => a.agentName.localeCompare(b.agentName));
+
+            setEvents(deduped);
         } catch (error) {
             console.error("Error fetching attendance feed:", error);
         } finally {
@@ -110,12 +94,15 @@ export default function HRAttendanceFeed() {
     useEffect(() => {
         fetchData();
 
-        const channel = supabase
-            .channel('attendance_feed')
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'Attendance Events' }, () => fetchData())
+        // Subscribe to Non Booked Days Off for realtime updates
+        const ch = supabase
+            .channel('attendance_feed_unbooked')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'Non Booked Days Off' }, () => fetchData())
             .subscribe();
 
-        return () => { supabase.removeChannel(channel); };
+        return () => {
+            supabase.removeChannel(ch);
+        };
     }, [fetchData]);
 
     if (loading) {
@@ -127,7 +114,7 @@ export default function HRAttendanceFeed() {
             <CardHeader className="pb-2">
                 <CardTitle className="text-lg font-medium flex items-center gap-2">
                     <Activity className="w-5 h-5 text-cyan-400" />
-                    Today's Attendance Events
+                    Today&apos;s Unplanned Absences
                     {events.length > 0 && (
                         <span className="text-xs bg-cyan-500/20 text-cyan-400 px-2 py-0.5 rounded-full ml-2">
                             {events.length} event{events.length !== 1 ? 's' : ''}

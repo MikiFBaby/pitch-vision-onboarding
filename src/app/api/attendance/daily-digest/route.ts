@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { postSlackMessage, postTeamsWebhook } from '@/utils/slack-helpers';
+import { deduplicateBookedOff, deduplicateUnplannedOff } from '@/lib/hr-utils';
 
 // ---------------------------------------------------------------------------
 // GET /api/attendance/daily-digest — Daily attendance summary
@@ -28,18 +29,18 @@ async function buildAndPostDigest() {
     const today = getEffectiveWorkingDate();
     const todayStr = today.toISOString().split('T')[0];
 
-    // Fetch today's data in parallel
-    const [absencesResult, attendanceResult, scheduleResult] = await Promise.all([
+    // Fetch today's data in parallel — two-table absence model
+    const [bookedRes, absencesResult, scheduleResult] = await Promise.all([
+        // Planned absences (Booked Days Off)
+        supabaseAdmin
+            .from('Booked Days Off')
+            .select('"Agent Name", "Date"')
+            .eq('Date', todayStr),
+
         // Unplanned absences (Non Booked Days Off)
         supabaseAdmin
             .from('Non Booked Days Off')
             .select('"Agent Name", "Reason", "Date"')
-            .eq('Date', todayStr),
-
-        // Attendance events (lates, early leaves, no-shows)
-        supabaseAdmin
-            .from('Attendance Events')
-            .select('"Agent Name", "Event Type", "Minutes", "Reason", "Date"')
             .eq('Date', todayStr),
 
         // Scheduled agents for today
@@ -49,25 +50,11 @@ async function buildAndPostDigest() {
             .not(getDayColumn(today), 'is', null),
     ]);
 
-    const absences = deduplicateByNameDate(absencesResult.data || []);
-    const attendanceEvents = attendanceResult.data || [];
+    const planned = deduplicateBookedOff(bookedRes.data || []);
+    const unplanned = deduplicateUnplannedOff(absencesResult.data || []);
     const scheduledCount = scheduleResult.data?.length || 0;
 
-    // Build dedup set from Non Booked Days Off to avoid double-counting
-    // (Sam bot dual-writes unplanned to both tables)
-    const nbDedupKeys = new Set(absences.map((a: any) =>
-        (a['Agent Name'] || '').trim().toLowerCase()
-    ));
-
-    const planned = attendanceEvents.filter((e: any) => e['Event Type'] === 'planned');
-    const unplanned = attendanceEvents.filter((e: any) => {
-        if (!['unplanned', 'no_show', 'late', 'early_leave', 'absent'].includes(e['Event Type'])) return false;
-        // Skip if same agent already in Non Booked Days Off (dedup)
-        const name = (e['Agent Name'] || '').trim().toLowerCase();
-        return !nbDedupKeys.has(name);
-    });
-
-    const totalAbsent = absences.length + unplanned.length;
+    const totalAbsent = planned.length + unplanned.length;
     const presentCount = Math.max(0, scheduledCount - totalAbsent);
     const attendanceRate = scheduledCount > 0
         ? Math.round((presentCount / scheduledCount) * 100)
@@ -87,26 +74,21 @@ async function buildAndPostDigest() {
     if (planned.length > 0) {
         lines.push('');
         lines.push(':palm_tree: *Planned Absences:*');
-        planned.forEach((e: any) => {
-            const reason = e['Reason'] ? ` — ${e['Reason']}` : '';
-            lines.push(`  • ${e['Agent Name']}${reason}`);
+        planned.forEach((b: any) => {
+            lines.push(`  • ${b['Agent Name']}`);
         });
     }
 
-    if (absences.length > 0 || unplanned.length > 0) {
+    if (unplanned.length > 0) {
         lines.push('');
         lines.push(':warning: *Unplanned Absences:*');
-        absences.forEach((a: any) => {
+        unplanned.forEach((a: any) => {
             const reason = a['Reason'] ? ` — ${a['Reason']}` : '';
             lines.push(`  • ${a['Agent Name']}${reason}`);
         });
-        unplanned.forEach((e: any) => {
-            const reason = e['Reason'] ? ` — ${e['Reason']}` : '';
-            lines.push(`  • ${e['Agent Name']}${reason}`);
-        });
     }
 
-    if (totalAbsent === 0 && planned.length === 0 && unplanned.length === 0) {
+    if (totalAbsent === 0) {
         lines.push('');
         lines.push(':tada: Perfect attendance today!');
     }
@@ -129,14 +111,10 @@ async function buildAndPostDigest() {
         { name: 'Attendance Rate', value: `${attendanceRate}%` },
     ];
     if (planned.length > 0) {
-        teamsFacts.push({ name: 'Planned', value: planned.map((e: any) => e['Agent Name']).join(', ') });
+        teamsFacts.push({ name: 'Booked Off', value: planned.map((b: any) => b['Agent Name']).join(', ') });
     }
-    if (absences.length > 0 || unplanned.length > 0) {
-        const allUnplanned = [
-            ...absences.map((a: any) => a['Agent Name']),
-            ...unplanned.map((e: any) => e['Agent Name']),
-        ];
-        teamsFacts.push({ name: 'Unplanned', value: allUnplanned.join(', ') });
+    if (unplanned.length > 0) {
+        teamsFacts.push({ name: 'Unplanned', value: unplanned.map((a: any) => a['Agent Name']).join(', ') });
     }
 
     const teamsPosted = await postTeamsWebhook(
@@ -151,7 +129,7 @@ async function buildAndPostDigest() {
         present: presentCount,
         absent: totalAbsent,
         planned: planned.length,
-        unplanned: absences.length + unplanned.length,
+        unplanned: unplanned.length,
         attendance_rate: attendanceRate,
         slack_posted: slackPosted,
         teams_posted: teamsPosted,
@@ -173,14 +151,4 @@ function getEffectiveWorkingDate(): Date {
 function getDayColumn(date: Date): string {
     const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
     return days[date.getDay()];
-}
-
-function deduplicateByNameDate(rows: any[]): any[] {
-    const seen = new Set<string>();
-    return rows.filter(r => {
-        const key = `${(r['Agent Name'] || '').trim().toLowerCase()}|${r['Date'] || ''}`;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-    });
 }

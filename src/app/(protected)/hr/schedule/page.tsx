@@ -4,7 +4,7 @@ import { useEffect, useState } from "react";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 import { supabase } from "@/lib/supabase-client";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { Calendar, Coffee, Clock, Search, Users, Activity, BarChart2, AlertTriangle, ArrowLeft, Ban } from "lucide-react";
+import { Calendar, Coffee, Clock, Search, Users, Activity, BarChart2, AlertTriangle } from "lucide-react";
 import StatsCard from "@/components/dashboard/StatsCard";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -67,7 +67,7 @@ export default function AgentSchedulePage() {
         const fetchData = async () => {
             setLoading(true);
             try {
-                const [schedules, breaks, activeEmployees, aeRes] = await Promise.all([
+                const [schedules, breaks, activeEmployees, bookedRes, unbookedRes] = await Promise.all([
                     fetchAllRows('Agent Schedule'),
                     fetchAllRows('Agent Break Schedule'),
                     supabase
@@ -76,7 +76,8 @@ export default function AgentSchedulePage() {
                         .eq('employee_status', 'Active')
                         .eq('role', 'Agent')
                         .then(res => res.data || []),
-                    supabase.from('Attendance Events').select('"Agent Name", "Event Type", "Date"'),
+                    supabase.from('Booked Days Off').select('"Agent Name", "Date"'),
+                    supabase.from('Non Booked Days Off').select('"Agent Name", "Date"'),
                 ]);
 
                 // Build today's attendance map for overlay badges
@@ -84,19 +85,35 @@ export default function AgentSchedulePage() {
                 const todayISO = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
                 const months: Record<string, string> = { Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06', Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12' };
                 const aeMap = new Map<string, string[]>();
-                (aeRes.data || []).forEach((ae: any) => {
-                    const rawDate = (ae['Date'] || '').toString().trim();
+
+                // Booked Days Off → planned
+                (bookedRes.data || []).forEach((row: any) => {
+                    const rawDate = (row['Date'] || '').toString().trim();
                     let dateStr = rawDate;
                     if (!rawDate.includes('-')) {
                         const parts = rawDate.split(/\s+/);
                         if (parts.length === 3 && months[parts[1]]) dateStr = `${parts[2]}-${months[parts[1]]}-${parts[0].padStart(2, '0')}`;
                     }
                     if (dateStr !== todayISO) return;
-                    const name = (ae['Agent Name'] || '').trim().toLowerCase();
-                    const type = (ae['Event Type'] || '').toLowerCase();
-                    if (!name || !type) return;
+                    const name = (row['Agent Name'] || '').trim().toLowerCase();
+                    if (!name) return;
                     if (!aeMap.has(name)) aeMap.set(name, []);
-                    aeMap.get(name)!.push(type);
+                    aeMap.get(name)!.push('planned');
+                });
+
+                // Non Booked Days Off → unplanned
+                (unbookedRes.data || []).forEach((row: any) => {
+                    const rawDate = (row['Date'] || '').toString().trim();
+                    let dateStr = rawDate;
+                    if (!rawDate.includes('-')) {
+                        const parts = rawDate.split(/\s+/);
+                        if (parts.length === 3 && months[parts[1]]) dateStr = `${parts[2]}-${months[parts[1]]}-${parts[0].padStart(2, '0')}`;
+                    }
+                    if (dateStr !== todayISO) return;
+                    const name = (row['Agent Name'] || '').trim().toLowerCase();
+                    if (!name) return;
+                    if (!aeMap.has(name)) aeMap.set(name, []);
+                    aeMap.get(name)!.push('unplanned');
                 });
                 setTodayAttendanceMap(aeMap);
 
@@ -188,13 +205,15 @@ export default function AgentSchedulePage() {
         const sub1 = supabase.channel('schedule-changes').on('postgres_changes', { event: '*', schema: 'public', table: 'Agent Schedule' }, () => fetchData()).subscribe();
         const sub2 = supabase.channel('break-changes').on('postgres_changes', { event: '*', schema: 'public', table: 'Agent Break Schedule' }, () => fetchData()).subscribe();
         const sub3 = supabase.channel('directory-schedule').on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'employee_directory' }, () => fetchData()).subscribe();
-        const sub4 = supabase.channel('schedule-attendance').on('postgres_changes', { event: '*', schema: 'public', table: 'Attendance Events' }, () => fetchData()).subscribe();
+        const sub4 = supabase.channel('schedule-booked').on('postgres_changes', { event: '*', schema: 'public', table: 'Booked Days Off' }, () => fetchData()).subscribe();
+        const sub5 = supabase.channel('schedule-unbooked').on('postgres_changes', { event: '*', schema: 'public', table: 'Non Booked Days Off' }, () => fetchData()).subscribe();
 
         return () => {
             sub1.unsubscribe();
             sub2.unsubscribe();
             sub3.unsubscribe();
             sub4.unsubscribe();
+            sub5.unsubscribe();
         };
     }, []);
 
@@ -491,11 +510,11 @@ export default function AgentSchedulePage() {
                                                                         const name = `${row["First Name"]} ${row["Last Name"]}`.trim().toLowerCase();
                                                                         const events = todayAttendanceMap.get(name);
                                                                         if (!events || events.length === 0) return null;
-                                                                        return events.map((type, i) => {
-                                                                            if (type === 'late') return <span key={i} className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-yellow-400 bg-yellow-500/15 px-1.5 py-0.5 rounded-full"><Clock className="w-2.5 h-2.5" />Late</span>;
-                                                                            if (type === 'early_leave') return <span key={i} className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-orange-400 bg-orange-500/15 px-1.5 py-0.5 rounded-full"><ArrowLeft className="w-2.5 h-2.5" />Early</span>;
-                                                                            if (type === 'no_show') return <span key={i} className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-red-400 bg-red-500/15 px-1.5 py-0.5 rounded-full"><Ban className="w-2.5 h-2.5" />NCNS</span>;
-                                                                            if (type === 'absent') return <span key={i} className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-rose-400 bg-rose-500/15 px-1.5 py-0.5 rounded-full"><AlertTriangle className="w-2.5 h-2.5" />Absent</span>;
+                                                                        // Dedupe types
+                                                                        const uniqueTypes = [...new Set(events)];
+                                                                        return uniqueTypes.map((type, i) => {
+                                                                            if (type === 'planned') return <span key={i} className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-blue-400 bg-blue-500/15 px-1.5 py-0.5 rounded-full"><Calendar className="w-2.5 h-2.5" />PTO</span>;
+                                                                            if (type === 'unplanned') return <span key={i} className="inline-flex items-center gap-0.5 text-[10px] font-semibold text-amber-400 bg-amber-500/15 px-1.5 py-0.5 rounded-full"><AlertTriangle className="w-2.5 h-2.5" />Out</span>;
                                                                             return null;
                                                                         });
                                                                     })()}

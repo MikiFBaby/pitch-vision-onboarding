@@ -5,7 +5,6 @@ import {
     deduplicateUnplannedOff,
     toTitleCase,
 } from '@/lib/hr-utils';
-import { EVENT_TYPE_EMOJI, EVENT_TYPE_LABEL } from '@/utils/slack-attendance';
 
 // ---------------------------------------------------------------------------
 // Shared Helpers
@@ -159,8 +158,8 @@ export async function handleWhosOut(date: string): Promise<string> {
         targetDate === tomorrowISO() ? 'tomorrow' :
             formatDateNice(targetDate);
 
-    // Fetch from all 3 absence sources in parallel
-    const [bookedRes, unbookedRes, eventsRes] = await Promise.all([
+    // Fetch from Booked + Non Booked Days Off (two-table absence model)
+    const [bookedRes, unbookedRes] = await Promise.all([
         supabaseAdmin
             .from('Booked Days Off')
             .select('"Agent Name", "Date"')
@@ -169,25 +168,11 @@ export async function handleWhosOut(date: string): Promise<string> {
             .from('Non Booked Days Off')
             .select('"Agent Name", "Date", "Reason"')
             .eq('Date', targetDate),
-        supabaseAdmin
-            .from('Attendance Events')
-            .select('"Agent Name", "Event Type", "Date", "Reason", "Minutes"')
-            .eq('Date', targetDate),
     ]);
 
     // Dedup sheet data
     const booked = deduplicateBookedOff(bookedRes.data || []);
     const unbooked = deduplicateUnplannedOff(unbookedRes.data || []);
-    const events = (eventsRes.data || []);
-
-    // Dedup attendance events by Agent Name + Date + Event Type
-    const seenEvents = new Set<string>();
-    const dedupedEvents = events.filter((e: any) => {
-        const key = `${(e['Agent Name'] || '').trim().toLowerCase()}|${e['Date'] || ''}|${e['Event Type'] || ''}`;
-        if (seenEvents.has(key)) return false;
-        seenEvents.add(key);
-        return true;
-    });
 
     // Build grouped output
     const sections: string[] = [];
@@ -207,31 +192,6 @@ export async function handleWhosOut(date: string): Promise<string> {
         }).sort();
         sections.push(`:warning: *Unplanned Absences* (${unbooked.length})\n${items.join('\n')}`);
     }
-
-    // Attendance events (absent, late, early leave, no-show)
-    if (dedupedEvents.length > 0) {
-        const grouped: Record<string, string[]> = {};
-        for (const e of dedupedEvents) {
-            const type = (e['Event Type'] || 'absent') as string;
-            const name = toTitleCase((e['Agent Name'] || '').trim());
-            const reason = (e['Reason'] || '').trim();
-            const mins = e['Minutes'];
-            let detail = name;
-            if (mins) detail += ` (${mins} min)`;
-            if (reason) detail += ` — _${reason}_`;
-
-            const label = EVENT_TYPE_LABEL[type] || type;
-            const emoji = EVENT_TYPE_EMOJI[type] || ':grey_question:';
-            const key = `${emoji} *${label}*`;
-            if (!grouped[key]) grouped[key] = [];
-            grouped[key].push(`  • ${detail}`);
-        }
-        for (const [header, items] of Object.entries(grouped)) {
-            sections.push(`${header} (${items.length})\n${items.sort().join('\n')}`);
-        }
-    }
-
-    const totalOut = booked.length + unbooked.length + dedupedEvents.filter((e: any) => (e['Event Type'] || '') === 'absent' || (e['Event Type'] || '') === 'no_show').length;
 
     if (sections.length === 0) {
         return `:white_check_mark: No one is reported out for *${dateLabel}*. Full attendance!`;
@@ -266,9 +226,8 @@ export async function handleAttendanceHistory(
         period === 'week' ? `this week (${formatDateNice(startDate)} – ${formatDateNice(endDate)})` :
             `this month (${formatDateNice(startDate)} – ${formatDateNice(endDate)})`;
 
-    // Fetch all 3 sources, filtering by date range
-    // For sheet tables we need to match Agent Name (case-insensitive is tricky — fetch all in range, then filter)
-    const [bookedRes, unbookedRes, eventsRes] = await Promise.all([
+    // Fetch from Booked + Non Booked Days Off, filtering by date range
+    const [bookedRes, unbookedRes] = await Promise.all([
         supabaseAdmin
             .from('Booked Days Off')
             .select('"Agent Name", "Date"')
@@ -279,33 +238,17 @@ export async function handleAttendanceHistory(
             .select('"Agent Name", "Date", "Reason"')
             .gte('Date', startDate)
             .lte('Date', endDate),
-        supabaseAdmin
-            .from('Attendance Events')
-            .select('"Agent Name", "Event Type", "Date", "Reason", "Minutes"')
-            .gte('Date', startDate)
-            .lte('Date', endDate),
     ]);
 
     // Dedup
     const booked = deduplicateBookedOff(bookedRes.data || []);
     const unbooked = deduplicateUnplannedOff(unbookedRes.data || []);
-    const events = eventsRes.data || [];
 
     // Filter by name match
     const matchName = (agentName: string) => namesMatch(agentName, fullName);
 
     const myBooked = booked.filter((r: any) => matchName(r['Agent Name'] || ''));
     const myUnbooked = unbooked.filter((r: any) => matchName(r['Agent Name'] || ''));
-    const myEvents = events.filter((e: any) => matchName(e['Agent Name'] || ''));
-
-    // Dedup attendance events
-    const seenEvents = new Set<string>();
-    const dedupedMyEvents = myEvents.filter((e: any) => {
-        const key = `${(e['Date'] || '')}|${e['Event Type'] || ''}`;
-        if (seenEvents.has(key)) return false;
-        seenEvents.add(key);
-        return true;
-    });
 
     // Build chronological timeline
     interface TimelineEntry {
@@ -332,22 +275,6 @@ export async function handleAttendanceHistory(
             emoji: ':warning:',
             label: 'Unplanned Absence',
             detail: (r['Reason'] || '').trim(),
-        });
-    }
-
-    for (const e of dedupedMyEvents) {
-        const type = (e['Event Type'] || 'absent') as string;
-        const mins = e['Minutes'];
-        const reason = (e['Reason'] || '').trim();
-        let detail = '';
-        if (mins) detail += `${mins} min`;
-        if (reason) detail += detail ? ` — ${reason}` : reason;
-
-        timeline.push({
-            date: e['Date'] || '',
-            emoji: EVENT_TYPE_EMOJI[type] || ':grey_question:',
-            label: EVENT_TYPE_LABEL[type] || type,
-            detail,
         });
     }
 

@@ -67,15 +67,14 @@ export async function GET(request: NextRequest) {
             }
         }
 
-        // 4. Fetch today's attendance from all 3 tables
-        const [bookedRes, unbookedRes, eventsRes] = await Promise.all([
+        // 4. Fetch today's attendance from Booked + Non Booked Days Off
+        const [bookedRes, unbookedRes] = await Promise.all([
             supabaseAdmin.from('Booked Days Off').select('"Agent Name"').eq('Date', today),
             supabaseAdmin.from('Non Booked Days Off').select('"Agent Name"').eq('Date', today),
-            supabaseAdmin.from('Attendance Events').select('"Agent Name"').eq('Date', today),
         ]);
 
         const reportedNames = new Set<string>();
-        for (const r of [...(bookedRes.data || []), ...(unbookedRes.data || []), ...(eventsRes.data || [])]) {
+        for (const r of [...(bookedRes.data || []), ...(unbookedRes.data || [])]) {
             const name = ((r as any)['Agent Name'] || '').trim().toLowerCase();
             if (name) reportedNames.add(name);
         }

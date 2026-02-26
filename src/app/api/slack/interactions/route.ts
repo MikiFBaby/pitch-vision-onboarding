@@ -153,7 +153,7 @@ async function handleConfirm(pending: any, pendingId: string, payload?: any) {
     // Insert directly into Supabase for immediate realtime UI update
     // (next Sheets→Supabase sync cycle will cleanly replace these rows)
     if (!result.dry_run) {
-        await insertAttendanceEventsToSupabase(events, reporterName, reportedAt);
+        await insertAttendanceEventsToSupabase(events, reporterName);
     }
 
     // Update Slack message
@@ -234,49 +234,74 @@ async function handleUndo(pending: any, pendingId: string) {
 
 // ---------------------------------------------------------------------------
 // Direct Supabase writes for realtime UI updates
+// Planned → "Booked Days Off", Unplanned → "Non Booked Days Off"
 // (Sheets→Supabase sync will cleanly replace these on next cycle)
 // ---------------------------------------------------------------------------
 
 async function insertAttendanceEventsToSupabase(
     events: ParsedAttendanceEvent[],
     reporterName: string,
-    reportedAt: string,
 ) {
     if (events.length === 0) return;
 
-    const rows = events.map(e => ({
-        'Agent Name': e.matched_employee_name || e.agent_name,
-        'Event Type': e.event_type,
-        'Date': e.date,
-        'Minutes': e.minutes || null,
-        'Reason': e.reason || null,
-        'Reported By': reporterName,
-        'Reported At': reportedAt,
-    }));
+    const planned = events.filter(e => e.event_type === 'planned');
+    const unplanned = events.filter(e => e.event_type === 'unplanned');
 
-    const { error } = await supabaseAdmin
-        .from('Attendance Events')
-        .insert(rows);
+    // Cross-table dedup: remove conflicting entries before inserting.
+    // User's confirmed classification wins — an agent can't be in both tables for the same date.
+    for (const e of planned) {
+        const name = e.matched_employee_name || e.agent_name;
+        await supabaseAdmin.from('Non Booked Days Off').delete().eq('Agent Name', name).eq('Date', e.date);
+    }
+    for (const e of unplanned) {
+        const name = e.matched_employee_name || e.agent_name;
+        await supabaseAdmin.from('Booked Days Off').delete().eq('Agent Name', name).eq('Date', e.date);
+    }
 
-    if (error) {
-        console.error('[Attendance] Direct Supabase insert failed (non-fatal):', error);
-    } else {
-        console.log(`[Attendance] Inserted ${rows.length} events directly to Supabase for realtime`);
+    // Planned → Booked Days Off
+    if (planned.length > 0) {
+        const rows = planned.map(e => ({
+            'Agent Name': e.matched_employee_name || e.agent_name,
+            'Date': e.date,
+        }));
+        const { error } = await supabaseAdmin.from('Booked Days Off').insert(rows);
+        if (error) {
+            console.error('[Attendance] Booked Days Off insert failed (non-fatal):', error);
+        } else {
+            console.log(`[Attendance] Inserted ${rows.length} planned → Booked Days Off`);
+        }
+    }
+
+    // Unplanned → Non Booked Days Off
+    if (unplanned.length > 0) {
+        const rows = unplanned.map(e => ({
+            'Agent Name': e.matched_employee_name || e.agent_name,
+            'Reason': e.reason || 'Unplanned absence',
+            'Date': e.date,
+            'Reported By': reporterName,
+        }));
+        const { error } = await supabaseAdmin.from('Non Booked Days Off').insert(rows);
+        if (error) {
+            console.error('[Attendance] Non Booked Days Off insert failed (non-fatal):', error);
+        } else {
+            console.log(`[Attendance] Inserted ${rows.length} unplanned → Non Booked Days Off`);
+        }
     }
 }
 
 async function deleteAttendanceEventsFromSupabase(events: ParsedAttendanceEvent[]) {
     for (const e of events) {
         const agentName = e.matched_employee_name || e.agent_name;
+        const table = e.event_type === 'planned' ? 'Booked Days Off' : 'Non Booked Days Off';
+
         const { error } = await supabaseAdmin
-            .from('Attendance Events')
+            .from(table)
             .delete()
             .eq('Agent Name', agentName)
-            .eq('Event Type', e.event_type)
             .eq('Date', e.date);
 
         if (error) {
-            console.error(`[Attendance] Direct Supabase delete failed for ${agentName} (non-fatal):`, error);
+            console.error(`[Attendance] Direct Supabase delete from ${table} failed for ${agentName} (non-fatal):`, error);
         }
     }
 }

@@ -69,7 +69,7 @@ function doPost(e) {
 
     var events = payload.events || [];
     if (events.length === 0) {
-      return jsonResponse({ success: true, planned_added: 0, unplanned_added: 0, attendance_events_added: 0 });
+      return jsonResponse({ success: true, planned_added: 0, unplanned_added: 0 });
     }
 
     var action = payload.action || 'add';
@@ -119,10 +119,12 @@ function handleAdd(events) {
       // unplanned (including legacy no_show) → "Non Booked Days Off" tab
       var nbSheet = ss.getSheetByName('Non Booked Days Off ') || ss.getSheetByName('Non Booked Days Off');
       if (nbSheet) {
+        var dateWithTime = dateStr + ' ' + formatCurrentTime();
         nbSheet.appendRow([
           evt.agent_name,                     // Agent Name (col A)
           evt.reason || 'Unplanned absence',  // Reason (col B)
-          dateStr                             // Date (col C) — "D Mon YYYY"
+          dateWithTime,                       // Date (col C) — "D Mon YYYY H:MM AM/PM"
+          evt.reported_by_name || ''          // Reported By (col D)
         ]);
         unplannedCount++;
       } else {
@@ -136,7 +138,6 @@ function handleAdd(events) {
     success: true,
     planned_added: plannedCount,
     unplanned_added: unplannedCount,
-    attendance_events_added: 0
   });
 }
 
@@ -153,23 +154,19 @@ function handleDelete(events) {
     var dateStr = formatDateForSheet(evt.date);
 
     if (evt.event_type === 'planned') {
-      // Delete from "Booked Days Off" tab
+      // Delete from "Booked Days Off" tab (date in col B = index 1)
       var bdSheet = ss.getSheetByName('Booked Days Off ') || ss.getSheetByName('Booked Days Off');
       if (bdSheet) {
-        if (deleteMatchingRow(bdSheet, evt.agent_name, dateStr, null)) deletedCount++;
+        if (deleteMatchingRow(bdSheet, evt.agent_name, dateStr, 1)) deletedCount++;
       }
 
     } else {
-      // unplanned (including legacy no_show) → "Non Booked Days Off" tab
+      // unplanned (including legacy no_show) → "Non Booked Days Off" tab (date in col C = index 2)
       var nbSheet = ss.getSheetByName('Non Booked Days Off ') || ss.getSheetByName('Non Booked Days Off');
       if (nbSheet) {
-        if (deleteMatchingRow(nbSheet, evt.agent_name, dateStr, null)) deletedCount++;
+        if (deleteMatchingRow(nbSheet, evt.agent_name, dateStr, 2)) deletedCount++;
       }
-      // Also try legacy "Attendance Events" sheet for old no_show entries
-      var aeSheet = ss.getSheetByName('Attendance Events');
-      if (aeSheet) {
-        deleteMatchingRow(aeSheet, evt.agent_name, dateStr, evt.event_type);
-      }
+      // Legacy "Attendance Events" sheet fallback removed — fully migrated to two-table model
     }
   }
 
@@ -178,32 +175,29 @@ function handleDelete(events) {
     success: true,
     planned_added: 0,
     unplanned_added: 0,
-    attendance_events_added: 0,
     rows_deleted: deletedCount
   });
 }
 
 /**
  * Finds and deletes the LAST matching row (most recently added).
- * Matches by agent name (col A, case-insensitive), date (col C), and optionally event type (col B).
+ * Matches by agent name (col A, case-insensitive) and date (starts-with match to handle timestamps).
+ * @param {Sheet} sheet - The sheet to search
+ * @param {string} agentName - Agent name to match
+ * @param {string} dateStr - Date string to match (e.g. "26 Feb 2026")
+ * @param {number} dateColIndex - Column index for the date (1 for Booked, 2 for Non Booked)
  */
-function deleteMatchingRow(sheet, agentName, dateStr, eventType) {
+function deleteMatchingRow(sheet, agentName, dateStr, dateColIndex) {
   var data = sheet.getDataRange().getValues();
   var targetName = agentName.trim().toLowerCase();
 
   // Search from bottom up to find the most recently added match
   for (var row = data.length - 1; row >= 1; row--) { // Skip header row (row 0)
     var rowName = String(data[row][0] || '').trim().toLowerCase();
-    var rowDate = String(data[row][2] || '').trim();
+    var rowDate = String(data[row][dateColIndex] || '').trim();
 
-    if (rowName === targetName && rowDate === dateStr) {
-      // If event type check is needed (for Attendance Events sheet)
-      if (eventType) {
-        var rowType = String(data[row][1] || '').trim().toLowerCase();
-        if (rowType !== eventType.toLowerCase()) continue;
-      }
-
-      // Delete the row (sheet rows are 1-indexed, data is 0-indexed, +1 for header)
+    // Starts-with match: "26 Feb 2026 9:33 AM" matches target "26 Feb 2026"
+    if (rowName === targetName && rowDate.indexOf(dateStr) === 0) {
       sheet.deleteRow(row + 1);
       return true;
     }
@@ -215,6 +209,18 @@ function deleteMatchingRow(sheet, agentName, dateStr, eventType) {
 // ============================================================================
 // HELPERS
 // ============================================================================
+
+/**
+ * Returns current time as "H:MM AM/PM" (e.g. "9:33 AM", "2:15 PM").
+ */
+function formatCurrentTime() {
+  var now = new Date();
+  var hours = now.getHours();
+  var minutes = now.getMinutes();
+  var ampm = hours >= 12 ? 'PM' : 'AM';
+  hours = hours % 12 || 12;
+  return hours + ':' + (minutes < 10 ? '0' + minutes : minutes) + ' ' + ampm;
+}
 
 /**
  * Converts ISO date "2026-02-13" to sheet format "13 Feb 2026" (D Mon YYYY).
@@ -229,18 +235,6 @@ function formatDateForSheet(isoDate) {
   return day + ' ' + month + ' ' + year;
 }
 
-/**
- * Converts ISO timestamp to readable format "Feb 13, 2026 4:05 PM".
- */
-function formatTimestamp(isoTimestamp) {
-  if (!isoTimestamp) return '';
-  try {
-    var date = new Date(isoTimestamp);
-    return Utilities.formatDate(date, Session.getScriptTimeZone(), 'MMM d, yyyy h:mm a');
-  } catch (e) {
-    return isoTimestamp;
-  }
-}
 
 /**
  * Creates a JSON response for the web app.

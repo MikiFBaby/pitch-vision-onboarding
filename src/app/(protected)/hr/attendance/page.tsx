@@ -13,13 +13,11 @@ import {
 interface AttendanceRow {
     id: string;
     agentName: string;
-    eventType: string;
+    eventType: 'planned' | 'unplanned';
+    sourceTable: 'Booked Days Off' | 'Non Booked Days Off';
     date: string;        // ISO YYYY-MM-DD (normalized)
     rawDate: string;     // Original date from DB
-    minutes: number | null;
     reason: string | null;
-    shiftStart: string;
-    campaign: string;
     reportedBy: string;
     reportedAt: string;
 }
@@ -35,21 +33,11 @@ interface AgentSummary {
 const OCCURRENCE_WEIGHTS: Record<string, number> = {
     planned: 0.5,
     unplanned: 1.5,
-    no_show: 1.5, // Legacy — treated as unplanned
-    // Legacy types
-    late: 1,
-    early_leave: 1,
-    absent: 1.5,
 };
 
 const EVENT_STYLES: Record<string, { color: string; bg: string; label: string }> = {
     planned: { color: 'text-blue-400', bg: 'bg-blue-500/20', label: 'Planned' },
     unplanned: { color: 'text-amber-400', bg: 'bg-amber-500/20', label: 'Unplanned' },
-    no_show: { color: 'text-amber-400', bg: 'bg-amber-500/20', label: 'Unplanned' }, // Legacy — displayed as unplanned
-    // Legacy types for historical data
-    late: { color: 'text-yellow-400', bg: 'bg-yellow-500/20', label: 'Late' },
-    early_leave: { color: 'text-orange-400', bg: 'bg-orange-500/20', label: 'Early Leave' },
-    absent: { color: 'text-rose-400', bg: 'bg-rose-500/20', label: 'Absent' },
 };
 
 /** Parse "13 Feb 2026" to ISO */
@@ -72,19 +60,16 @@ function formatDateDisplay(iso: string): string {
     return `${month} ${day}, ${parts[0]}`;
 }
 
-/** Clean up messy timestamps like "Wed Feb 18 2026 09:17:00 GMT-0500 (Eastern Standard Time)" to "Feb 18, 2026 9:17 AM" */
+/** Clean up messy timestamps to "Feb 18, 2026 9:17 AM" */
 function formatTimestampDisplay(raw: string): string {
     if (!raw) return '';
-    // Already clean format like "Feb 18, 2026 9:17 AM"
     if (/^[A-Z][a-z]{2}\s\d/.test(raw) && raw.length < 30) return raw;
-    // ISO timestamp
     if (/^\d{4}-\d{2}-\d{2}T/.test(raw)) {
         try {
             const d = new Date(raw);
             return d.toLocaleString('en-US', { month: 'short', day: 'numeric', year: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
         } catch { return raw; }
     }
-    // Raw JS Date.toString() format: "Wed Feb 18 2026 09:17:00 GMT-0500 (...)"
     const jsDateMatch = raw.match(/^[A-Z][a-z]{2}\s([A-Z][a-z]{2})\s(\d{1,2})\s(\d{4})\s(\d{2}):(\d{2})/);
     if (jsDateMatch) {
         const [, mon, day, year, hour, min] = jsDateMatch;
@@ -94,80 +79,6 @@ function formatTimestampDisplay(raw: string): string {
         return `${mon} ${parseInt(day, 10)}, ${year} ${h12}:${min} ${ampm}`;
     }
     return raw;
-}
-
-/** Detect if a "Shift Start" value is actually a reporter name (column swap from misaligned Sheet) */
-function looksLikePersonName(val: string): boolean {
-    if (!val) return false;
-    // Person names: "Miki Furman", "John Smith" — no colons, no AM/PM, has a space
-    if (/\d{1,2}:\d{2}/.test(val)) return false; // has time pattern
-    if (/[ap]\.?m\.?/i.test(val)) return false;   // has AM/PM
-    if (val.includes('@')) return false;            // email
-    if (/^U[A-Z0-9]{8,}$/.test(val)) return false; // Slack user ID
-    return /^[A-Z][a-z]+\s+[A-Z]/.test(val);       // "Firstname Lastname" pattern
-}
-
-/** Detect if a "Campaign" value is actually a timestamp */
-function looksLikeTimestamp(val: string): boolean {
-    if (!val) return false;
-    return /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s/.test(val) || /^\d{4}-\d{2}-\d{2}T/.test(val);
-}
-
-/**
- * Normalize a row's columns — handles the known column-swap issue where
- * the Sheet has Reported By in the Shift Start column and Reported At in Campaign.
- */
-function normalizeRow(raw: any): AttendanceRow {
-    const rawDate = raw['Date'] || '';
-    const isoDate = rawDate.includes('-') ? rawDate : parseDateDMonYYYY(rawDate);
-
-    let reason = (raw['Reason'] || '').toString().trim();
-    let shiftStart = (raw['Shift Start'] || '').toString().trim();
-    let campaign = (raw['Campaign'] || '').toString().trim();
-    let reportedBy = (raw['Reported By'] || '').toString().trim();
-    let reportedAt = (raw['Reported At'] || '').toString().trim();
-
-    // Detect column swaps caused by sheet sync misalignment:
-    // The sheet sometimes shifts Reported By → Reason, Reported At → Shift Start
-
-    // If Reason looks like a person name and Reported By is empty → swap
-    if (looksLikePersonName(reason) && !reportedBy) {
-        reportedBy = reason;
-        reason = '';
-    }
-    // If Shift Start looks like a person name and Reported By is empty → swap
-    if (looksLikePersonName(shiftStart) && !reportedBy) {
-        reportedBy = shiftStart;
-        shiftStart = '';
-    }
-    // If Shift Start looks like a timestamp and Reported At is empty → swap
-    if (looksLikeTimestamp(shiftStart) && !reportedAt) {
-        reportedAt = shiftStart;
-        shiftStart = '';
-    }
-    // If Campaign looks like a timestamp and Reported At is empty → swap
-    if (looksLikeTimestamp(campaign) && !reportedAt) {
-        reportedAt = campaign;
-        campaign = '';
-    }
-    // Slack user ID in Shift Start — discard (not useful display data)
-    if (/^U[A-Z0-9]{8,}$/.test(shiftStart)) {
-        shiftStart = '';
-    }
-
-    return {
-        id: raw.id,
-        agentName: raw['Agent Name'] || '',
-        eventType: (raw['Event Type'] || '').toLowerCase(),
-        date: isoDate,
-        rawDate,
-        minutes: raw['Minutes'] ? parseInt(raw['Minutes'], 10) : null,
-        reason: reason || null,
-        shiftStart,
-        campaign,
-        reportedBy,
-        reportedAt,
-    };
 }
 
 export default function AttendancePage() {
@@ -186,18 +97,49 @@ export default function AttendancePage() {
     const fetchData = useCallback(async () => {
         setLoading(true);
         try {
-            const { data, error } = await supabase
-                .from('Attendance Events')
-                .select('*')
-                .order('created_at', { ascending: false });
+            // Fetch from both absence tables in parallel
+            const [bookedRes, unbookedRes] = await Promise.all([
+                supabase.from('Booked Days Off').select('*').order('id', { ascending: false }),
+                supabase.from('Non Booked Days Off').select('*').order('id', { ascending: false }),
+            ]);
 
-            if (error) {
-                console.error('Attendance Events error:', error);
-                setEvents([]);
-                return;
-            }
+            const merged: AttendanceRow[] = [];
 
-            setEvents((data || []).map(normalizeRow));
+            // Booked Days Off → planned
+            (bookedRes.data || []).forEach((row: any) => {
+                const rawDate = row['Date'] || '';
+                const isoDate = rawDate.includes('-') ? rawDate : parseDateDMonYYYY(rawDate);
+                merged.push({
+                    id: row.id,
+                    agentName: row['Agent Name'] || '',
+                    eventType: 'planned',
+                    sourceTable: 'Booked Days Off',
+                    date: isoDate,
+                    rawDate,
+                    reason: null,
+                    reportedBy: '',
+                    reportedAt: '',
+                });
+            });
+
+            // Non Booked Days Off → unplanned
+            (unbookedRes.data || []).forEach((row: any) => {
+                const rawDate = row['Date'] || '';
+                const isoDate = rawDate.includes('-') ? rawDate : parseDateDMonYYYY(rawDate);
+                merged.push({
+                    id: row.id,
+                    agentName: row['Agent Name'] || '',
+                    eventType: 'unplanned',
+                    sourceTable: 'Non Booked Days Off',
+                    date: isoDate,
+                    rawDate,
+                    reason: (row['Reason'] || '').toString().trim() || null,
+                    reportedBy: (row['Reported By'] || '').toString().trim(),
+                    reportedAt: '',
+                });
+            });
+
+            setEvents(merged);
         } catch (error) {
             console.error("Error fetching attendance data:", error);
         } finally {
@@ -207,21 +149,28 @@ export default function AttendancePage() {
 
     useEffect(() => {
         fetchData();
-        const channel = supabase
-            .channel('attendance_page')
-            .on('postgres_changes', { event: '*', schema: 'public', table: 'Attendance Events' }, () => fetchData())
+        const ch1 = supabase
+            .channel('attendance_page_booked')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'Booked Days Off' }, () => fetchData())
             .subscribe();
-        return () => { supabase.removeChannel(channel); };
+        const ch2 = supabase
+            .channel('attendance_page_unbooked')
+            .on('postgres_changes', { event: '*', schema: 'public', table: 'Non Booked Days Off' }, () => fetchData())
+            .subscribe();
+        return () => {
+            supabase.removeChannel(ch1);
+            supabase.removeChannel(ch2);
+        };
     }, [fetchData]);
 
-    // Delete handler
-    const handleDelete = async (id: string) => {
+    // Delete handler — passes the source table to the API
+    const handleDelete = async (id: string, table: string) => {
         setDeletingId(id);
         try {
             const res = await fetch('/api/attendance/delete', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ id }),
+                body: JSON.stringify({ id, table }),
             });
             if (!res.ok) {
                 const err = await res.json();
@@ -229,7 +178,6 @@ export default function AttendancePage() {
                 alert(`Delete failed: ${err?.error || 'Unknown error'}`);
                 return;
             }
-            // Optimistic removal — don't wait for realtime
             setEvents(prev => prev.filter(e => e.id !== id));
         } catch (err) {
             console.error('Delete error:', err);
@@ -240,8 +188,7 @@ export default function AttendancePage() {
         }
     };
 
-    // Filtering
-    // Filter by date range, type, and search — then remove true duplicates
+    // Filter by date range, type, and search — then dedup
     const filteredEvents = useMemo(() => {
         const now = new Date();
         const todayStr = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
@@ -258,7 +205,6 @@ export default function AttendancePage() {
             })
             .filter(e => {
                 if (filterType === 'all') return true;
-                if (filterType === 'unplanned') return ['unplanned', 'no_show', 'absent', 'late', 'early_leave'].includes(e.eventType);
                 return e.eventType === filterType;
             })
             .filter(e => !searchTerm || e.agentName.toLowerCase().includes(searchTerm.toLowerCase()));
@@ -286,7 +232,7 @@ export default function AttendancePage() {
         return sorted;
     }, [filteredEvents, sortField, sortDir]);
 
-    // Agent summaries (computed from deduped filteredEvents)
+    // Agent summaries
     const agentSummaries = useMemo(() => {
         const map = new Map<string, AgentSummary>();
         filteredEvents.forEach(e => {
@@ -294,21 +240,19 @@ export default function AttendancePage() {
             const existing = map.get(key) || {
                 name: e.agentName, plannedCount: 0, unplannedCount: 0, totalScore: 0, latestDate: '',
             };
-            const et = e.eventType;
-            if (et === 'planned') existing.plannedCount++;
+            if (e.eventType === 'planned') existing.plannedCount++;
             else existing.unplannedCount++;
-            existing.totalScore += OCCURRENCE_WEIGHTS[et] || 1;
+            existing.totalScore += OCCURRENCE_WEIGHTS[e.eventType] || 1;
             if (e.date > existing.latestDate) existing.latestDate = e.date;
             map.set(key, existing);
         });
         return Array.from(map.values()).sort((a, b) => b.totalScore - a.totalScore);
     }, [filteredEvents]);
 
-    // Stats count the visible (already deduped) rows directly
     const stats = useMemo(() => ({
         total: filteredEvents.length,
         planned: filteredEvents.filter(e => e.eventType === 'planned').length,
-        unplanned: filteredEvents.filter(e => e.eventType !== 'planned').length,
+        unplanned: filteredEvents.filter(e => e.eventType === 'unplanned').length,
     }), [filteredEvents]);
 
     const toggleSort = (field: typeof sortField) => {
@@ -322,17 +266,17 @@ export default function AttendancePage() {
     };
 
     const handleExport = () => {
-        const headers = ['Agent Name', 'Event Type', 'Reason', 'Shift Start', 'Campaign', 'Reported By', 'Reported'];
+        const headers = ['Agent Name', 'Type', 'Reason', 'Reported By', 'Reported'];
         const rows = sortedEvents.map(e => [
             e.agentName, e.eventType, e.reason ?? '',
-            e.shiftStart, e.campaign, e.reportedBy, formatTimestampDisplay(e.reportedAt) || formatDateDisplay(e.date),
+            e.reportedBy, formatTimestampDisplay(e.reportedAt) || formatDateDisplay(e.date),
         ]);
         const csv = [headers, ...rows].map(r => r.map(c => `"${String(c).replace(/"/g, '""')}"`).join(',')).join('\n');
         const blob = new Blob([csv], { type: 'text/csv' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `attendance-events-${new Date().toISOString().split('T')[0]}.csv`;
+        a.download = `attendance-${new Date().toISOString().split('T')[0]}.csv`;
         a.click();
         URL.revokeObjectURL(url);
     };
@@ -520,7 +464,7 @@ export default function AttendancePage() {
                                                             {isConfirming ? (
                                                                 <div className="flex items-center gap-1 justify-center">
                                                                     <button
-                                                                        onClick={() => handleDelete(e.id)}
+                                                                        onClick={() => handleDelete(e.id, e.sourceTable)}
                                                                         disabled={isDeleting}
                                                                         className="text-[10px] font-bold px-2 py-1 rounded bg-red-500/20 text-red-400 hover:bg-red-500/40 transition-colors disabled:opacity-50"
                                                                     >

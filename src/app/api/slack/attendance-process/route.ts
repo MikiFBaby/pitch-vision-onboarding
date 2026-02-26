@@ -232,15 +232,15 @@ async function handleAttendanceFlow(
         const lines = unmatchedEvents.map(e => {
             if (e.ambiguous_matches && e.ambiguous_matches.length > 0) {
                 const options = e.ambiguous_matches.map(n => `_${n}_`).join(', ');
-                return `• *${e.agent_name}* — multiple matches found: ${options}. Please use the full name.`;
+                return `• *${e.agent_name}* — did you mean ${options}? Try again with the full name.`;
             }
             return `• *${e.agent_name}* — no match found in the employee directory.`;
         });
 
         await postAttendanceBotMessage(
             channelId,
-            `:warning: I couldn't match the following name(s) to an active employee:\n\n${lines.join('\n')}\n\n` +
-            `Please try again with the employee's full name as it appears in the directory.`
+            `:thinking_face: I couldn't find an exact match for:\n\n${lines.join('\n')}\n\n` +
+            `:bulb: _First names work great when they're unique! For common names, add the last name._`
         );
         return NextResponse.json({ ok: true, result: 'unmatched_names' });
     }
