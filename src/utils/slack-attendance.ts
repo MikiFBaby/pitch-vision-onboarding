@@ -124,6 +124,7 @@ For each event found, extract:
 - event_type: One of "planned", "unplanned" (required)
   - "planned" = booked day off, vacation, PTO, scheduled absence, pre-approved leave, taking a day off they arranged in advance
   - "unplanned" = called out sick, car trouble, emergency, came in late, left early, unexpected absence, tardy, any absence that was NOT pre-arranged, no call no show (NCNS), ghosted, didn't show up, abandoned shift
+  - DEFAULT RULE: If the message is ambiguous and doesn't clearly indicate a planned/pre-arranged absence (PTO, vacation, booked day off), classify as "unplanned". Most messages are unplanned reports.
 - date: The date in YYYY-MM-DD format. "today" = ${todayStr}. "yesterday" = ${yesterdayStr}. If a day name like "Monday" is used, use the most recent past occurrence. If no date is mentioned, default to ${todayStr}. (required)
 - minutes: If a duration or lateness is mentioned, extract as minutes. "15 min late" = 15, "an hour late" = 60, "half hour" = 30. If not specified, null.
 - reason: The reason if given (e.g., "sick", "car trouble", "doctor appointment", "family emergency", "PTO", "vacation"). If not specified, null.
@@ -160,6 +161,7 @@ IMPORTANT: Strip conversational greetings and filler words from agent names. Wor
 - "So Sarah has PTO" → agent_name is "Sarah", NOT "So Sarah"`;
 
     try {
+        console.log('[Attendance] Calling OpenRouter model: anthropic/claude-haiku-4.5');
         const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
             method: 'POST',
             headers: {
@@ -167,7 +169,7 @@ IMPORTANT: Strip conversational greetings and filler words from agent names. Wor
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-                model: 'anthropic/claude-haiku-4-5-20251001',
+                model: 'anthropic/claude-haiku-4.5',
                 messages: [
                     { role: 'system', content: systemPrompt },
                     { role: 'user', content: text },
@@ -189,7 +191,13 @@ IMPORTANT: Strip conversational greetings and filler words from agent names. Wor
             return [];
         }
 
-        let parsed = JSON.parse(content);
+        // Strip markdown code block wrapper if present
+        let jsonStr = content.trim();
+        if (jsonStr.startsWith('```')) {
+            jsonStr = jsonStr.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
+        }
+
+        let parsed = JSON.parse(jsonStr);
         // Handle both direct array and wrapped { events: [...] } formats
         if (!Array.isArray(parsed)) {
             if (parsed.events && Array.isArray(parsed.events)) {
@@ -214,8 +222,8 @@ IMPORTANT: Strip conversational greetings and filler words from agent names. Wor
             minutes: typeof e.minutes === 'number' ? e.minutes : null,
             reason: e.reason ? String(e.reason).trim() : null,
         }));
-    } catch (err) {
-        console.error('[Attendance] OpenRouter parsing error:', err);
+    } catch (err: any) {
+        console.error('[Attendance] OpenRouter parsing error:', err?.message || err);
         return [];
     }
 }
@@ -807,6 +815,7 @@ Examples:
 {"intent":"greeting","reply":"Hey! How can I help?"}`;
 
     try {
+        console.log('[Intent] Calling OpenRouter model: anthropic/claude-haiku-4.5');
         const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
             method: 'POST',
             headers: {
@@ -814,7 +823,7 @@ Examples:
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-                model: 'anthropic/claude-haiku-4-5-20251001',
+                model: 'anthropic/claude-haiku-4.5',
                 messages: [
                     { role: 'system', content: systemPrompt },
                     { role: 'user', content: text },
@@ -824,7 +833,8 @@ Examples:
         });
 
         if (!response.ok) {
-            console.error(`[Intent] OpenRouter error ${response.status}`);
+            const errBody = await response.text();
+            console.error(`[Intent] OpenRouter error ${response.status}:`, errBody);
             return { type: 'attendance', text };
         }
 
@@ -832,7 +842,13 @@ Examples:
         const content = data.choices?.[0]?.message?.content;
         if (!content) return { type: 'attendance', text };
 
-        const parsed = JSON.parse(content);
+        // Strip markdown code block wrapper if present
+        let jsonStr = content.trim();
+        if (jsonStr.startsWith('```')) {
+            jsonStr = jsonStr.replace(/^```(?:json)?\s*/, '').replace(/\s*```$/, '');
+        }
+
+        const parsed = JSON.parse(jsonStr);
 
         switch (parsed.intent) {
             case 'channel_remove':
@@ -867,8 +883,8 @@ Examples:
             default:
                 return { type: 'attendance', text };
         }
-    } catch (err) {
-        console.error('[Intent] Classification error:', err);
+    } catch (err: any) {
+        console.error('[Intent] Classification error:', err?.message || err);
         return { type: 'attendance', text };
     }
 }
@@ -954,13 +970,18 @@ export async function handleChannelAdd(
 export function buildHelpMessage(): string {
     return `:wave: *Hi! I'm Sam, your HR & operations assistant.*\n\n` +
         `Here's everything I can do:\n\n` +
-        `:clipboard: *Attendance*\n` +
-        `• _\"Sarah has PTO Friday\"_ — planned absences, PTO, vacation\n` +
-        `• _\"John called out sick today\"_ — unplanned absences\n` +
-        `• _\"NCNS for David\"_ — no call no show (tracked as unplanned)\n` +
+        `:clipboard: *Report Attendance*\n` +
+        `:one: *Planned Absence* (PTO, vacation, booked day off)\n` +
+        `• _\"Sarah has PTO Friday\"_\n` +
+        `• _\"John is on vacation Feb 28 – Mar 3\"_\n\n` +
+        `:two: *Unplanned Absence* (sick, emergency, NCNS, late)\n` +
+        `• _\"Ade is sick today\"_\n` +
+        `• _\"NCNS for David Brown\"_\n` +
+        `• _\"Mike was 15 min late\"_\n\n` +
+        `:mag: *Check Attendance*\n` +
         `• _\"who's out today?\"_ — see all absences for a date\n` +
-        `• _\"attendance for Sarah this week\"_ — view someone's attendance history\n` +
-        `• *undo* — undo your last attendance entry\n\n` +
+        `• _\"attendance for Sarah this week\"_ — view someone's history\n` +
+        `• *undo* — undo your last entry\n\n` +
         `:bust_in_silhouette: *Employee Lookup*\n` +
         `• _\"who is Sarah?\"_ — look up employee info\n\n` +
         `:calendar: *Schedules*\n` +
@@ -975,5 +996,5 @@ export function buildHelpMessage(): string {
         `• _\"remove all terminated employees\"_ — bulk cleanup\n\n` +
         `:pencil2: *Directory Updates*\n` +
         `• _\"update John's phone to 555-1234\"_ — update phone, email, campaign, country, role\n\n` +
-        `Just message me naturally and I'll figure out what you need!`;
+        `:bulb: _First names work great when they're unique! For common names, add the last name._`;
 }

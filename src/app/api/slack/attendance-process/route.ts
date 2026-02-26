@@ -88,7 +88,11 @@ export async function POST(request: NextRequest) {
             }
 
             case 'greeting': {
-                await postAttendanceBotMessage(channelId, intent.text);
+                const quickActions = `\n\n:zap: *Quick actions:*\n` +
+                    `• _"[Name] has PTO [date]"_ — planned absence\n` +
+                    `• _"[Name] is sick today"_ — unplanned absence\n` +
+                    `• _"who's out today?"_ — see today's absences`;
+                await postAttendanceBotMessage(channelId, intent.text + quickActions);
                 return NextResponse.json({ ok: true, result: 'greeting' });
             }
 
@@ -212,12 +216,12 @@ async function handleAttendanceFlow(
     if (events.length === 0) {
         await postAttendanceBotMessage(
             channelId,
-            "Hmm, I couldn't pick out any attendance events from that. Try something like:\n" +
-            "• _\"Sarah called out sick today\"_\n" +
-            "• _\"John was 15 min late\"_\n" +
-            "• _\"Mike left early due to doctor appointment\"_\n" +
-            "• _\"NCNS for David Brown\"_\n\n" +
-            "Type *help* to see everything I can do."
+            `:thinking_face: I couldn't parse any attendance events from that.\n\n` +
+            `:one: *Planned absence* — mention PTO, vacation, or day off:\n` +
+            `_"Sarah has PTO Friday"_\n\n` +
+            `:two: *Unplanned absence* — describe what happened:\n` +
+            `_"Ade is sick today"_ or _"NCNS for David"_\n\n` +
+            `:bulb: _First names work great! For common names, add the last name._`
         );
         return NextResponse.json({ ok: true, result: 'no_events' });
     }
