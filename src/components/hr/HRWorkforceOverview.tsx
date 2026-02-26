@@ -28,16 +28,6 @@ function getEffectiveWorkDay() {
     return { dayOfWeek, effectiveDate, isWeekend };
 }
 
-/** Format "13 Feb 2026" from Sheets to "2026-02-13" for comparison */
-function parseDateDMonYYYY(s: string): string {
-    const months: Record<string, string> = { Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06', Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12' };
-    const parts = (s || '').trim().split(/\s+/);
-    if (parts.length === 3 && months[parts[1]]) {
-        return `${parts[2]}-${months[parts[1]]}-${parts[0].padStart(2, '0')}`;
-    }
-    return s;
-}
-
 export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewProps) {
     const [loading, setLoading] = useState(true);
     const [todayStats, setTodayStats] = useState({
@@ -46,9 +36,6 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
         absent: 0,
         bookedOff: 0,
         unplannedOff: 0,
-        lateCount: 0,
-        earlyLeaveCount: 0,
-        noShowCount: 0,
     });
 
     const { dayOfWeek, effectiveDate, isWeekend } = useMemo(() => getEffectiveWorkDay(), []);
@@ -130,56 +117,28 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
                 from += PAGE_SIZE;
             }
 
-            // 3. Absences + Attendance Events for the effective date
-            // Merge both sources for cohesive data (matches heatmap logic):
-            // - Booked Days Off = Google Sheets for planned PTO
-            // - Non Booked Days Off = Google Sheets historical unplanned
-            // - Attendance Events = Sam bot for current unplanned + late/early_leave
-            const [bookedRes, nbRes, attendanceRes] = await Promise.all([
+            // 3. Absences for the effective date (two sources only):
+            // - Booked Days Off = Google Sheets planned PTO
+            // - Non Booked Days Off = Google Sheets unplanned absences (sick, no-show, etc.)
+            const [bookedRes, nbRes] = await Promise.all([
                 supabase.from('Booked Days Off').select('*').eq('Date', date),
-                supabase.from('Non Booked Days Off').select('"Agent Name", "Date"').eq('Date', date),
-                supabase.from('Attendance Events').select('"Agent Name", "Event Type", "Date"'),
+                supabase.from('Non Booked Days Off').select('"Agent Name", "Reason", "Date"').eq('Date', date),
             ]);
 
             if (bookedRes.error) console.error('Booked Days Off error:', bookedRes.error);
             if (nbRes.error) console.error('Non Booked Days Off error:', nbRes.error);
-            if (attendanceRes.error) console.error('Attendance Events error:', attendanceRes.error);
 
             const bookedOff = deduplicateBookedOff(bookedRes.data || []);
             const nbOff = deduplicateUnplannedOff(nbRes.data || []);
 
             const normalize = (name: string) => (name || '').trim().toLowerCase();
 
-            // 4. Build unplanned set from Non Booked Days Off first (historical source)
+            // 4. Build unplanned set from Non Booked Days Off
             const seenUnplannedAgents = new Set<string>();
             nbOff.forEach((u: any) => {
                 const name = normalize(u['Agent Name']);
                 if (name) seenUnplannedAgents.add(name);
             });
-
-            // 5. Attendance Events for today — adds unplanned not in NB, plus late/early_leave
-            const todayAttendanceEvents = ((attendanceRes.data || []) as any[]).filter((ae: any) => {
-                const aeDate = ae['Date'] || '';
-                const normalized = aeDate.includes('-') ? aeDate : parseDateDMonYYYY(aeDate);
-                return normalized === date;
-            });
-
-            const attendanceByType = { late: new Set<string>(), early_leave: new Set<string>() };
-            todayAttendanceEvents.forEach((ae: any) => {
-                const name = normalize(ae['Agent Name']);
-                const eventType = (ae['Event Type'] || '').toLowerCase();
-                if (eventType === 'planned') return;
-                if (eventType === 'late') attendanceByType.late.add(name);
-                else if (eventType === 'early_leave') attendanceByType.early_leave.add(name);
-                else {
-                    // unplanned, no_show, absent — add if not already from NB Days Off
-                    if (name) seenUnplannedAgents.add(name);
-                }
-            });
-
-            const lateCount = attendanceByType.late.size;
-            const earlyLeaveCount = attendanceByType.early_leave.size;
-            const noShowCount = 0;
 
             // 5. Scheduled count: Active employees with a shift today
             const seenAgents = new Set<string>();
@@ -201,11 +160,11 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
                 }
             });
 
-            // 6. Absences: Booked (Sheets) + Attendance Events (Sam bot)
+            // 6. Absences: Booked + Unplanned (agent in both counted once as booked)
             const bookedNames = new Set(bookedOff.map(b => normalize(b['Agent Name'])));
             const bookedCount = bookedNames.size;
 
-            // Unplanned = unique agents from NB Days Off + Attendance Events, excluding Booked
+            // Unplanned = unique agents from NB Days Off, excluding those already booked
             let unplannedCount = 0;
             seenUnplannedAgents.forEach((name: string) => {
                 if (!bookedNames.has(name)) unplannedCount++;
@@ -219,9 +178,6 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
                 absent: totalAbsent,
                 bookedOff: bookedCount,
                 unplannedOff: unplannedCount,
-                lateCount,
-                earlyLeaveCount,
-                noShowCount,
             });
 
         } catch (error) {
@@ -239,7 +195,6 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
             supabase.channel('workforce_booked').on('postgres_changes', { event: '*', schema: 'public', table: 'Booked Days Off' }, () => fetchData()).subscribe(),
             supabase.channel('workforce_nonbooked').on('postgres_changes', { event: '*', schema: 'public', table: 'Non Booked Days Off' }, () => fetchData()).subscribe(),
             supabase.channel('workforce_directory').on('postgres_changes', { event: '*', schema: 'public', table: 'employee_directory' }, () => fetchData()).subscribe(),
-            supabase.channel('workforce_attendance').on('postgres_changes', { event: '*', schema: 'public', table: 'Attendance Events' }, () => fetchData()).subscribe(),
         ];
 
         // 15-minute polling backup for reliable real-time data
@@ -260,7 +215,6 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
         : 100;
 
     const totalAbsent = todayStats.absent;
-    const otherUnplanned = todayStats.unplannedOff - todayStats.lateCount - todayStats.earlyLeaveCount;
 
     return (
         <Card className="bg-gradient-to-br from-indigo-500/10 to-purple-500/10 border-white/10 text-white overflow-hidden">
@@ -309,7 +263,7 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
                     </div>
                 </div>
 
-                {/* Absence Breakdown Bar — all segments total to absent count */}
+                {/* Absence Breakdown Bar — Booked + Unplanned = Absent */}
                 {totalAbsent > 0 ? (
                     <>
                         <div className="mt-4 h-4 bg-white/10 rounded-full overflow-hidden flex">
@@ -320,25 +274,11 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
                                     title={`Booked Time Off: ${todayStats.bookedOff}`}
                                 />
                             )}
-                            {todayStats.lateCount > 0 && (
-                                <div
-                                    className="bg-yellow-400 h-full transition-all"
-                                    style={{ width: `${(todayStats.lateCount / totalAbsent) * 100}%` }}
-                                    title={`Late: ${todayStats.lateCount}`}
-                                />
-                            )}
-                            {todayStats.earlyLeaveCount > 0 && (
-                                <div
-                                    className="bg-orange-400 h-full transition-all"
-                                    style={{ width: `${(todayStats.earlyLeaveCount / totalAbsent) * 100}%` }}
-                                    title={`Early Leave: ${todayStats.earlyLeaveCount}`}
-                                />
-                            )}
-                            {otherUnplanned > 0 && (
+                            {todayStats.unplannedOff > 0 && (
                                 <div
                                     className="bg-rose-500 h-full transition-all"
-                                    style={{ width: `${(otherUnplanned / totalAbsent) * 100}%` }}
-                                    title={`Unplanned Absence: ${otherUnplanned}`}
+                                    style={{ width: `${(todayStats.unplannedOff / totalAbsent) * 100}%` }}
+                                    title={`Unplanned Absence: ${todayStats.unplannedOff}`}
                                 />
                             )}
                         </div>
@@ -349,22 +289,10 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
                                     Booked: {todayStats.bookedOff}
                                 </span>
                             )}
-                            {todayStats.lateCount > 0 && (
-                                <span className="flex items-center gap-1.5">
-                                    <span className="w-3 h-3 rounded-full bg-yellow-400 inline-block" />
-                                    Late: {todayStats.lateCount}
-                                </span>
-                            )}
-                            {todayStats.earlyLeaveCount > 0 && (
-                                <span className="flex items-center gap-1.5">
-                                    <span className="w-3 h-3 rounded-full bg-orange-400 inline-block" />
-                                    Early Leave: {todayStats.earlyLeaveCount}
-                                </span>
-                            )}
-                            {otherUnplanned > 0 && (
+                            {todayStats.unplannedOff > 0 && (
                                 <span className="flex items-center gap-1.5">
                                     <span className="w-3 h-3 rounded-full bg-rose-500 inline-block" />
-                                    Unplanned: {otherUnplanned}
+                                    Unplanned: {todayStats.unplannedOff}
                                 </span>
                             )}
                         </div>
