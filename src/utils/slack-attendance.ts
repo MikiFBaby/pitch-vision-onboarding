@@ -155,6 +155,14 @@ Output: [{"agent_name":"John Smith","event_type":"unplanned","date":"${todayStr}
 
 NOTE: The format "Name - reason" is a common shorthand used by HR. The part before the dash is always the agent name, and the part after is the reason. If the reason doesn't clearly indicate planned (PTO, vacation, booked day off), default to "unplanned".
 
+BULK INPUT: Messages may contain many agents at once, separated by newlines, commas, or bullet points. Parse ALL of them into separate events. Example:
+Input: "John Smith - sick
+Lisa Park - car trouble
+Mike Jones - NCNS
+Sarah Brown - PTO
+Ade Ayoola - family emergency"
+Output: [{"agent_name":"John Smith","event_type":"unplanned","date":"${todayStr}","minutes":null,"reason":"sick"},{"agent_name":"Lisa Park","event_type":"unplanned","date":"${todayStr}","minutes":null,"reason":"car trouble"},{"agent_name":"Mike Jones","event_type":"unplanned","date":"${todayStr}","minutes":null,"reason":"no call no show"},{"agent_name":"Sarah Brown","event_type":"planned","date":"${todayStr}","minutes":null,"reason":"PTO"},{"agent_name":"Ade Ayoola","event_type":"unplanned","date":"${todayStr}","minutes":null,"reason":"family emergency"}]
+
 PRONOUN RESOLUTION: If the message uses pronouns (he, she, they, him, her, them) instead of a name, resolve them using the recent conversation history provided. For example, if the conversation just discussed "Miki Furman" and the user says "he left early today", use "Miki Furman" as the agent_name.
 
 IMPORTANT: Strip conversational greetings and filler words from agent names. Words like "Hey", "Hi", "Hello", "So", "Yeah", "Ok", "Oh" at the start of a message are greetings directed at you, NOT part of the agent's name. For example:
@@ -380,57 +388,112 @@ const TYPE_DROPDOWN_OPTIONS = [
     { text: { type: 'plain_text' as const, text: ':warning: Unplanned', emoji: true }, value: 'unplanned' },
 ];
 
+const COMPACT_THRESHOLD = 6;
+
 export function buildConfirmationBlocks(events: ParsedAttendanceEvent[], pendingId: string): any[] {
+    const isCompact = events.length >= COMPACT_THRESHOLD;
+
     const blocks: any[] = [
         {
             type: 'header',
-            text: { type: 'plain_text', text: 'Attendance Update', emoji: true },
+            text: { type: 'plain_text', text: `Attendance Update — ${events.length} event${events.length !== 1 ? 's' : ''}`, emoji: true },
         },
-        {
+    ];
+
+    if (isCompact) {
+        // Compact mode: group by type and show as summary lists
+        const planned = events.filter(e => e.event_type === 'planned');
+        const unplanned = events.filter(e => e.event_type !== 'planned');
+
+        blocks.push({
+            type: 'section',
+            text: {
+                type: 'mrkdwn',
+                text: `I parsed *${events.length} events* from your message:`,
+            },
+        });
+
+        if (unplanned.length > 0) {
+            const lines = unplanned.map(e => {
+                const name = e.matched_employee_name || e.agent_name;
+                const reason = e.reason ? ` — ${e.reason}` : '';
+                return `• ${name}${reason}`;
+            });
+            blocks.push({
+                type: 'section',
+                text: {
+                    type: 'mrkdwn',
+                    text: `:warning: *Unplanned (${unplanned.length}):*\n${lines.join('\n')}`,
+                },
+            });
+        }
+
+        if (planned.length > 0) {
+            const lines = planned.map(e => {
+                const name = e.matched_employee_name || e.agent_name;
+                const reason = e.reason ? ` — ${e.reason}` : '';
+                return `• ${name}${reason}`;
+            });
+            blocks.push({
+                type: 'section',
+                text: {
+                    type: 'mrkdwn',
+                    text: `:palm_tree: *Planned (${planned.length}):*\n${lines.join('\n')}`,
+                },
+            });
+        }
+
+        blocks.push({
+            type: 'context',
+            elements: [{ type: 'mrkdwn', text: `_Date: ${formatDateForDisplay(events[0].date)} · Types auto-detected from your message_` }],
+        });
+    } else {
+        // Detailed mode: individual dropdowns per event
+        blocks.push({
             type: 'section',
             text: {
                 type: 'mrkdwn',
                 text: 'I parsed the following from your message. Use the dropdowns to change the type if needed:',
             },
-        },
-    ];
-
-    events.forEach((e, i) => {
-        const name = e.matched_employee_name || e.agent_name;
-        const nameWarning = e.match_confidence === 'none' ? ' :warning: _(name not found in directory)_' : '';
-        const fuzzyNote = e.match_confidence === 'fuzzy' && e.matched_employee_name !== e.agent_name
-            ? ` _(matched from "${e.agent_name}")_`
-            : '';
-
-        let detail = '';
-        if (e.reason) detail += ` — ${e.reason}`;
-
-        const dateFormatted = formatDateForDisplay(e.date);
-
-        const initialOption = TYPE_DROPDOWN_OPTIONS.find(o => o.value === e.event_type) || TYPE_DROPDOWN_OPTIONS[1];
-
-        blocks.push({
-            type: 'section',
-            block_id: `event_${i}`,
-            text: {
-                type: 'mrkdwn',
-                text: `*${name}*${fuzzyNote}${nameWarning}${detail} — ${dateFormatted}`,
-            },
-            accessory: {
-                type: 'static_select',
-                action_id: `type_override_${i}`,
-                initial_option: initialOption,
-                options: TYPE_DROPDOWN_OPTIONS,
-            },
         });
-    });
+
+        events.forEach((e, i) => {
+            const name = e.matched_employee_name || e.agent_name;
+            const nameWarning = e.match_confidence === 'none' ? ' :warning: _(name not found in directory)_' : '';
+            const fuzzyNote = e.match_confidence === 'fuzzy' && e.matched_employee_name !== e.agent_name
+                ? ` _(matched from "${e.agent_name}")_`
+                : '';
+
+            let detail = '';
+            if (e.reason) detail += ` — ${e.reason}`;
+
+            const dateFormatted = formatDateForDisplay(e.date);
+
+            const initialOption = TYPE_DROPDOWN_OPTIONS.find(o => o.value === e.event_type) || TYPE_DROPDOWN_OPTIONS[1];
+
+            blocks.push({
+                type: 'section',
+                block_id: `event_${i}`,
+                text: {
+                    type: 'mrkdwn',
+                    text: `*${name}*${fuzzyNote}${nameWarning}${detail} — ${dateFormatted}`,
+                },
+                accessory: {
+                    type: 'static_select',
+                    action_id: `type_override_${i}`,
+                    initial_option: initialOption,
+                    options: TYPE_DROPDOWN_OPTIONS,
+                },
+            });
+        });
+    }
 
     blocks.push({
         type: 'actions',
         elements: [
             {
                 type: 'button',
-                text: { type: 'plain_text', text: 'Confirm All', emoji: true },
+                text: { type: 'plain_text', text: `Confirm All (${events.length})`, emoji: true },
                 style: 'primary',
                 action_id: 'attendance_confirm',
                 value: pendingId,

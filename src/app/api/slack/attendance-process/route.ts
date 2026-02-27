@@ -213,6 +213,12 @@ async function handleAttendanceFlow(
     const profile = await getAttendanceBotUserProfile(slackUserId);
     const reportedByName = profile?.realName || 'Unknown';
 
+    // Show progress for multi-line messages (likely bulk input)
+    const lineCount = messageText.split('\n').filter((l: string) => l.trim()).length;
+    if (lineCount >= 4) {
+        await postAttendanceBotMessage(channelId, `:hourglass_flowing_sand: Processing ${lineCount} entries...`);
+    }
+
     // AI parsing for attendance events (with conversation context for pronoun resolution)
     console.log('[Attendance Process] Calling AI attendance parser...');
     const events = await parseAttendanceMessage(messageText, conversationContext);
@@ -235,13 +241,16 @@ async function handleAttendanceFlow(
     console.log('[Attendance Process] Resolving agent names...');
     const resolvedEvents = await resolveAgentNames(events);
 
-    // Reject unmatched names — require all names to match a real employee
+    // Split into matched and unmatched
+    const matchedEvents = resolvedEvents.filter(e => e.match_confidence !== 'none');
     const unmatchedEvents = resolvedEvents.filter(e => e.match_confidence === 'none');
-    if (unmatchedEvents.length > 0) {
+
+    // If ALL names are unmatched, reject entirely with suggestions
+    if (matchedEvents.length === 0 && unmatchedEvents.length > 0) {
         const lines = unmatchedEvents.map(e => {
             if (e.ambiguous_matches && e.ambiguous_matches.length > 0) {
                 const options = e.ambiguous_matches.map(n => `_${n}_`).join(', ');
-                return `• *${e.agent_name}* — did you mean ${options}? Try again with the full name.`;
+                return `• *${e.agent_name}* — did you mean ${options}?`;
             }
             return `• *${e.agent_name}* — no match found in the employee directory.`;
         });
@@ -254,13 +263,13 @@ async function handleAttendanceFlow(
         return NextResponse.json({ ok: true, result: 'unmatched_names' });
     }
 
-    // Store pending confirmation
+    // Store pending confirmation with only matched events
     const { data: pending, error: insertError } = await supabaseAdmin
         .from('attendance_pending_confirmations')
         .insert({
             slack_user_id: slackUserId,
             slack_channel_id: channelId,
-            events: resolvedEvents,
+            events: matchedEvents,
             status: 'pending',
             reported_by_name: reportedByName,
             reported_at: reportedAt,
@@ -276,7 +285,27 @@ async function handleAttendanceFlow(
 
     // Send confirmation message with Block Kit
     console.log('[Attendance Process] Sending confirmation blocks...');
-    const blocks = buildConfirmationBlocks(resolvedEvents, pending.id);
+    const blocks = buildConfirmationBlocks(matchedEvents, pending.id);
+
+    // If some names were unmatched, append a warning about them
+    if (unmatchedEvents.length > 0) {
+        const unmatchedLines = unmatchedEvents.map(e => {
+            if (e.ambiguous_matches && e.ambiguous_matches.length > 0) {
+                const options = e.ambiguous_matches.map(n => `_${n}_`).join(', ');
+                return `• *${e.agent_name}* — did you mean ${options}?`;
+            }
+            return `• *${e.agent_name}* — not found in directory`;
+        });
+
+        blocks.splice(-1, 0, {
+            type: 'section',
+            text: {
+                type: 'mrkdwn',
+                text: `:warning: *Skipped (no match):*\n${unmatchedLines.join('\n')}\n_Send these again with full names to record them._`,
+            },
+        });
+    }
+
     const response = await postAttendanceBotMessage(channelId, 'Attendance update confirmation', blocks);
 
     // Store message_ts for later update
@@ -287,8 +316,8 @@ async function handleAttendanceFlow(
             .eq('id', pending.id);
     }
 
-    console.log(`[Attendance Process] Complete — ${events.length} events pending confirmation`);
-    return NextResponse.json({ ok: true, result: 'pending', count: events.length });
+    console.log(`[Attendance Process] Complete — ${matchedEvents.length} matched, ${unmatchedEvents.length} skipped`);
+    return NextResponse.json({ ok: true, result: 'pending', count: matchedEvents.length, skipped: unmatchedEvents.length });
 }
 
 // ---------------------------------------------------------------------------
