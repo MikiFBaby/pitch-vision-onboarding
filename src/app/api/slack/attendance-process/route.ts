@@ -12,6 +12,7 @@ import {
     handleChannelRemove,
     handleChannelAdd,
     buildHelpMessage,
+    getRecentConversation,
     UNDO_WINDOW_MINUTES,
     ATTENDANCE_BOT_TOKEN,
 } from '@/utils/slack-attendance';
@@ -75,9 +76,12 @@ export async function POST(request: NextRequest) {
             return NextResponse.json({ ok: true, result: 'undo' });
         }
 
-        // 3. Classify intent with AI
+        // 3. Fetch recent conversation for context (pronoun resolution)
+        const conversationContext = await getRecentConversation(channelId, messageTs || '');
+
+        // 4. Classify intent with AI
         console.log('[Attendance Process] Classifying intent...');
-        const intent = await classifyMessageIntent(messageText);
+        const intent = await classifyMessageIntent(messageText, conversationContext);
         console.log(`[Attendance Process] Intent: ${intent.type}`);
 
         // 4. Route based on intent
@@ -181,7 +185,7 @@ export async function POST(request: NextRequest) {
             case 'attendance':
             default: {
                 return await handleAttendanceFlow(
-                    slackUserId, channelId, messageText, reportedAt
+                    slackUserId, channelId, messageText, reportedAt, conversationContext
                 );
             }
         }
@@ -203,14 +207,15 @@ async function handleAttendanceFlow(
     channelId: string,
     messageText: string,
     reportedAt: string,
+    conversationContext?: string,
 ) {
     // Resolve reporter name
     const profile = await getAttendanceBotUserProfile(slackUserId);
     const reportedByName = profile?.realName || 'Unknown';
 
-    // AI parsing for attendance events
+    // AI parsing for attendance events (with conversation context for pronoun resolution)
     console.log('[Attendance Process] Calling AI attendance parser...');
-    const events = await parseAttendanceMessage(messageText);
+    const events = await parseAttendanceMessage(messageText, conversationContext);
     console.log(`[Attendance Process] AI returned ${events.length} events`);
 
     if (events.length === 0) {

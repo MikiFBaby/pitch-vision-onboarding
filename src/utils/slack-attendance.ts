@@ -102,7 +102,7 @@ export async function isAuthorizedForAttendance(slackUserId: string): Promise<bo
 // AI Parsing with OpenRouter
 // ---------------------------------------------------------------------------
 
-export async function parseAttendanceMessage(text: string): Promise<ParsedAttendanceEvent[]> {
+export async function parseAttendanceMessage(text: string, conversationContext?: string): Promise<ParsedAttendanceEvent[]> {
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
         console.error('[Attendance] OPENROUTER_API_KEY not configured');
@@ -155,6 +155,8 @@ Output: [{"agent_name":"John Smith","event_type":"unplanned","date":"${todayStr}
 
 NOTE: The format "Name - reason" is a common shorthand used by HR. The part before the dash is always the agent name, and the part after is the reason. If the reason doesn't clearly indicate planned (PTO, vacation, booked day off), default to "unplanned".
 
+PRONOUN RESOLUTION: If the message uses pronouns (he, she, they, him, her, them) instead of a name, resolve them using the recent conversation history provided. For example, if the conversation just discussed "Miki Furman" and the user says "he left early today", use "Miki Furman" as the agent_name.
+
 IMPORTANT: Strip conversational greetings and filler words from agent names. Words like "Hey", "Hi", "Hello", "So", "Yeah", "Ok", "Oh" at the start of a message are greetings directed at you, NOT part of the agent's name. For example:
 - "Hey Ade is absent today" → agent_name is "Ade", NOT "Hey Ade"
 - "Hi, John called out sick" → agent_name is "John", NOT "Hi John"
@@ -162,6 +164,15 @@ IMPORTANT: Strip conversational greetings and filler words from agent names. Wor
 
     try {
         console.log('[Attendance] Calling OpenRouter model: anthropic/claude-haiku-4.5');
+        const parseMessages: { role: string; content: string }[] = [
+            { role: 'system', content: systemPrompt },
+        ];
+        if (conversationContext) {
+            parseMessages.push({ role: 'user', content: `Recent conversation:\n${conversationContext}` });
+            parseMessages.push({ role: 'assistant', content: 'Understood, I have the conversation context for pronoun resolution.' });
+        }
+        parseMessages.push({ role: 'user', content: text });
+
         const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
             method: 'POST',
             headers: {
@@ -170,10 +181,7 @@ IMPORTANT: Strip conversational greetings and filler words from agent names. Wor
             },
             body: JSON.stringify({
                 model: 'anthropic/claude-haiku-4.5',
-                messages: [
-                    { role: 'system', content: systemPrompt },
-                    { role: 'user', content: text },
-                ],
+                messages: parseMessages,
                 response_format: { type: 'json_object' },
             }),
         });
@@ -689,6 +697,34 @@ export async function getAttendanceBotUserProfile(userId: string) {
     return getSlackUserProfile(userId, ATTENDANCE_BOT_TOKEN);
 }
 
+/**
+ * Fetch recent DM conversation history for context (pronoun resolution, follow-ups).
+ * Returns the last N messages as a formatted string, excluding the current message.
+ */
+export async function getRecentConversation(channelId: string, currentTs: string, limit = 5): Promise<string> {
+    try {
+        const res = await fetch(`https://slack.com/api/conversations.history?channel=${channelId}&limit=${limit + 1}&latest=${currentTs}&inclusive=false`, {
+            headers: { 'Authorization': `Bearer ${ATTENDANCE_BOT_TOKEN}` },
+        });
+        const data = await res.json();
+        if (!data.ok || !data.messages?.length) return '';
+
+        // Build context from recent messages (newest first from Slack, reverse for chronological)
+        const lines = data.messages
+            .slice(0, limit)
+            .reverse()
+            .map((m: any) => {
+                const who = m.bot_id ? 'Sam' : 'User';
+                return `${who}: ${m.text}`;
+            });
+
+        return lines.join('\n');
+    } catch (err) {
+        console.error('[Context] Failed to fetch conversation history:', err);
+        return '';
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -727,7 +763,7 @@ export type MessageIntent =
  * Classifies a DM message into an intent using AI.
  * Routes to the appropriate handler based on intent.
  */
-export async function classifyMessageIntent(text: string): Promise<MessageIntent> {
+export async function classifyMessageIntent(text: string, conversationContext?: string): Promise<MessageIntent> {
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) return { type: 'attendance', text };
 
@@ -797,6 +833,8 @@ Intent definitions:
 - "greeting": Casual greetings. Examples: "hey", "good morning", "thanks"
 - "unknown": Anything that doesn't fit
 
+CONVERSATION CONTEXT: When the message uses pronouns (he, she, they, him, her, them) or references like "that person", resolve them using the recent conversation history provided below. For example, if the user just asked "who is Miki?" and then says "he left early", classify as attendance with target_name "Miki".
+
 For "greeting" and "unknown", provide a short, friendly "reply" in character as Sam.
 
 Examples:
@@ -816,6 +854,15 @@ Examples:
 
     try {
         console.log('[Intent] Calling OpenRouter model: anthropic/claude-haiku-4.5');
+        const intentMessages: { role: string; content: string }[] = [
+            { role: 'system', content: systemPrompt },
+        ];
+        if (conversationContext) {
+            intentMessages.push({ role: 'user', content: `Recent conversation:\n${conversationContext}` });
+            intentMessages.push({ role: 'assistant', content: 'Understood, I have the conversation context.' });
+        }
+        intentMessages.push({ role: 'user', content: text });
+
         const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
             method: 'POST',
             headers: {
@@ -824,10 +871,7 @@ Examples:
             },
             body: JSON.stringify({
                 model: 'anthropic/claude-haiku-4.5',
-                messages: [
-                    { role: 'system', content: systemPrompt },
-                    { role: 'user', content: text },
-                ],
+                messages: intentMessages,
                 response_format: { type: 'json_object' },
             }),
         });
