@@ -34,7 +34,7 @@
     },
     {
       "path": "/api/cron/dialedin-ingest",
-      "schedule": "0 12,22 * * *"
+      "schedule": "0 22 * * *"
     },
     {
       "path": "/api/cron/retreaver-ingest",
