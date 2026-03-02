@@ -58,6 +58,20 @@ export async function POST(request: NextRequest) {
         const hasActiveAutoFail = current?.auto_fail_triggered === true
             && current?.auto_fail_overridden !== true;
 
+        // Auto-sync score recalculations must NEVER override manual auto-fails.
+        // The TranscriptDrawer auto-syncs weighted scores with reason "Weighted score recalculation".
+        // If an auto-fail is active, skip the sync entirely to prevent race conditions.
+        const isAutoSync = reason === 'Weighted score recalculation';
+        if (hasActiveAutoFail && isAutoSync) {
+            console.log('Score sync blocked: auto-fail is active, skipping auto-sync to prevent override');
+            return NextResponse.json({
+                success: true,
+                message: 'Skipped: auto-fail active, auto-sync blocked',
+                newScore: 0,
+                skipped: true
+            });
+        }
+
         // Build update payload
         const updatePayload: Record<string, unknown> = {
             'compliance_score': score,
@@ -66,6 +80,7 @@ export async function POST(request: NextRequest) {
         };
 
         // If manually setting score > 0 on an auto-fail call, mark it as overridden
+        // Only for explicit QA actions, never for auto-sync (already blocked above)
         if (hasActiveAutoFail && score > 0) {
             updatePayload['auto_fail_overridden'] = true;
             updatePayload['auto_fail_override_reason'] = reason || 'Score manually corrected by QA';
