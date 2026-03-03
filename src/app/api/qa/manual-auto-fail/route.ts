@@ -58,7 +58,7 @@ export async function POST(request: NextRequest) {
             'qa_reviewed_by': reviewedBy,
             'qa_reviewed_at': new Date().toISOString(),
             'qa_notes': `Manual Auto-Fail [${afCode}]: ${reason}`,
-            'risk_level': 'HIGH',
+            'risk_level': 'High',
             'review_priority': 'urgent',
             // Clear any previous override since QA is now confirming this IS a fail
             'auto_fail_overridden': false,

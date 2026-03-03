@@ -1283,6 +1283,11 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
         });
 
         if (response.ok) {
+          const data = await response.json();
+          if (data.skipped) {
+            console.log('Score sync skipped (auto-fail active)');
+            return;
+          }
           console.log('Score synced to database:', calculatedScore);
           // Notify parent to update their local state with the new score
           if (onScoreUpdate) {

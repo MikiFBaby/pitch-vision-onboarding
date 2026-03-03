@@ -6,9 +6,9 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
  * POST /api/qa/fix-inconsistencies
  * 
  * Scans all calls and ensures status/risk matches score using thresholds:
- * - ≥95% = Compliant, Low Risk
- * - 80-94% = Minor Issues, Medium Risk
- * - <80% = Non-Compliant, High Risk
+ * - ≥90% = Compliant, Low Risk
+ * - 75-89% = Requires Review, Medium Risk
+ * - <75% = Non-Compliant, High Risk
  */
 export async function POST(request: NextRequest) {
     try {
@@ -151,10 +151,10 @@ export async function GET(request: NextRequest) {
             let correctStatus = 'Non-Compliant';
             let correctRisk = 'High';
 
-            if (score >= 95) {
+            if (score >= 90) {
                 correctStatus = 'Compliant';
                 correctRisk = 'Low';
-            } else if (score >= 80) {
+            } else if (score >= 75) {
                 correctStatus = 'Requires Review';
                 correctRisk = 'Medium';
             }
