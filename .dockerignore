@@ -12,6 +12,7 @@ node_modules
 *.md
 docs/
 scripts/
+!scripts/cron-scheduler.mjs
 *.pdf
 .DS_Store
 coverage
