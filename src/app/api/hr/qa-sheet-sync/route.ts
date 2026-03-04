@@ -4,8 +4,10 @@ import { supabaseAdmin } from "@/lib/supabase-admin";
 export const runtime = "nodejs";
 
 interface QARow {
-  date: string;
+  date?: string;
+  review_date?: string;
   time?: string;
+  review_time?: string;
   agent_name: string;
   phone_number?: string;
   violation: string;
@@ -85,14 +87,14 @@ export async function POST(req: NextRequest) {
     const chunk = rows.slice(i, i + BATCH);
     const records = chunk
       .map((r) => {
-        const reviewDate = parseDate(r.date);
+        const reviewDate = parseDate(r.date || r.review_date || "");
         if (!reviewDate || !r.agent_name?.trim() || !r.violation?.trim()) {
           skipped++;
           return null;
         }
         return {
           review_date: reviewDate,
-          review_time: r.time?.trim() || null,
+          review_time: (r.time || r.review_time)?.trim() || null,
           agent_name: r.agent_name.trim(),
           phone_number: normalizePhone(r.phone_number),
           violation: r.violation.trim(),

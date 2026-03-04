@@ -1,10 +1,22 @@
 "use client";
 
-import { X, Mail, Slack, Calendar, User, Upload, FileText, Trash2, Download, Phone, MapPin, DollarSign, FileCheck, Briefcase, AlertTriangle, ChevronDown, ChevronUp, Clock, Coffee, ExternalLink, Eye, Activity, ArrowLeft, Ban, Zap, Trophy, Medal, ShieldAlert, ShieldCheck } from "lucide-react";
-import { parseShiftDuration, calculateWeeklyHours, isFullTime, normalizeShiftTime, WEEKDAYS } from "@/lib/hr-utils";
-import { heatmapClassLight, detectCampaignType } from "@/utils/dialedin-heatmap";
+import { X, Mail, Calendar, User, Upload, FileText, Trash2, Download, Phone, AlertTriangle, ChevronDown, ChevronUp, Clock, ExternalLink, Eye, Ban, Trophy, Medal, StickyNote } from "lucide-react";
+
+const SlackIcon = ({ size = 16 }: { size?: number }) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none">
+        <path d="M5.042 15.165a2.528 2.528 0 0 1-2.52 2.523A2.528 2.528 0 0 1 0 15.165a2.527 2.527 0 0 1 2.522-2.52h2.52v2.52zm1.271 0a2.527 2.527 0 0 1 2.521-2.52 2.527 2.527 0 0 1 2.521 2.52v6.313A2.528 2.528 0 0 1 8.834 24a2.528 2.528 0 0 1-2.521-2.522v-6.313z" fill="#E01E5A"/>
+        <path d="M8.834 5.042a2.528 2.528 0 0 1-2.521-2.52A2.528 2.528 0 0 1 8.834 0a2.528 2.528 0 0 1 2.521 2.522v2.52H8.834zm0 1.271a2.528 2.528 0 0 1 2.521 2.521 2.528 2.528 0 0 1-2.521 2.521H2.522A2.528 2.528 0 0 1 0 8.834a2.528 2.528 0 0 1 2.522-2.521h6.312z" fill="#36C5F0"/>
+        <path d="M18.956 8.834a2.528 2.528 0 0 1 2.522-2.521A2.528 2.528 0 0 1 24 8.834a2.528 2.528 0 0 1-2.522 2.521h-2.522V8.834zm-1.27 0a2.528 2.528 0 0 1-2.523 2.521 2.527 2.527 0 0 1-2.52-2.521V2.522A2.527 2.527 0 0 1 15.163 0a2.528 2.528 0 0 1 2.523 2.522v6.312z" fill="#2EB67D"/>
+        <path d="M15.163 18.956a2.528 2.528 0 0 1 2.523 2.522A2.528 2.528 0 0 1 15.163 24a2.527 2.527 0 0 1-2.52-2.522v-2.522h2.52zm0-1.27a2.527 2.527 0 0 1-2.52-2.523 2.527 2.527 0 0 1 2.52-2.52h6.315A2.528 2.528 0 0 1 24 15.163a2.528 2.528 0 0 1-2.522 2.523h-6.315z" fill="#ECB22E"/>
+    </svg>
+);
+import { parseShiftDuration, calculateWeeklyHours, normalizeShiftTime, WEEKDAYS } from "@/lib/hr-utils";
+import { isPilotCampaign } from "@/utils/dialedin-heatmap";
+import { getRevenuePerTransfer, getCampaignType, getBreakEvenTPH } from "@/utils/dialedin-revenue";
+import { getManagerForCampaigns, getManagerNamesForCampaigns } from "@/lib/campaign-config";
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase-client";
+import { useAuth } from "@/context/AuthContext";
 
 interface WriteUp {
     id: string;
@@ -47,28 +59,10 @@ interface EmployeeProfileDrawerProps {
     employee: Employee | null;
 }
 
-// Campaign → Manager mapping
-const CAMPAIGN_MANAGERS: Record<string, string> = {
-    'Medicare WhatIF': 'Aya Al-Edhari',
-    'ACA': 'Melak Baban, Sonia Baldeo, Tabark L-Uwdi',
-    'Medicare': 'Brad Sicat, David Nichols, Lucas Varela',
-    'Home Care Michigan': 'Josh Prodan',
-    'Hospital': 'Brad Sicat',
-    'Pitch Meals': 'Brad Sicat',
-};
-
-function getManagerForCampaigns(campaigns: string[] | null | undefined): string | null {
-    if (!campaigns || campaigns.length === 0) return null;
-    const managers = new Set<string>();
-    for (const c of campaigns) {
-        const m = CAMPAIGN_MANAGERS[c];
-        if (m) managers.add(m);
-    }
-    if (managers.size === 0) return null;
-    return Array.from(managers).join('; ');
-}
+// CAMPAIGN_MANAGERS imported from @/lib/campaign-config
 
 export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: EmployeeProfileDrawerProps) {
+    const { profile } = useAuth();
     const drawerRef = useRef<HTMLDivElement>(null);
     const [documents, setDocuments] = useState<Employee['documents']>([]);
     const [uploading, setUploading] = useState(false);
@@ -86,29 +80,54 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
     const [attendanceExpanded, setAttendanceExpanded] = useState(false);
     const [perfStats, setPerfStats] = useState<any>(null);
     const [perfLoading, setPerfLoading] = useState(false);
+    const [fxRate, setFxRate] = useState(0.72); // CAD→USD fallback
     const [qaStats, setQaStats] = useState<{ avg_score: number; total_calls: number; auto_fail_count: number; auto_fail_rate: number; pass_rate: number; risk_breakdown: { high: number; medium: number; low: number } } | null>(null);
-    const [qaManual, setQaManual] = useState<{ total: number; violations: { violation: string; count: number }[]; recent: { date: string; violation: string; reviewer: string | null }[]; trend: { month: string; count: number }[]; matchedName: string; earliest: string; latest: string } | null>(null);
+    const [qaManual, setQaManual] = useState<{ total: number; violations: { violation: string; count: number; campaigns?: string[] }[]; recent: { date: string; time?: string; phone?: string; violation: string; reviewer: string | null; campaign?: string }[]; trend: { month: string; count: number }[]; matchedName: string; earliest: string; latest: string } | null>(null);
+    const [qaFrom, setQaFrom] = useState("");
+    const [qaTo, setQaTo] = useState("");
+    const [qaExpanded, setQaExpanded] = useState(false);
+    const [qaRecentExpanded, setQaRecentExpanded] = useState(false);
+    const [qaLoading, setQaLoading] = useState(false);
     const [showTerminateConfirm, setShowTerminateConfirm] = useState(false);
     const [isTerminating, setIsTerminating] = useState(false);
     const [terminateError, setTerminateError] = useState<string | null>(null);
+    const [notes, setNotes] = useState<{ id: string; note: string; added_by: string; created_at: string }[]>([]);
+    const [showNoteForm, setShowNoteForm] = useState(false);
+    const [noteText, setNoteText] = useState("");
+    const [noteSaving, setNoteSaving] = useState(false);
+    const [notesExpanded, setNotesExpanded] = useState(false);
+    const [intradayAgent, setIntradayAgent] = useState<{ sla_hr: number; transfers: number; hours_worked: number; rank?: number; team: string | null } | null>(null);
+    const [intradayMeta, setIntradayMeta] = useState<{ snapshot_at: string | null; stale: boolean; total_ranked: number; break_even: { aca: number; medicare: number } } | null>(null);
+    const [showMessageForm, setShowMessageForm] = useState(false);
+    const [messageText, setMessageText] = useState("");
+    const [messageRecipient, setMessageRecipient] = useState("employee");
+    const [messageSending, setMessageSending] = useState(false);
+    const [messageStatus, setMessageStatus] = useState<{ type: "success" | "error"; text: string } | null>(null);
 
-    const fetchQAManualStats = async (firstName: string, lastName: string) => {
+    const fetchQAManualStats = async (firstName: string, lastName: string, from?: string, to?: string) => {
         const name = `${firstName} ${lastName}`.trim();
         if (!name || name.length < 2) { setQaManual(null); return; }
+        setQaLoading(true);
         try {
-            const res = await fetch(`/api/hr/qa-manual-stats?name=${encodeURIComponent(name)}`);
+            let url = `/api/hr/qa-manual-stats?name=${encodeURIComponent(name)}`;
+            if (from) url += `&from=${from}`;
+            if (to) url += `&to=${to}`;
+            const res = await fetch(url);
             if (res.ok) {
                 const data = await res.json();
-                if (data.total > 0) {
+                // Keep section visible when filtering returns 0 results
+                if (data.total > 0 || from || to) {
                     setQaManual(data);
                 } else {
                     setQaManual(null);
                 }
-            } else {
+            } else if (!from && !to) {
                 setQaManual(null);
             }
         } catch {
-            setQaManual(null);
+            if (!from && !to) setQaManual(null);
+        } finally {
+            setQaLoading(false);
         }
     };
 
@@ -122,16 +141,48 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
             setSignedContractAuditUrl(employee.signed_contract_audit_url);
             fetchFreshDocuments(employee.id);
             fetchWriteUps(employee.id);
+            fetchNotes(employee.id);
             fetchSchedule(employee.first_name, employee.last_name);
             fetchAttendanceEvents(employee.first_name, employee.last_name);
+            // Reset QA date filters on new employee
+            setQaFrom("");
+            setQaTo("");
+            setQaExpanded(false);
+            setQaRecentExpanded(false);
             if (employee.role?.toLowerCase() === 'agent') {
                 fetchPerformanceStats(employee.first_name, employee.last_name);
                 fetchQAStats(employee.first_name, employee.last_name);
                 fetchQAManualStats(employee.first_name, employee.last_name);
-            } else {
+                // Intraday one-shot fetch
+                const agentName = `${employee.first_name} ${employee.last_name}`.trim();
+                if (agentName.length >= 2) {
+                    fetch(`/api/dialedin/intraday?agent=${encodeURIComponent(agentName)}&include_rank=true&include_trend=false`)
+                        .then(r => r.ok ? r.json() : null)
+                        .then(data => {
+                            if (data?.agents?.length > 0) {
+                                const a = data.agents[0];
+                                setIntradayAgent({ sla_hr: a.sla_hr, transfers: a.transfers, hours_worked: a.hours_worked, rank: a.rank, team: a.team });
+                                setIntradayMeta({ snapshot_at: data.latest_snapshot_at, stale: data.stale, total_ranked: data.total_agents_ranked ?? 0, break_even: data.break_even });
+                            } else {
+                                setIntradayAgent(null);
+                                setIntradayMeta(null);
+                            }
+                        })
+                        .catch(() => { setIntradayAgent(null); setIntradayMeta(null); });
+                }
+            }
+            // Fetch FX rate for Canadian agents (needed for wage display + P&L)
+            if (employee.country?.toUpperCase() === 'CANADA') {
+                fetch('/api/fx-rate').then(r => r.json()).then(d => {
+                    if (d?.cad_to_usd > 0) setFxRate(d.cad_to_usd);
+                }).catch(() => {});
+            }
+            if (employee.role?.toLowerCase() !== 'agent') {
                 setPerfStats(null);
                 setQaStats(null);
                 setQaManual(null);
+                setIntradayAgent(null);
+                setIntradayMeta(null);
             }
         }
     }, [employee, isOpen]);
@@ -183,6 +234,99 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
         } else {
             setWriteUps([]);
         }
+    };
+
+    const fetchNotes = async (employeeId: string) => {
+        try {
+            const res = await fetch(`/api/hr/employee-notes?employee_id=${employeeId}`);
+            const data = await res.json();
+            setNotes(data.notes || []);
+        } catch { setNotes([]); }
+    };
+
+    const saveNote = async () => {
+        if (!noteText.trim() || !employee?.id) return;
+        setNoteSaving(true);
+        try {
+            const addedBy = (profile?.first_name && profile?.last_name)
+                ? `${profile.first_name} ${profile.last_name}`
+                : profile?.first_name || profile?.email || "Unknown";
+            const res = await fetch("/api/hr/employee-notes", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ employee_id: employee.id, note: noteText.trim(), added_by: addedBy, added_by_email: profile?.email }),
+            });
+            if (res.ok) {
+                setNoteText("");
+                setShowNoteForm(false);
+                fetchNotes(employee.id);
+            }
+        } catch { /* silent */ }
+        setNoteSaving(false);
+    };
+
+    const deleteNote = async (noteId: string) => {
+        if (!employee?.id) return;
+        try {
+            const res = await fetch("/api/hr/employee-notes", {
+                method: "DELETE",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ id: noteId }),
+            });
+            if (res.ok) fetchNotes(employee.id);
+        } catch { /* silent */ }
+    };
+
+    // Get individual manager names for the employee's campaigns
+    const getManagerNames = (): string[] => getManagerNamesForCampaigns(employee?.current_campaigns);
+
+    const sendMessage = async () => {
+        if (!messageText.trim() || !employee) return;
+        setMessageSending(true);
+        setMessageStatus(null);
+
+        try {
+            const payload: Record<string, string> = {
+                message: messageText.trim(),
+                employee_id: employee.id,
+                sent_by_email: profile?.email || "",
+            };
+
+            if (messageRecipient === "employee") {
+                if (!employee.slack_user_id) {
+                    setMessageStatus({ type: "error", text: "This employee doesn't have a linked Slack account." });
+                    setMessageSending(false);
+                    return;
+                }
+                payload.recipient_slack_id = employee.slack_user_id;
+                payload.recipient_name = `${employee.first_name} ${employee.last_name}`;
+            } else {
+                payload.recipient_name = messageRecipient;
+            }
+
+            const res = await fetch("/api/slack/send-dm", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+            });
+
+            const data = await res.json();
+            if (res.ok && data.success) {
+                setMessageStatus({ type: "success", text: `Message sent to ${payload.recipient_name}` });
+                setMessageText("");
+                setTimeout(() => {
+                    setShowMessageForm(false);
+                    setMessageStatus(null);
+                    setMessageRecipient("employee");
+                }, 2000);
+                fetchWriteUps(employee.id);
+            } else {
+                setMessageStatus({ type: "error", text: data.error || "Failed to send message" });
+            }
+        } catch {
+            setMessageStatus({ type: "error", text: "Network error. Please try again." });
+        }
+        setMessageSending(false);
     };
 
     const fetchSchedule = async (firstName: string, lastName: string) => {
@@ -326,6 +470,18 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                 minutes: null,
                 reason: (r['Reason'] || '').toString().trim() || null,
             });
+        });
+
+        // Sort by date descending (most recent first)
+        const sortMonths: Record<string, string> = { Jan:'01', Feb:'02', Mar:'03', Apr:'04', May:'05', Jun:'06', Jul:'07', Aug:'08', Sep:'09', Oct:'10', Nov:'11', Dec:'12' };
+        events.sort((a, b) => {
+            const parseD = (s: string) => {
+                if (s.includes('-')) return s.slice(0, 10);
+                const p = s.trim().split(/\s+/);
+                if (p.length >= 3 && sortMonths[p[1]]) return `${p[2]}-${sortMonths[p[1]]}-${p[0].padStart(2, '0')}`;
+                return s;
+            };
+            return parseD(b.date).localeCompare(parseD(a.date));
         });
 
         setAttendanceEvents(events);
@@ -498,6 +654,7 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
 
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {
+            if (showImageLightbox) return; // Don't close drawer while lightbox is open
             if (drawerRef.current && !drawerRef.current.contains(event.target as Node)) {
                 onClose();
             }
@@ -512,7 +669,7 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
             document.removeEventListener("mousedown", handleClickOutside);
             document.body.style.overflow = "unset";
         };
-    }, [isOpen, onClose]);
+    }, [isOpen, onClose, showImageLightbox]);
 
     if (!isOpen || !employee) return null;
 
@@ -520,32 +677,32 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
         <div className="fixed inset-0 z-50 flex justify-end bg-black/50 backdrop-blur-sm transition-opacity duration-300">
             <div
                 ref={drawerRef}
-                className="w-full max-w-md h-full bg-white shadow-2xl overflow-y-auto animate-in slide-in-from-right duration-300"
+                className="w-full max-w-md h-full bg-gradient-to-b from-slate-950 via-gray-950 to-slate-950 shadow-2xl overflow-y-auto animate-in slide-in-from-right duration-300"
             >
                 {/* Header */}
-                <div className="relative h-48 bg-gradient-to-br from-[#7c3aed] to-[#9333ea]">
+                <div className="relative h-44 bg-gradient-to-br from-[#7c3aed] to-[#9333ea]">
                     <div className="absolute inset-0 bg-gradient-to-b from-transparent to-black/30" />
-                    <div className="absolute inset-0 flex items-center justify-center pb-6">
+                    <div className="absolute inset-0 flex items-center justify-center pb-10">
                         <img
                             src="/images/pp-logo-black.png"
                             alt="Pitch Perfect Solutions"
-                            className="h-12 object-contain brightness-0 invert opacity-90"
+                            className="h-14 object-contain brightness-0 invert opacity-90"
                         />
                     </div>
                     <button
                         onClick={onClose}
-                        className="absolute top-4 right-4 p-2 bg-white/20 hover:bg-white/40 rounded-full text-white transition-colors"
+                        className="absolute top-4 right-4 p-2 bg-white/10 hover:bg-white/20 rounded-full text-white/70 hover:text-white transition-all"
                     >
-                        <X size={20} />
+                        <X size={18} />
                     </button>
 
-                    <div className="absolute -bottom-12 left-8">
+                    <div className="absolute -bottom-14 left-1/2 -translate-x-1/2">
                         <div
-                            className={`h-24 w-24 rounded-2xl bg-white p-1 shadow-lg ${employee.user_image ? 'cursor-pointer hover:ring-2 hover:ring-indigo-400 transition-all' : ''}`}
+                            className={`h-24 w-24 rounded-full bg-white p-[3px] shadow-xl ${employee.user_image ? 'cursor-pointer hover:shadow-2xl transition-shadow' : ''}`}
                             onClick={(e) => { e.stopPropagation(); if (employee.user_image) setShowImageLightbox(true); }}
                         >
-                            <div className="h-full w-full rounded-xl bg-gray-200 overflow-hidden relative">
-                                <div className="h-full w-full flex items-center justify-center bg-blue-100 text-blue-600 font-bold text-2xl">
+                            <div className="h-full w-full rounded-full bg-gray-100 overflow-hidden relative">
+                                <div className="h-full w-full flex items-center justify-center bg-gray-900 text-white font-medium text-lg tracking-wide">
                                     {employee.first_name?.[0]}{employee.last_name?.[0]}
                                 </div>
                                 {employee.user_image && (
@@ -562,241 +719,229 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                 </div>
 
                 {/* Content */}
-                <div className="pt-16 px-8 pb-8 space-y-8">
-                    <div>
-                        <h2 className="text-2xl font-bold text-gray-900">
+                <div className="pt-20 px-7 pb-8 space-y-6">
+                    <div className="text-center">
+                        <h2 className="text-2xl font-bold text-white tracking-tight">
                             {employee.first_name} {employee.last_name}
                         </h2>
-                        <p className="text-gray-500 font-medium">
+                        <p className="text-sm text-white/60 mt-1">
                             {employee.role || "No Role Assigned"}
                         </p>
                     </div>
 
-                    {/* Status Badge */}
-                    {employee.employee_status && (
-                        <div>
-                            {(() => {
-                                const status = employee.employee_status.toLowerCase();
-                                const styles: Record<string, string> = {
-                                    active: "bg-emerald-50 text-emerald-700 border-emerald-200",
-                                    pending: "bg-amber-50 text-amber-700 border-amber-200",
-                                    inactive: "bg-gray-100 text-gray-600 border-gray-200",
-                                    terminated: "bg-red-50 text-red-700 border-red-200",
-                                    onboarding: "bg-blue-50 text-blue-700 border-blue-200",
-                                };
-                                return (
-                                    <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-semibold border ${styles[status] || styles.active}`}>
-                                        <span className={`w-1.5 h-1.5 rounded-full ${status === 'active' ? 'bg-emerald-500' : status === 'pending' ? 'bg-amber-500' : status === 'terminated' ? 'bg-red-500' : 'bg-gray-400'}`} />
-                                        {employee.employee_status}
-                                    </span>
-                                );
-                            })()}
-                        </div>
-                    )}
+                    {/* Composite Performance Status Badge (Agents only) */}
+                    {employee.role?.toLowerCase() === 'agent' && !perfLoading && perfStats?.latest && (() => {
+                        const l = perfStats.latest;
+                        // Resolve team: prefer DialedIn team, fallback to employee campaigns
+                        const badgeTeam = l.team || (() => {
+                            const campaigns: string[] = employee?.current_campaigns || [];
+                            for (const c of campaigns) {
+                                const cl = c.toLowerCase();
+                                if (cl.includes('whatif') || cl.includes('what if')) return 'Team WhatIf';
+                                if (cl.includes('medicare')) return 'Aragon Team A';
+                                if (cl.includes('aca')) return 'Jade ACA Team';
+                            }
+                            return null;
+                        })();
+                        if (isPilotCampaign(employee?.current_campaigns, badgeTeam)) return null;
+                        const be = getBreakEvenTPH(badgeTeam || null);
+                        const dayTph = l.adjusted_tph != null ? Number(l.adjusted_tph) : Number(l.tph);
+                        const dayAbove = dayTph >= be;
+                        const avgTph = perfStats.averages?.adjusted_tph != null
+                            ? perfStats.averages.adjusted_tph
+                            : perfStats.averages?.tph ?? 0;
+                        const periodAbove = avgTph >= be;
 
-                    {/* Campaign Badges + Manager */}
-                    {employee.current_campaigns && employee.current_campaigns.length > 0 && (
-                        <div className="space-y-2">
-                            <div className="flex flex-wrap gap-1.5">
-                                {employee.current_campaigns.map(campaign => {
-                                    const styles: Record<string, string> = {
-                                        'Medicare': 'bg-blue-50 text-blue-700 border-blue-200',
-                                        'ACA': 'bg-violet-50 text-violet-700 border-violet-200',
-                                        'Medicare WhatIF': 'bg-teal-50 text-teal-700 border-teal-200',
-                                        'Hospital': 'bg-rose-50 text-rose-700 border-rose-200',
-                                        'Pitch Meals': 'bg-orange-50 text-orange-700 border-orange-200',
-                                        'Home Care Michigan': 'bg-lime-50 text-lime-700 border-lime-200',
-                                    };
-                                    return (
-                                        <span
-                                            key={campaign}
-                                            className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-md text-xs font-medium border ${styles[campaign] || 'bg-gray-50 text-gray-600 border-gray-200'}`}
-                                        >
-                                            <Briefcase size={12} />
-                                            {campaign}
-                                        </span>
-                                    );
-                                })}
+                        type PerfStatus = 'performing' | 'trending_up' | 'trending_down' | 'critical';
+                        let status: PerfStatus;
+                        if (dayAbove && periodAbove) status = 'performing';
+                        else if (dayAbove && !periodAbove) status = 'trending_up';
+                        else if (!dayAbove && periodAbove) status = 'trending_down';
+                        else status = 'critical';
+
+                        const config: Record<PerfStatus, { label: string; color: string; icon: string }> = {
+                            performing:    { label: 'Performing',     color: 'bg-emerald-500/15 text-emerald-400 ring-emerald-400/30', icon: '●' },
+                            trending_up:   { label: 'Trending Up',    color: 'bg-emerald-500/10 text-emerald-300 ring-emerald-400/20', icon: '↑' },
+                            trending_down: { label: 'Trending Down',  color: 'bg-amber-500/15 text-amber-400 ring-amber-400/30',      icon: '↓' },
+                            critical:      { label: 'Critical',       color: 'bg-red-500/15 text-red-400 ring-red-400/30',             icon: '▼' },
+                        };
+                        const cfg = config[status];
+
+                        return (
+                            <div className="flex justify-center mt-2">
+                                <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-semibold ring-1 ${cfg.color}`}>
+                                    <span>{cfg.icon}</span>
+                                    {cfg.label}
+                                </div>
                             </div>
-                            {(() => {
-                                const managerName = getManagerForCampaigns(employee.current_campaigns);
-                                if (!managerName) return null;
-                                return (
-                                    <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-medium border bg-indigo-50 text-indigo-700 border-indigo-200">
-                                        <User size={12} />
-                                        Manager: {managerName}
-                                    </span>
-                                );
-                            })()}
-                        </div>
-                    )}
+                        );
+                    })()}
 
-                    <div className="space-y-4">
-                        <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wider">Contact Information</h3>
-
-                        <div className="space-y-3">
+                    {/* Status + Contact Icons */}
+                    <div className="flex items-center justify-center gap-3">
+                        {employee.employee_status && (() => {
+                            const status = employee.employee_status.toLowerCase();
+                            const dot: Record<string, string> = { active: 'bg-emerald-400', pending: 'bg-amber-400', terminated: 'bg-red-400', onboarding: 'bg-blue-400' };
+                            return (
+                                <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium text-white/70 bg-white/10 ring-1 ring-white/10">
+                                    <span className={`w-1.5 h-1.5 rounded-full ${dot[status] || 'bg-gray-400'}`} />
+                                    {employee.employee_status}
+                                </span>
+                            );
+                        })()}
+                        <div className="flex items-center gap-1.5">
                             {employee.email && (
-                                <div className="flex items-center gap-3 text-gray-600">
-                                    <div className="p-2 bg-gray-100 rounded-lg">
-                                        <Mail size={18} />
-                                    </div>
-                                    <span className="text-sm">{employee.email}</span>
-                                </div>
+                                <a href={`mailto:${employee.email}`} title={employee.email} className="p-2.5 rounded-xl bg-white/10 text-white/60 hover:bg-white/15 hover:text-white transition-all">
+                                    <Mail size={16} />
+                                </a>
                             )}
-
                             {employee.phone && (
-                                <div className="flex items-center gap-3 text-gray-600">
-                                    <div className="p-2 bg-gray-100 rounded-lg">
-                                        <Phone size={18} />
-                                    </div>
-                                    <span className="text-sm">{employee.phone}</span>
-                                </div>
+                                <a href={`tel:${employee.phone}`} title={employee.phone} className="p-2.5 rounded-xl bg-white/10 text-white/60 hover:bg-white/15 hover:text-white transition-all">
+                                    <Phone size={16} />
+                                </a>
                             )}
-
                             {(employee.slack_display_name || employee.slack_user_id) && (
-                                <div className="flex items-center gap-3 text-gray-600">
-                                    <div className="p-2 bg-purple-50 text-purple-600 rounded-lg">
-                                        <Slack size={18} />
-                                    </div>
-                                    <span className="text-sm">
-                                        {employee.slack_display_name ? `@${employee.slack_display_name}` : employee.slack_user_id}
-                                    </span>
-                                </div>
+                                <button title={employee.slack_display_name ? `@${employee.slack_display_name}` : employee.slack_user_id || ''} className="p-2.5 rounded-xl bg-white/10 text-white/60 hover:bg-white/15 hover:text-white transition-all">
+                                    <SlackIcon size={16} />
+                                </button>
                             )}
                         </div>
                     </div>
 
-                    <div className="space-y-4">
-                        <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wider">Employee Details</h3>
-
-                        {employee.country && (
-                            <div className="flex items-center gap-3 text-gray-600">
-                                <div className="p-2 bg-gray-100 rounded-lg">
-                                    <MapPin size={18} />
-                                </div>
-                                <div>
-                                    <p className="text-xs text-gray-500">Country</p>
-                                    <span className="text-sm font-medium">{employee.country}</span>
-                                </div>
-                            </div>
-                        )}
-
-                        <div className="flex items-center gap-3 text-gray-600">
-                            <div className="p-2 bg-gray-100 rounded-lg">
-                                <Calendar size={18} />
-                            </div>
-                            <div>
-                                <p className="text-xs text-gray-500">Hire Date</p>
-                                <span className="text-sm font-medium">
-                                    {employee.hired_at
-                                        ? new Date(employee.hired_at).toLocaleDateString(undefined, {
-                                            year: 'numeric',
-                                            month: 'long',
-                                            day: 'numeric'
-                                        })
-                                        : "Not recorded"}
-                                </span>
-                            </div>
+                    {/* Campaign Badges + Manager */}
+                    {employee.current_campaigns && employee.current_campaigns.length > 0 && (
+                        <div className="flex flex-wrap justify-center gap-1.5">
+                            {employee.current_campaigns.map(campaign => {
+                                const campaignStyles: Record<string, string> = {
+                                    'Medicare': 'bg-gradient-to-r from-blue-500 to-blue-600 text-white',
+                                    'ACA': 'bg-gradient-to-r from-violet-500 to-purple-600 text-white',
+                                    'Medicare WhatIF': 'bg-gradient-to-r from-teal-500 to-cyan-600 text-white',
+                                    'Hospital': 'bg-gradient-to-r from-rose-500 to-pink-600 text-white',
+                                    'Pitch Meals': 'bg-gradient-to-r from-orange-500 to-amber-600 text-white',
+                                    'Home Care Michigan': 'bg-gradient-to-r from-emerald-500 to-green-600 text-white',
+                                    'Home Care NY': 'bg-gradient-to-r from-lime-500 to-green-600 text-white',
+                                };
+                                const style = campaignStyles[campaign] || 'bg-gradient-to-r from-gray-500 to-gray-600 text-white';
+                                return (
+                                    <span
+                                        key={campaign}
+                                        className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium shadow-sm ${style}`}
+                                    >
+                                        {campaign}
+                                    </span>
+                                );
+                            })}
+                            {(() => {
+                                const managerName = getManagerForCampaigns(employee.current_campaigns);
+                                if (!managerName) return null;
+                                return (
+                                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-medium bg-gradient-to-r from-indigo-500 to-violet-500 text-white shadow-sm">
+                                        <User size={11} />
+                                        {managerName}
+                                    </span>
+                                );
+                            })()}
                         </div>
+                    )}
 
-                        {employee.hourly_wage != null && employee.role?.toLowerCase() === 'agent' && (
-                            <div className="flex items-center gap-3 text-gray-600">
-                                <div className="p-2 bg-gray-100 rounded-lg">
-                                    <DollarSign size={18} />
-                                </div>
-                                <div>
-                                    <p className="text-xs text-gray-500">Hourly Wage</p>
-                                    <span className="text-sm font-medium">${Number(employee.hourly_wage).toFixed(2)}/hr</span>
-                                </div>
-                            </div>
-                        )}
-
-                        {contractStatus && (
-                            <div className="flex items-start gap-3 text-gray-600">
-                                <div className="p-2 bg-gray-100 rounded-lg mt-0.5">
-                                    <FileCheck size={18} />
-                                </div>
-                                <div className="flex-1">
-                                    <p className="text-xs text-gray-500">Contract</p>
-                                    <div className="flex items-center gap-2">
-                                        <span className={`text-sm font-medium capitalize ${contractStatus === 'signed' ? 'text-emerald-600' : contractStatus === 'declined' ? 'text-red-600' : ''}`}>
-                                            {contractStatus.replace(/_/g, ' ')}
-                                        </span>
-                                        {contractSignedAt && (
-                                            <span className="text-[10px] text-gray-400">
-                                                {new Date(contractSignedAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
-                                            </span>
+                    <div className="rounded-2xl bg-white/5 ring-1 ring-white/10 divide-y divide-white/5">
+                        {[
+                            employee.country && { label: 'Country', value: employee.country },
+                            { label: 'Hired', value: employee.hired_at ? new Date(employee.hired_at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : 'Not recorded' },
+                            employee.hourly_wage != null && employee.role?.toLowerCase() === 'agent' && { label: 'Wage', value: employee.country?.toUpperCase() === 'CANADA' ? `$${Math.round(Number(employee.hourly_wage))} CAD` : `$${Math.round(Number(employee.hourly_wage))}/hr`, wageExtra: employee.country?.toUpperCase() === 'CANADA' ? `≈ $${Math.round(Number(employee.hourly_wage) * fxRate)} USD/hr · FX ${fxRate.toFixed(2)}` : undefined },
+                            employee.training_start_date && { label: 'Training Start', value: new Date(employee.training_start_date + 'T00:00:00').toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) },
+                            contractStatus && { label: 'Contract', value: contractStatus.replace(/_/g, ' '), extra: contractStatus },
+                        ].filter(Boolean).map((row: any, i: number) => (
+                            <div key={i} className="flex items-center justify-between px-4 py-2.5">
+                                <span className="text-[13px] text-white/70 font-medium">{row.label}</span>
+                                <div className="flex items-center gap-2">
+                                    <div className="text-right">
+                                        <span className={`text-[13px] font-medium capitalize ${
+                                            row.extra === 'signed' ? 'text-emerald-400' : row.extra === 'declined' ? 'text-red-400' : 'text-white'
+                                        }`}>{row.value}</span>
+                                        {row.wageExtra && (
+                                            <div className="text-[11px] text-sky-300/90 font-mono mt-0.5">{row.wageExtra}</div>
                                         )}
                                     </div>
-                                    {contractStatus === 'signed' && (signedContractUrl || signedContractAuditUrl) && (
-                                        <div className="flex items-center gap-3 mt-1.5">
+                                    {row.extra === 'signed' && (signedContractUrl || signedContractAuditUrl) && (
+                                        <div className="flex items-center gap-1.5">
                                             {signedContractUrl && (
-                                                <a
-                                                    href={signedContractUrl}
-                                                    target="_blank"
-                                                    rel="noopener noreferrer"
-                                                    className="inline-flex items-center gap-1 text-xs text-blue-600 hover:text-blue-700 font-medium"
-                                                >
+                                                <a href={signedContractUrl} target="_blank" rel="noopener noreferrer" className="text-white/40 hover:text-white transition-colors">
                                                     <ExternalLink size={12} />
-                                                    View Contract
-                                                </a>
-                                            )}
-                                            {signedContractAuditUrl && (
-                                                <a
-                                                    href={signedContractAuditUrl}
-                                                    target="_blank"
-                                                    rel="noopener noreferrer"
-                                                    className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700 font-medium"
-                                                >
-                                                    <ExternalLink size={12} />
-                                                    Audit Log
                                                 </a>
                                             )}
                                         </div>
                                     )}
                                 </div>
                             </div>
-                        )}
-
-                        {employee.training_start_date && (
-                            <div className="flex items-center gap-3 text-gray-600">
-                                <div className="p-2 bg-gray-100 rounded-lg">
-                                    <Briefcase size={18} />
-                                </div>
-                                <div>
-                                    <p className="text-xs text-gray-500">Training Start</p>
-                                    <span className="text-sm font-medium">
-                                        {new Date(employee.training_start_date + 'T00:00:00').toLocaleDateString(undefined, {
-                                            year: 'numeric',
-                                            month: 'long',
-                                            day: 'numeric'
-                                        })}
-                                    </span>
-                                </div>
-                            </div>
-                        )}
-
-                        <div className="flex items-center gap-3 text-gray-600">
-                            <div className="p-2 bg-gray-100 rounded-lg">
-                                <User size={18} />
-                            </div>
-                            <div>
-                                <p className="text-xs text-gray-500">Employee ID</p>
-                                <span className="text-sm font-mono text-gray-400 text-[10px] break-all">
-                                    {employee.id}
-                                </span>
-                            </div>
-                        </div>
+                        ))}
                     </div>
+
+                    {/* Today's Live Performance (Agents only — from intraday scraper) */}
+                    {employee.role?.toLowerCase() === 'agent' && intradayAgent && intradayMeta && (() => {
+                        const team = intradayAgent.team?.toLowerCase() || "";
+                        const isMedicare = team.includes("aragon") || team.includes("medicare") || team.includes("whatif") || team.includes("elite") || team.includes("brandon");
+                        const be = isMedicare ? intradayMeta.break_even.medicare : intradayMeta.break_even.aca;
+                        const aboveBE = intradayAgent.sla_hr >= be;
+                        const beDelta = intradayAgent.sla_hr - be;
+                        return (
+                            <div className="space-y-3 pt-2">
+                                <h3 className="text-[13px] font-semibold text-white/90 flex items-center gap-2">
+                                    <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                                    Today (Live)
+                                    {intradayMeta.snapshot_at && (
+                                        <span className="text-[11px] text-white/50 font-normal ml-auto">
+                                            {new Date(intradayMeta.snapshot_at).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" })}
+                                            {intradayMeta.stale && <span className="text-amber-400 ml-1">stale</span>}
+                                        </span>
+                                    )}
+                                </h3>
+                                <div className="grid grid-cols-3 gap-2">
+                                    <div className="bg-white/5 rounded-lg p-3 text-center">
+                                        <div className="text-[10px] text-white/50 uppercase tracking-wider mb-1">SLA/hr</div>
+                                        <div className={`text-lg font-bold font-mono tabular-nums ${aboveBE ? "text-emerald-400" : "text-red-400"}`}>
+                                            {intradayAgent.sla_hr.toFixed(2)}
+                                        </div>
+                                        <div className={`text-[10px] font-mono ${aboveBE ? "text-emerald-400/70" : "text-red-400/70"}`}>
+                                            {beDelta >= 0 ? "+" : ""}{beDelta.toFixed(2)} vs B/E
+                                        </div>
+                                    </div>
+                                    <div className="bg-white/5 rounded-lg p-3 text-center">
+                                        <div className="text-[10px] text-white/50 uppercase tracking-wider mb-1">SLAs</div>
+                                        <div className="text-lg font-bold font-mono tabular-nums text-white">
+                                            {intradayAgent.transfers}
+                                        </div>
+                                        <div className="text-[10px] text-white/40 font-mono">{intradayAgent.hours_worked.toFixed(1)}h</div>
+                                    </div>
+                                    <div className="bg-white/5 rounded-lg p-3 text-center">
+                                        <div className="text-[10px] text-white/50 uppercase tracking-wider mb-1">Rank</div>
+                                        <div className="text-lg font-bold font-mono tabular-nums text-amber-400">
+                                            {intradayAgent.rank ? `#${intradayAgent.rank}` : "—"}
+                                        </div>
+                                        <div className="text-[10px] text-white/40 font-mono">of {intradayMeta.total_ranked}</div>
+                                    </div>
+                                </div>
+                                {/* Break-even progress bar */}
+                                <div className="bg-white/5 rounded-lg p-2">
+                                    <div className="flex items-center justify-between text-[10px] mb-1">
+                                        <span className="text-white/50">B/E: {be} ({isMedicare ? "Medicare" : "ACA"})</span>
+                                        <span className={aboveBE ? "text-emerald-400" : "text-red-400"}>{((intradayAgent.sla_hr / be) * 100).toFixed(0)}%</span>
+                                    </div>
+                                    <div className="h-1.5 bg-white/10 rounded-full overflow-hidden">
+                                        <div className={`h-full rounded-full transition-all ${aboveBE ? "bg-emerald-500" : "bg-red-500"}`} style={{ width: `${Math.min((intradayAgent.sla_hr / be) * 100, 100)}%` }} />
+                                    </div>
+                                </div>
+                            </div>
+                        );
+                    })()}
 
                     {/* Performance Stats (Agents only) */}
                     {employee.role?.toLowerCase() === 'agent' && (
-                        <div className="space-y-4">
-                            <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wider flex items-center gap-2">
-                                <Zap size={14} className="text-amber-500" />
-                                Performance Stats
+                        <div className="space-y-4 pt-2">
+                            <h3 className="text-[13px] font-semibold text-white/90 flex items-center gap-2">
+                                Performance
                                 {perfStats?.latest?.report_date && (
-                                    <span className="text-[10px] text-gray-400 font-normal normal-case ml-auto">
+                                    <span className="text-[11px] text-white/80 font-medium ml-auto">
                                         {new Date(perfStats.latest.report_date + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
                                     </span>
                                 )}
@@ -806,21 +951,33 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                                 <div className="space-y-3">
                                     <div className="grid grid-cols-3 gap-2">
                                         {[1, 2, 3].map(i => (
-                                            <div key={i} className="h-20 bg-gray-100 rounded-lg animate-pulse" />
+                                            <div key={i} className="h-20 bg-white/5 rounded-lg animate-pulse" />
                                         ))}
                                     </div>
-                                    <div className="h-12 bg-gray-100 rounded-lg animate-pulse" />
+                                    <div className="h-12 bg-white/5 rounded-lg animate-pulse" />
                                 </div>
                             )}
 
                             {!perfLoading && !perfStats && (
-                                <p className="text-sm text-gray-400 italic">No DialedIn data found for this agent.</p>
+                                <p className="text-sm text-white/50 italic">No DialedIn data found for this agent.</p>
                             )}
 
                             {!perfLoading && perfStats?.latest && (() => {
                                 const l = perfStats.latest;
                                 const avg = perfStats.averages;
                                 const tot = perfStats.totals;
+
+                                // Resolve effective team: prefer DialedIn team, fallback to employee campaigns
+                                const effectiveTeam = l.team || (() => {
+                                    const campaigns: string[] = employee?.current_campaigns || [];
+                                    for (const c of campaigns) {
+                                        const cl = c.toLowerCase();
+                                        if (cl.includes('whatif') || cl.includes('what if')) return 'Team WhatIf';
+                                        if (cl.includes('medicare')) return 'Aragon Team A';
+                                        if (cl.includes('aca')) return 'Jade ACA Team';
+                                    }
+                                    return null;
+                                })();
 
                                 const logged = Number(l.logged_in_time_min) || 0;
                                 const pauseMin = Number(l.pause_time_min) || 0;
@@ -831,74 +988,44 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                                 const paidHrsRaw = Math.max((logged - pauseMin - wrapMin + 30) / 60, 0);
                                 const paidHrs = grossHrs > 0 ? Math.min(paidHrsRaw, grossHrs) : paidHrsRaw;
 
-                                const RankBadge = ({ rank }: { rank: number | null }) => {
+                                const totalQualified = (l.raw_data as Record<string, unknown>)?.total_qualified as number | undefined;
+                                const RankBadge = ({ rank, total }: { rank: number | null; total?: number }) => {
                                     if (!rank) return null;
                                     if (rank <= 3) return (
                                         <span className="inline-flex items-center gap-0.5">
                                             {rank === 1 ? <Trophy size={10} className="text-amber-500" /> : <Medal size={10} className={rank === 2 ? "text-gray-400" : "text-amber-600"} />}
-                                            <span className="text-[9px] font-bold text-amber-600">#{rank}</span>
+                                            <span className="text-[9px] font-bold text-amber-400">#{rank}</span>
                                         </span>
                                     );
-                                    return <span className="text-[9px] text-gray-400 font-mono">#{rank}</span>;
+                                    if (total && total > 0) {
+                                        const topPct = Math.max(Math.ceil((rank / total) * 100), 1);
+                                        return <span className="text-[9px] text-white/70 font-mono">Top {topPct}%</span>;
+                                    }
+                                    return <span className="text-[9px] text-white/70 font-mono">#{rank}</span>;
                                 };
 
                                 return (
                                     <>
-                                        {/* Primary Metrics - 3 cards */}
-                                        <div className="grid grid-cols-3 gap-2">
-                                            <div className="bg-gray-50 rounded-lg p-3 text-center border border-gray-100">
-                                                {(() => {
-                                                    const campaign = detectCampaignType(employee?.current_campaigns);
-                                                    const displayTph = l.adjusted_tph != null ? Number(l.adjusted_tph) : Number(l.tph);
-                                                    const isAdjusted = l.adjusted_tph != null;
-                                                    return (
-                                                        <>
-                                                            <div className={`text-xl font-bold font-mono ${heatmapClassLight(displayTph, 'tph', campaign)}`}>
-                                                                {displayTph.toFixed(2)}{!isAdjusted && <span className="text-[9px] text-gray-400 ml-0.5">*</span>}
-                                                            </div>
-                                                        </>
-                                                    );
-                                                })()}
-                                                <div className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold mt-0.5">SLA/hr</div>
-                                                <RankBadge rank={l.tph_rank} />
-                                            </div>
-                                            <div className="bg-gray-50 rounded-lg p-3 text-center border border-gray-100">
-                                                <div className="text-xl font-bold font-mono text-gray-900">
-                                                    {l.transfers}
-                                                </div>
-                                                <div className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold mt-0.5">SLA</div>
-                                            </div>
-                                            <div className="bg-gray-50 rounded-lg p-3 text-center border border-gray-100">
-                                                <div className={`text-xl font-bold font-mono ${heatmapClassLight(l.conversion_rate, 'conversion')}`}>
-                                                    {Number(l.conversion_rate).toFixed(1)}%
-                                                </div>
-                                                <div className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold mt-0.5">Conv %</div>
-                                                <RankBadge rank={l.conversion_rank} />
-                                            </div>
-                                        </div>
+                                        {/* Unified Latest Day Card + Financial Overview */}
+                                        {(() => {
+                                            const isPilot = isPilotCampaign(employee?.current_campaigns, effectiveTeam);
+                                            const rate = getRevenuePerTransfer(effectiveTeam || null, l.skill);
+                                            const rateLabel = l.skill || getCampaignType(effectiveTeam || null)?.toUpperCase() || 'SLA';
+                                            const displayTph = l.adjusted_tph != null ? Number(l.adjusted_tph) : Number(l.tph);
+                                            const isAdjusted = l.adjusted_tph != null;
+                                            const dayRevenue = l.transfers * rate;
+                                            const rawWage = employee?.hourly_wage != null ? Number(employee.hourly_wage) : null;
+                                            const wage = rawWage != null && employee?.country?.toUpperCase() === 'CANADA' ? rawWage * fxRate : rawWage;
+                                            const dayCost = wage != null ? paidHrs * wage : null;
+                                            const dayPnl = dayCost != null ? dayRevenue - dayCost : null;
+                                            const dayRoi = dayCost != null && dayCost > 0 ? (dayPnl! / dayCost) * 100 : null;
+                                            const breakEven = getBreakEvenTPH(effectiveTeam || null);
+                                            const adjTph = l.adjusted_tph != null ? Number(l.adjusted_tph) : Number(l.tph);
+                                            const beDelta = adjTph - breakEven;
+                                            const beProgress = Math.min((adjTph / (breakEven * 2)) * 100, 100);
 
-                                        {/* Secondary Metrics Grid */}
-                                        <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 px-1">
-                                            {[
-                                                { label: 'Dials', value: Number(l.dials).toLocaleString() },
-                                                { label: 'Connects', value: Number(l.connects).toLocaleString() },
-                                                { label: 'Connect %', value: `${Number(l.connect_rate).toFixed(1)}%`, color: heatmapClassLight(l.connect_rate, 'connect') },
-                                                { label: 'Gross Hrs', value: grossHrs.toFixed(1) },
-                                                { label: 'Paid Hrs', value: paidHrs.toFixed(1), color: 'text-indigo-700' },
-                                                { label: 'Talk Time', value: `${Number(l.talk_time_min).toFixed(0)}m` },
-                                                { label: 'Utilization', value: `${util.toFixed(0)}%`, color: heatmapClassLight(util, 'utilization') },
-                                            ].map(({ label, value, color }) => (
-                                                <div key={label} className="flex items-center justify-between py-0.5">
-                                                    <span className="text-[11px] text-gray-500">{label}</span>
-                                                    <span className={`text-[12px] font-mono font-semibold ${color || 'text-gray-800'}`}>{value}</span>
-                                                </div>
-                                            ))}
-                                        </div>
-
-                                        {/* 14-Day Summary */}
-                                        {avg && tot && tot.days_worked > 1 && (() => {
+                                            // Period data
                                             const days = perfStats.recentDays || [];
-                                            const totalGrossHrs = Number(tot.hours_worked) || 0;
                                             const totalPaidHrs = days.reduce((sum: number, d: Record<string, unknown>) => {
                                                 const dLogged = Number(d.logged_in_time_min) || 0;
                                                 const dPause = Number(d.pause_time_min) || 0;
@@ -907,29 +1034,299 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                                                 const raw = Math.max((dLogged - dPause - dWrap + 30) / 60, 0);
                                                 return sum + Math.min(raw, dGross);
                                             }, 0);
-                                            const avgPaidHrs = days.length > 0 ? totalPaidHrs / days.length : 0;
+                                            const periodRevenue = (perfStats.totals?.transfers || 0) * rate;
+                                            const periodCost = wage != null ? totalPaidHrs * wage : null;
+                                            const periodPnl = periodCost != null ? periodRevenue - periodCost : null;
+                                            const periodRoi = periodCost != null && periodCost > 0 ? (periodPnl! / periodCost) * 100 : null;
+                                            const hasPeriod = perfStats.averages && perfStats.totals && perfStats.totals.days_worked > 1;
+                                            const periodStart = days.length > 0 ? days[days.length - 1]?.report_date : null;
+                                            const periodEnd = days.length > 0 ? days[0]?.report_date : null;
+                                            const fmtPeriodDate = (d: string) => new Date(d + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+
                                             return (
-                                                <div className="bg-indigo-50/50 border border-indigo-100 rounded-lg px-3 py-2">
-                                                    <div className="text-[10px] text-indigo-600 uppercase tracking-wider font-semibold mb-1">
-                                                        {tot.days_worked}-Day Summary
+                                                <div className="space-y-4">
+                                                    {/* Unified dark card — Performance + Financials */}
+                                                    <div className="rounded-2xl bg-gray-900 p-4">
+                                                        <div className="flex items-center justify-between mb-3">
+                                                            <span className="text-[12px] text-white font-medium tracking-wide">Latest Day</span>
+                                                            <span className="text-[11px] text-amber-300 font-mono font-bold">{isPilot ? 'Pilot' : `$${rate.toFixed(2)}/${rateLabel}`}</span>
+                                                        </div>
+
+                                                        {/* Row 1: SLA/hr, SLA, Conv% */}
+                                                        <div className="grid grid-cols-3 gap-0 mb-4">
+                                                            <div className="text-center">
+                                                                <div className="text-2xl font-bold font-mono text-white tracking-tight">
+                                                                    {displayTph.toFixed(2)}{!isAdjusted && <span className="text-[9px] text-white/60 ml-0.5">*</span>}
+                                                                </div>
+                                                                <div className="text-[11px] text-white mt-1 font-medium">SLA/hr</div>
+                                                                <RankBadge rank={l.tph_rank} total={totalQualified} />
+                                                            </div>
+                                                            <div className="text-center border-x border-white/10">
+                                                                <div className="text-2xl font-bold font-mono text-white tracking-tight">
+                                                                    {l.transfers}
+                                                                </div>
+                                                                <div className="text-[11px] text-white mt-1 font-medium">SLA</div>
+                                                            </div>
+                                                            <div className="text-center">
+                                                                <div className="text-2xl font-bold font-mono text-white tracking-tight">
+                                                                    {Number(l.conversion_rate).toFixed(1)}%
+                                                                </div>
+                                                                <div className="text-[11px] text-white mt-1 font-medium">Conv</div>
+                                                                <RankBadge rank={l.conversion_rank} total={totalQualified} />
+                                                            </div>
+                                                        </div>
+
+                                                        {/* Divider */}
+                                                        <div className="border-t border-white/10 mb-4" />
+
+                                                        {/* Row 2: Revenue, Cost, P&L, ROI */}
+                                                        {isPilot ? (
+                                                            <div className="text-center py-2">
+                                                                <div className="grid grid-cols-4 gap-0 mb-2">
+                                                                    {['Revenue', 'Cost', 'P&L', 'ROI'].map((label, i) => (
+                                                                        <div key={label} className={`text-center ${i === 1 || i === 2 ? 'border-x border-white/10' : ''}`}>
+                                                                            <div className="text-lg font-semibold font-mono text-white/30">—</div>
+                                                                            <div className="text-[10px] text-white/70 mt-0.5">{label}</div>
+                                                                        </div>
+                                                                    ))}
+                                                                </div>
+                                                                <span className="text-[10px] text-white/70 italic">Revenue rates not yet established</span>
+                                                            </div>
+                                                        ) : (
+                                                            <div className="grid grid-cols-4 gap-0">
+                                                                <div className="text-center">
+                                                                    <div className="text-lg font-semibold font-mono text-white">${dayRevenue.toFixed(0)}</div>
+                                                                    <div className="text-[10px] text-white/90 mt-0.5 font-medium">Revenue</div>
+                                                                </div>
+                                                                <div className="text-center border-x border-white/10">
+                                                                    <div className="text-lg font-semibold font-mono text-white">{dayCost != null ? `$${dayCost.toFixed(0)}` : '—'}</div>
+                                                                    <div className="text-[10px] text-white/90 mt-0.5 font-medium">Cost{wage != null && <span className="text-sky-300/90 ml-0.5">@${Math.round(wage)}/hr</span>}</div>
+                                                                </div>
+                                                                <div className="text-center border-r border-white/10">
+                                                                    <div className={`text-lg font-semibold font-mono ${dayPnl == null ? 'text-white/30' : dayPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                                                        {dayPnl != null ? `${dayPnl >= 0 ? '+' : ''}$${dayPnl.toFixed(0)}` : '—'}
+                                                                    </div>
+                                                                    <div className="text-[10px] text-white/90 mt-0.5 font-medium">P&L</div>
+                                                                </div>
+                                                                <div className="text-center">
+                                                                    <div className={`text-lg font-semibold font-mono ${dayRoi == null ? 'text-white/30' : dayRoi >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                                                        {dayRoi != null ? `${dayRoi >= 0 ? '+' : ''}${dayRoi.toFixed(0)}%` : '—'}
+                                                                    </div>
+                                                                    <div className="text-[10px] text-white/90 mt-0.5 font-medium">ROI</div>
+                                                                </div>
+                                                            </div>
+                                                        )}
+
+                                                        {/* Break-even bar (hidden for pilot campaigns) */}
+                                                        {!isPilot && (
+                                                            <div className="mt-4">
+                                                                <div className="flex items-center justify-between mb-1.5">
+                                                                    <span className="text-[11px] text-white font-medium">
+                                                                        {beDelta >= 0 ? 'Above' : 'Below'} break-even
+                                                                        <span className="text-white/90 ml-1">({breakEven.toFixed(2)})</span>
+                                                                    </span>
+                                                                    <span className={`text-[12px] font-mono font-bold ${beDelta >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                                                        {beDelta >= 0 ? '+' : ''}{beDelta.toFixed(2)} SLA/hr
+                                                                    </span>
+                                                                </div>
+                                                                <div className="relative h-1.5 bg-white/15 rounded-full overflow-hidden">
+                                                                    <div
+                                                                        className={`absolute inset-y-0 left-0 rounded-full transition-all duration-500 ${beDelta >= 0 ? 'bg-emerald-400' : 'bg-red-400'}`}
+                                                                        style={{ width: `${beProgress}%` }}
+                                                                    />
+                                                                    <div
+                                                                        className="absolute top-1/2 -translate-y-1/2 w-px h-2.5 bg-white/50"
+                                                                        style={{ left: '50%' }}
+                                                                        title={`Break-even: ${breakEven.toFixed(2)} SLA/hr`}
+                                                                    />
+                                                                </div>
+
+                                                                {/* Consistency streak */}
+                                                                {days.length > 1 && (() => {
+                                                                    let streak = 0;
+                                                                    const latestAbove = adjTph >= breakEven;
+                                                                    for (const d of days) {
+                                                                        const dTph = d.adjusted_tph != null ? Number(d.adjusted_tph) : Number(d.tph);
+                                                                        if ((dTph >= breakEven) === latestAbove) streak++;
+                                                                        else break;
+                                                                    }
+                                                                    if (streak < 2) return null;
+                                                                    return (
+                                                                        <div className={`mt-2 text-[10px] font-medium ${latestAbove ? 'text-emerald-400' : 'text-red-400'}`}>
+                                                                            {latestAbove ? '↑' : '↓'} {streak}-day {latestAbove ? 'above' : 'below'} streak
+                                                                        </div>
+                                                                    );
+                                                                })()}
+                                                            </div>
+                                                        )}
+
+                                                        {/* Mini SLA/hr sparkline */}
+                                                        {days.length > 2 && (() => {
+                                                            const pts = [...days].reverse().map(d => d.adjusted_tph != null ? Number(d.adjusted_tph) : Number(d.tph));
+                                                            const max = Math.max(...pts, breakEven * 1.3);
+                                                            const min = Math.min(...pts, breakEven * 0.5);
+                                                            const range = max - min || 1;
+                                                            const w = 260;
+                                                            const h = 32;
+                                                            const beY = h - ((breakEven - min) / range) * h;
+                                                            const points = pts.map((v, i) => ({
+                                                                x: (i / Math.max(pts.length - 1, 1)) * w,
+                                                                y: h - ((v - min) / range) * h,
+                                                            }));
+                                                            const polyline = points.map(p => `${p.x},${p.y}`).join(' ');
+                                                            return (
+                                                                <div className="mt-4 px-1">
+                                                                    <div className="text-[10px] text-white/80 uppercase tracking-wider font-medium mb-1">SLA/hr Trend</div>
+                                                                    <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-8" preserveAspectRatio="none">
+                                                                        <line x1="0" y1={beY} x2={w} y2={beY} stroke="white" strokeOpacity="0.2" strokeDasharray="4 3" />
+                                                                        <polyline points={polyline} fill="none" stroke={beDelta >= 0 ? 'rgb(52,211,153)' : 'rgb(248,113,113)'} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                                                                        {points.map((p, i) => (
+                                                                            <circle key={i} cx={p.x} cy={p.y} r="2.5" fill={pts[i] >= breakEven ? 'rgb(52,211,153)' : 'rgb(248,113,113)'} stroke="rgb(17,24,39)" strokeWidth="1">
+                                                                                <title>{pts[i].toFixed(2)} SLA/hr</title>
+                                                                            </circle>
+                                                                        ))}
+                                                                    </svg>
+                                                                </div>
+                                                            );
+                                                        })()}
                                                     </div>
-                                                    <div className="flex items-center gap-3 text-[11px] text-gray-700">
-                                                        <span>Avg SLA/hr: <span className="font-mono font-semibold">{avg.adjusted_tph != null ? avg.adjusted_tph : avg.tph}</span></span>
-                                                        <span className="text-gray-300">|</span>
-                                                        <span>Avg SLA: <span className="font-mono font-semibold">{avg.transfers}</span></span>
+
+                                                    {/* Secondary Metrics list */}
+                                                    <div className="rounded-2xl bg-white/5 ring-1 ring-white/10 divide-y divide-white/5">
+                                                        {[
+                                                            { label: 'Dials', value: Number(l.dials).toLocaleString() },
+                                                            { label: 'Connects', value: Number(l.connects).toLocaleString() },
+                                                            { label: 'Connect Rate', value: `${Number(l.connect_rate).toFixed(1)}%` },
+                                                            { label: 'Gross Hours', value: grossHrs.toFixed(1) },
+                                                            { label: 'Paid Hours', value: paidHrs.toFixed(1) },
+                                                            { label: 'Talk Time', value: `${Number(l.talk_time_min).toFixed(0)}m` },
+                                                            { label: 'Utilization', value: `${util.toFixed(0)}%` },
+                                                            ...(!isPilot && l.transfers > 0 ? [{ label: 'Cost / SLA', value: dayCost != null ? `$${(dayCost / l.transfers).toFixed(2)}` : '—' }] : []),
+                                                        ].map(({ label, value }) => (
+                                                            <div key={label} className="flex items-center justify-between px-4 py-2">
+                                                                <span className="text-[13px] text-white/80 font-medium">{label}</span>
+                                                                <span className="text-[13px] font-mono font-medium text-white">{value}</span>
+                                                            </div>
+                                                        ))}
                                                     </div>
-                                                    <div className="flex items-center gap-3 text-[11px] text-gray-600 mt-0.5">
-                                                        <span>Total: <span className="font-mono font-semibold">{tot.transfers}</span> SLA</span>
-                                                        <span className="text-gray-300">|</span>
-                                                        <span>Gross: <span className="font-mono font-semibold">{totalGrossHrs.toFixed(1)}</span> hrs</span>
-                                                        <span className="text-gray-300">|</span>
-                                                        <span>Paid: <span className="font-mono font-semibold text-indigo-700">{totalPaidHrs.toFixed(1)}</span> hrs</span>
-                                                    </div>
-                                                    <div className="flex items-center gap-3 text-[10px] text-gray-500 mt-0.5">
-                                                        <span>Avg Gross: <span className="font-mono">{(totalGrossHrs / tot.days_worked).toFixed(1)}</span>h/day</span>
-                                                        <span className="text-gray-300">|</span>
-                                                        <span>Avg Paid: <span className="font-mono text-indigo-600">{avgPaidHrs.toFixed(1)}</span>h/day</span>
-                                                    </div>
+
+                                                    {/* Period Summary */}
+                                                    {hasPeriod && (
+                                                        <div className="rounded-2xl bg-gradient-to-br from-indigo-950 via-slate-900 to-violet-950 p-5 shadow-lg">
+                                                            {/* Header row */}
+                                                            <div className="flex items-center justify-between pb-3 mb-4 border-b border-white/10">
+                                                                <div>
+                                                                    {(() => {
+                                                                        const workDays = perfStats.totals.days_worked;
+                                                                        return (
+                                                                            <>
+                                                                                <span className="text-sm font-bold text-white tracking-tight">
+                                                                                    {workDays}-Day Summary
+                                                                                </span>
+                                                                                {periodStart && periodEnd && (
+                                                                                    <div className="text-[11px] text-white/80 font-medium mt-0.5">
+                                                                                        {fmtPeriodDate(periodStart)} – {fmtPeriodDate(periodEnd)}
+                                                                                    </div>
+                                                                                )}
+                                                                            </>
+                                                                        );
+                                                                    })()}
+                                                                </div>
+                                                                {!isPilot && periodRoi != null && (
+                                                                    <div className={`px-3 py-1 rounded-full text-xs font-mono font-bold ${periodRoi >= 0 ? 'bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-400/30' : 'bg-red-500/20 text-red-300 ring-1 ring-red-400/30'}`}>
+                                                                        {periodRoi >= 0 ? '+' : ''}{periodRoi.toFixed(0)}% ROI
+                                                                    </div>
+                                                                )}
+                                                            </div>
+
+                                                            {/* Financial grid */}
+                                                            {isPilot ? (
+                                                                <div className="text-center py-3">
+                                                                    <div className="grid grid-cols-3 gap-0 mb-2">
+                                                                        {['Revenue', 'Cost', 'P&L'].map((label, i) => (
+                                                                            <div key={label} className={`text-center ${i === 1 ? 'border-x border-white/10' : ''}`}>
+                                                                                <div className="text-xl font-bold font-mono text-white/30">—</div>
+                                                                                <div className="text-[10px] text-white/50 mt-1 uppercase tracking-wider">{label}</div>
+                                                                            </div>
+                                                                        ))}
+                                                                    </div>
+                                                                    <span className="text-[10px] text-white/70 italic">Revenue rates not yet established</span>
+                                                                </div>
+                                                            ) : (
+                                                                <div className="grid grid-cols-3 gap-0 mb-4">
+                                                                    <div className="text-center py-2">
+                                                                        <div className="text-2xl font-bold font-mono text-white tracking-tight">${periodRevenue.toLocaleString(undefined, { maximumFractionDigits: 0 })}</div>
+                                                                        <div className="text-[11px] text-white/80 mt-1.5 uppercase tracking-wider font-medium">Revenue</div>
+                                                                    </div>
+                                                                    <div className="text-center py-2 border-x border-white/10">
+                                                                        <div className="text-2xl font-bold font-mono text-white tracking-tight">{periodCost != null ? `$${periodCost.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : '—'}</div>
+                                                                        <div className="text-[11px] text-white/80 mt-1.5 uppercase tracking-wider font-medium">Cost</div>
+                                                                    </div>
+                                                                    <div className="text-center py-2">
+                                                                        <div className={`text-2xl font-bold font-mono tracking-tight ${periodPnl == null ? 'text-white/30' : periodPnl >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                                                            {periodPnl != null ? `${periodPnl >= 0 ? '+' : ''}$${periodPnl.toLocaleString(undefined, { maximumFractionDigits: 0 })}` : '—'}
+                                                                        </div>
+                                                                        <div className="text-[11px] text-white/80 mt-1.5 uppercase tracking-wider font-medium">Profit</div>
+                                                                    </div>
+                                                                </div>
+                                                            )}
+
+                                                            {/* Footer stats */}
+                                                            <div className="grid grid-cols-4 gap-1 pt-3 border-t border-white/10">
+                                                                <div className="text-center">
+                                                                    <div className="text-sm font-mono font-bold text-white">{perfStats.averages.adjusted_tph != null ? perfStats.averages.adjusted_tph : perfStats.averages.tph}</div>
+                                                                    <div className="text-[10px] text-white/80 uppercase tracking-wider font-medium mt-0.5">Avg SLA/hr</div>
+                                                                </div>
+                                                                <div className="text-center border-x border-white/10">
+                                                                    <div className="text-sm font-mono font-bold text-white">{perfStats.totals.transfers}</div>
+                                                                    <div className="text-[10px] text-white/80 uppercase tracking-wider font-medium mt-0.5">Total SLA</div>
+                                                                </div>
+                                                                <div className="text-center border-r border-white/10">
+                                                                    <div className="text-sm font-mono font-bold text-white">{totalPaidHrs.toFixed(1)}h</div>
+                                                                    <div className="text-[10px] text-white/80 uppercase tracking-wider font-medium mt-0.5">Paid Hours</div>
+                                                                </div>
+                                                                <div className="text-center">
+                                                                    <div className="text-sm font-mono font-bold text-white">
+                                                                        {!isPilot && periodCost != null && perfStats.totals.transfers > 0
+                                                                            ? `$${Math.round(periodCost / perfStats.totals.transfers)}`
+                                                                            : '—'}
+                                                                    </div>
+                                                                    <div className="text-[10px] text-white/80 uppercase tracking-wider font-medium mt-0.5">Cost/SLA</div>
+                                                                </div>
+                                                            </div>
+
+                                                            {/* Period break-even bar */}
+                                                            {!isPilot && (() => {
+                                                                const avgTph = perfStats.averages.adjusted_tph != null ? perfStats.averages.adjusted_tph : perfStats.averages.tph;
+                                                                const pBeDelta = avgTph - breakEven;
+                                                                const pBeProgress = Math.min((avgTph / (breakEven * 2)) * 100, 100);
+                                                                return (
+                                                                    <div className="pt-3 mt-3 border-t border-white/10">
+                                                                        <div className="flex items-center justify-between mb-1.5">
+                                                                            <span className="text-[10px] text-white/80 uppercase tracking-wider font-medium">
+                                                                                Period Avg vs Break-Even
+                                                                                <span className="text-white/60 ml-1">({breakEven.toFixed(2)})</span>
+                                                                            </span>
+                                                                            <span className={`text-[11px] font-mono font-bold ${pBeDelta >= 0 ? 'text-emerald-400' : 'text-red-400'}`}>
+                                                                                {pBeDelta >= 0 ? '+' : ''}{pBeDelta.toFixed(2)}
+                                                                            </span>
+                                                                        </div>
+                                                                        <div className="relative h-1.5 bg-white/10 rounded-full overflow-hidden">
+                                                                            <div
+                                                                                className={`absolute inset-y-0 left-0 rounded-full transition-all ${pBeDelta >= 0 ? 'bg-emerald-400' : 'bg-red-400'}`}
+                                                                                style={{ width: `${Math.max(pBeProgress, 2)}%` }}
+                                                                            />
+                                                                            <div
+                                                                                className="absolute top-1/2 -translate-y-1/2 w-px h-2.5 bg-white/50"
+                                                                                style={{ left: '50%' }}
+                                                                                title={`Break-even: ${breakEven.toFixed(2)} SLA/hr`}
+                                                                            />
+                                                                        </div>
+                                                                    </div>
+                                                                );
+                                                            })()}
+                                                        </div>
+                                                    )}
                                                 </div>
                                             );
                                         })()}
@@ -941,67 +1338,62 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
 
                     {/* QA Compliance (Agents only) */}
                     {employee.role?.toLowerCase() === 'agent' && qaStats && (
-                        <div className="space-y-4">
-                            <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wider flex items-center gap-2">
-                                {qaStats.auto_fail_count > 0 ? (
-                                    <ShieldAlert size={14} className="text-red-500" />
-                                ) : (
-                                    <ShieldCheck size={14} className="text-emerald-500" />
-                                )}
+                        <div className="rounded-2xl bg-gradient-to-br from-slate-800 via-gray-900 to-slate-900 p-5 shadow-lg">
+                            <h3 className="text-sm font-bold text-white flex items-center gap-2 mb-4">
                                 QA Compliance
-                                <span className="text-xs bg-gray-100 text-gray-600 px-2 py-0.5 rounded-full font-medium normal-case">
+                                <span className="text-[11px] bg-white/10 text-white/70 px-2 py-0.5 rounded-full font-medium">
                                     {qaStats.total_calls} calls
                                 </span>
                             </h3>
 
-                            <div className="grid grid-cols-3 gap-2">
-                                <div className="bg-gray-50 rounded-lg p-3 text-center border border-gray-100">
-                                    <div className={`text-xl font-bold font-mono ${
-                                        qaStats.avg_score >= 70 ? 'text-emerald-600' : qaStats.avg_score >= 40 ? 'text-amber-600' : 'text-red-600'
+                            <div className="grid grid-cols-3 gap-0 mb-4">
+                                <div className="text-center py-2">
+                                    <div className={`text-2xl font-bold font-mono ${
+                                        qaStats.avg_score >= 70 ? 'text-emerald-400' : qaStats.avg_score >= 40 ? 'text-amber-400' : 'text-red-400'
                                     }`}>
                                         {qaStats.avg_score}
                                     </div>
-                                    <div className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold mt-0.5">Avg Score</div>
+                                    <div className="text-[11px] text-white/60 mt-1 uppercase tracking-wider font-medium">Avg Score</div>
                                 </div>
-                                <div className="bg-gray-50 rounded-lg p-3 text-center border border-gray-100">
-                                    <div className={`text-xl font-bold font-mono ${
-                                        qaStats.pass_rate >= 80 ? 'text-emerald-600' : qaStats.pass_rate >= 50 ? 'text-amber-600' : 'text-red-600'
+                                <div className="text-center py-2 border-x border-white/10">
+                                    <div className={`text-2xl font-bold font-mono ${
+                                        qaStats.pass_rate >= 80 ? 'text-emerald-400' : qaStats.pass_rate >= 50 ? 'text-amber-400' : 'text-red-400'
                                     }`}>
                                         {qaStats.pass_rate}%
                                     </div>
-                                    <div className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold mt-0.5">Pass Rate</div>
+                                    <div className="text-[11px] text-white/60 mt-1 uppercase tracking-wider font-medium">Pass Rate</div>
                                 </div>
-                                <div className="bg-gray-50 rounded-lg p-3 text-center border border-gray-100">
-                                    <div className={`text-xl font-bold font-mono ${
-                                        qaStats.auto_fail_count > 0 ? 'text-red-600' : 'text-emerald-600'
+                                <div className="text-center py-2">
+                                    <div className={`text-2xl font-bold font-mono ${
+                                        qaStats.auto_fail_count > 0 ? 'text-red-400' : 'text-emerald-400'
                                     }`}>
                                         {qaStats.auto_fail_count}
                                     </div>
-                                    <div className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold mt-0.5">Auto-Fails</div>
+                                    <div className="text-[11px] text-white/60 mt-1 uppercase tracking-wider font-medium">Auto-Fails</div>
                                 </div>
                             </div>
 
                             {/* Risk Breakdown */}
-                            <div className="flex items-center gap-2 px-1">
-                                <span className="text-xs text-gray-500 font-medium">Risk:</span>
+                            <div className="bg-white/5 rounded-xl px-3 py-2.5 flex items-center gap-2">
+                                <span className="text-[11px] text-white/60 font-semibold uppercase tracking-wider">Risk</span>
                                 <div className="flex gap-1.5">
                                     {qaStats.risk_breakdown.high > 0 && (
-                                        <span className="text-[10px] font-semibold bg-red-50 text-red-700 border border-red-200 px-2 py-0.5 rounded-full">
+                                        <span className="text-[10px] font-semibold bg-red-500/20 text-red-300 ring-1 ring-red-400/30 px-2 py-0.5 rounded-full">
                                             {qaStats.risk_breakdown.high} High
                                         </span>
                                     )}
                                     {qaStats.risk_breakdown.medium > 0 && (
-                                        <span className="text-[10px] font-semibold bg-amber-50 text-amber-700 border border-amber-200 px-2 py-0.5 rounded-full">
+                                        <span className="text-[10px] font-semibold bg-amber-500/20 text-amber-300 ring-1 ring-amber-400/30 px-2 py-0.5 rounded-full">
                                             {qaStats.risk_breakdown.medium} Medium
                                         </span>
                                     )}
                                     {qaStats.risk_breakdown.low > 0 && (
-                                        <span className="text-[10px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 px-2 py-0.5 rounded-full">
+                                        <span className="text-[10px] font-semibold bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-400/30 px-2 py-0.5 rounded-full">
                                             {qaStats.risk_breakdown.low} Low
                                         </span>
                                     )}
                                     {qaStats.risk_breakdown.high === 0 && qaStats.risk_breakdown.medium === 0 && qaStats.risk_breakdown.low === 0 && (
-                                        <span className="text-xs text-gray-400 italic">No risk data</span>
+                                        <span className="text-[11px] text-white/50 italic">No risk data</span>
                                     )}
                                 </div>
                             </div>
@@ -1009,57 +1401,228 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                     )}
 
                     {/* Manual QA Audit (Agents only) */}
-                    {employee.role?.toLowerCase() === 'agent' && qaManual && qaManual.total > 0 && (
-                        <div className="space-y-3">
-                            <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wider flex items-center gap-2">
-                                <Eye size={14} className="text-orange-500" />
-                                QA Audit
-                                <span className="text-xs bg-orange-50 text-orange-700 px-2 py-0.5 rounded-full font-medium normal-case">
-                                    {qaManual.total} reviews
-                                </span>
-                            </h3>
-
-                            {/* Top violations */}
-                            <div className="space-y-1">
-                                {qaManual.violations.slice(0, 5).map((v) => (
-                                    <div key={v.violation} className="flex items-center justify-between px-1">
-                                        <span className="text-[11px] text-gray-600 truncate max-w-[200px]">{v.violation}</span>
-                                        <span className={`text-[11px] font-mono font-semibold ${
-                                            v.count >= 10 ? 'text-red-600' : v.count >= 5 ? 'text-amber-600' : 'text-gray-700'
-                                        }`}>{v.count}</span>
-                                    </div>
-                                ))}
+                    {employee.role?.toLowerCase() === 'agent' && qaManual && (
+                        <div className="rounded-2xl bg-gradient-to-br from-slate-800 via-gray-900 to-slate-900 p-5 shadow-lg">
+                            {/* Header */}
+                            <div className="flex items-center justify-between mb-3">
+                                <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                                    QA Audit
+                                    <span className="text-[11px] bg-white/10 text-white/70 px-2 py-0.5 rounded-full font-medium">
+                                        {qaManual.total} reviews
+                                    </span>
+                                    {qaLoading && <span className="w-3 h-3 border-2 border-white/30 border-t-white/80 rounded-full animate-spin" />}
+                                </h3>
+                                <button
+                                    onClick={() => {
+                                        if (!employee) return;
+                                        fetchQAManualStats(employee.first_name, employee.last_name, qaFrom || undefined, qaTo || undefined);
+                                    }}
+                                    className="text-white/40 hover:text-white/80 transition-colors"
+                                    title="Refresh"
+                                >
+                                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 2v6h-6"/><path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M3 22v-6h6"/><path d="M21 12a9 9 0 0 1-15 6.7L3 16"/></svg>
+                                </button>
                             </div>
 
-                            {/* Monthly trend sparkline */}
-                            {qaManual.trend.length > 1 && (
-                                <div className="bg-gray-50 border border-gray-100 rounded-lg px-3 py-2">
-                                    <div className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold mb-1">Monthly Trend</div>
-                                    <div className="flex items-end gap-1 h-8">
-                                        {(() => {
-                                            const max = Math.max(...qaManual.trend.map(t => t.count), 1);
-                                            return qaManual.trend.map((t) => (
-                                                <div key={t.month} className="flex flex-col items-center flex-1 group relative">
-                                                    <div
-                                                        className="w-full bg-orange-400/80 rounded-t-sm min-h-[2px]"
-                                                        style={{ height: `${(t.count / max) * 100}%` }}
-                                                        title={`${t.month}: ${t.count}`}
-                                                    />
-                                                    <span className="text-[8px] text-gray-400 mt-0.5">{['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][Number(t.month.slice(5)) - 1]}</span>
-                                                </div>
-                                            ));
-                                        })()}
-                                    </div>
+                            {/* Date filter row */}
+                            <div className="mb-3 space-y-2">
+                                <div className="flex items-center gap-2">
+                                    <input
+                                        type="date"
+                                        value={qaFrom}
+                                        onChange={(e) => {
+                                            setQaFrom(e.target.value);
+                                            if (employee) {
+                                                const t = setTimeout(() => fetchQAManualStats(employee.first_name, employee.last_name, e.target.value || undefined, qaTo || undefined), 400);
+                                                return () => clearTimeout(t);
+                                            }
+                                        }}
+                                        className="flex-1 bg-white/5 border border-white/10 rounded-lg px-2 py-1 text-[11px] text-white/80 focus:outline-none focus:ring-1 focus:ring-violet-400/50 [color-scheme:dark]"
+                                        placeholder="From"
+                                    />
+                                    <span className="text-[10px] text-white/40">to</span>
+                                    <input
+                                        type="date"
+                                        value={qaTo}
+                                        onChange={(e) => {
+                                            setQaTo(e.target.value);
+                                            if (employee) {
+                                                const t = setTimeout(() => fetchQAManualStats(employee.first_name, employee.last_name, qaFrom || undefined, e.target.value || undefined), 400);
+                                                return () => clearTimeout(t);
+                                            }
+                                        }}
+                                        className="flex-1 bg-white/5 border border-white/10 rounded-lg px-2 py-1 text-[11px] text-white/80 focus:outline-none focus:ring-1 focus:ring-violet-400/50 [color-scheme:dark]"
+                                        placeholder="To"
+                                    />
+                                </div>
+                                <div className="flex gap-1.5 flex-wrap">
+                                    {[
+                                        { label: '30d', days: 30 },
+                                        { label: '90d', days: 90 },
+                                        { label: 'YTD', days: -1 },
+                                        { label: 'All', days: 0 },
+                                    ].map((preset) => {
+                                        const isActive = preset.days === 0 ? (!qaFrom && !qaTo)
+                                            : preset.days === -1 ? (qaFrom === `${new Date().getFullYear()}-01-01` && !qaTo)
+                                            : (() => {
+                                                const d = new Date(); d.setDate(d.getDate() - preset.days);
+                                                return qaFrom === d.toISOString().slice(0, 10) && !qaTo;
+                                            })();
+                                        return (
+                                            <button
+                                                key={preset.label}
+                                                onClick={() => {
+                                                    if (!employee) return;
+                                                    let from = '';
+                                                    const to = '';
+                                                    if (preset.days === 0) {
+                                                        from = '';
+                                                    } else if (preset.days === -1) {
+                                                        from = `${new Date().getFullYear()}-01-01`;
+                                                    } else {
+                                                        const d = new Date();
+                                                        d.setDate(d.getDate() - preset.days);
+                                                        from = d.toISOString().slice(0, 10);
+                                                    }
+                                                    setQaFrom(from);
+                                                    setQaTo(to);
+                                                    fetchQAManualStats(employee.first_name, employee.last_name, from || undefined, to || undefined);
+                                                }}
+                                                className={`px-2 py-0.5 rounded-md text-[10px] font-medium transition-all ${
+                                                    isActive
+                                                        ? 'bg-violet-500/30 text-violet-200 ring-1 ring-violet-400/40'
+                                                        : 'text-white/50 hover:text-white/80 hover:bg-white/5'
+                                                }`}
+                                            >
+                                                {preset.label}
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                            </div>
+
+                            {/* Empty state for filtered results */}
+                            {qaManual.total === 0 && (
+                                <div className="bg-white/5 rounded-xl px-4 py-6 mb-3 text-center">
+                                    <div className="text-[12px] text-white/50">No violations found in this date range</div>
                                 </div>
                             )}
 
-                            {/* Date range */}
-                            <div className="text-[10px] text-gray-400 px-1">
+                            {/* Violations list */}
+                            {qaManual.violations.length > 0 && <div className="bg-white/5 rounded-xl divide-y divide-white/5 mb-3">
+                                {(qaExpanded ? qaManual.violations : qaManual.violations.slice(0, 5)).map((v) => (
+                                    <div key={v.violation} className="flex items-center justify-between px-4 py-2.5 gap-2">
+                                        <span className="text-[12px] text-white/90 break-words min-w-0 flex-1">{v.violation}</span>
+                                        <div className="flex items-center gap-1.5 shrink-0">
+                                            {v.campaigns && v.campaigns.length > 0 && v.campaigns.map(c => (
+                                                <span key={c} className="text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-violet-500/30 text-violet-100 ring-1 ring-violet-400/40">{c}</span>
+                                            ))}
+                                            <span className={`text-[11px] font-mono font-bold px-2 py-0.5 rounded-full ${
+                                                v.count >= 10 ? 'bg-red-500/20 text-red-300 ring-1 ring-red-400/30' : v.count >= 5 ? 'bg-amber-500/20 text-amber-300 ring-1 ring-amber-400/30' : 'bg-white/10 text-white/70'
+                                            }`}>{v.count}</span>
+                                        </div>
+                                    </div>
+                                ))}
+                                {qaManual.violations.length > 5 && (
+                                    <button
+                                        onClick={() => setQaExpanded(!qaExpanded)}
+                                        className="w-full px-4 py-2 text-[11px] text-violet-300 hover:text-violet-200 hover:bg-white/5 transition-colors flex items-center justify-center gap-1"
+                                    >
+                                        {qaExpanded ? (
+                                            <>Show less <ChevronUp size={12} /></>
+                                        ) : (
+                                            <>Show all {qaManual.violations.length} violations <ChevronDown size={12} /></>
+                                        )}
+                                    </button>
+                                )}
+                            </div>}
+
+                            {/* Monthly trend — line graph */}
+                            {qaManual.trend.length > 1 && (
+                                <div className="bg-white/5 rounded-xl px-4 py-3 mb-3">
+                                    <div className="text-[10px] text-white/60 uppercase tracking-wider font-semibold mb-2">Monthly Trend</div>
+                                    {(() => {
+                                        const data = qaManual.trend;
+                                        const max = Math.max(...data.map(t => t.count), 1);
+                                        const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+                                        const w = 280;
+                                        const h = 48;
+                                        const pad = 4;
+                                        const points = data.map((t, i) => ({
+                                            x: pad + (i / Math.max(data.length - 1, 1)) * (w - pad * 2),
+                                            y: pad + (1 - t.count / max) * (h - pad * 2),
+                                            count: t.count,
+                                            label: months[Number(t.month.slice(5)) - 1],
+                                        }));
+                                        const polyline = points.map(p => `${p.x},${p.y}`).join(' ');
+                                        const areaPath = `M${points[0].x},${h} ${points.map(p => `L${p.x},${p.y}`).join(' ')} L${points[points.length - 1].x},${h} Z`;
+                                        return (
+                                            <div>
+                                                <svg viewBox={`0 0 ${w} ${h}`} className="w-full h-12" preserveAspectRatio="none">
+                                                    <defs>
+                                                        <linearGradient id="qaManualTrendFill" x1="0" y1="0" x2="0" y2="1">
+                                                            <stop offset="0%" stopColor="rgb(167,139,250)" stopOpacity="0.3" />
+                                                            <stop offset="100%" stopColor="rgb(167,139,250)" stopOpacity="0" />
+                                                        </linearGradient>
+                                                    </defs>
+                                                    <path d={areaPath} fill="url(#qaManualTrendFill)" />
+                                                    <polyline points={polyline} fill="none" stroke="rgb(167,139,250)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                                                    {points.map((p, i) => (
+                                                        <circle key={i} cx={p.x} cy={p.y} r="3" fill="rgb(167,139,250)" stroke="rgb(30,30,50)" strokeWidth="1.5">
+                                                            <title>{`${p.label}: ${p.count}`}</title>
+                                                        </circle>
+                                                    ))}
+                                                </svg>
+                                                <div className="flex justify-between mt-1">
+                                                    {points.map((p, i) => (
+                                                        <span key={i} className="text-[8px] text-white/50 font-medium">{p.label}</span>
+                                                    ))}
+                                                </div>
+                                            </div>
+                                        );
+                                    })()}
+                                </div>
+                            )}
+
+                            {/* Recent reviews */}
+                            {qaManual.recent.length > 0 && (
+                                <div className="mb-3">
+                                    <button
+                                        onClick={() => setQaRecentExpanded(!qaRecentExpanded)}
+                                        className="w-full flex items-center justify-between text-[10px] text-white/60 uppercase tracking-wider font-semibold mb-1 hover:text-white/80 transition-colors"
+                                    >
+                                        <span>Recent Reviews ({qaManual.recent.length})</span>
+                                        {qaRecentExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                                    </button>
+                                    {qaRecentExpanded && (
+                                        <div className="bg-white/5 rounded-xl divide-y divide-white/5 max-h-60 overflow-y-auto">
+                                            {qaManual.recent.slice(0, 50).map((r, i) => (
+                                                <div key={`${r.date}-${r.phone}-${i}`} className="px-3 py-2 flex items-start gap-2">
+                                                    <div className="text-[10px] text-white/40 font-mono whitespace-nowrap pt-0.5">
+                                                        {new Date(r.date + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}
+                                                    </div>
+                                                    <div className="flex-1 min-w-0">
+                                                        <div className="text-[11px] text-white/80">{r.violation}</div>
+                                                        <div className="text-[10px] text-white/40 flex items-center gap-2">
+                                                            {r.phone && <span>{r.phone}</span>}
+                                                            {r.reviewer && <span>by {r.reviewer}</span>}
+                                                            {r.campaign && <span className="bg-white/5 px-1.5 py-0.5 rounded text-[9px]">{r.campaign}</span>}
+                                                        </div>
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+
+                            {/* Date range + match info */}
+                            <div className="text-[10px] text-white/50 font-medium">
                                 {new Date(qaManual.earliest + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
-                                {' - '}
+                                {' – '}
                                 {new Date(qaManual.latest + 'T00:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
                                 {qaManual.matchedName !== `${employee.first_name} ${employee.last_name}`.trim() && (
-                                    <span className="ml-1 text-gray-300">(matched: {qaManual.matchedName})</span>
+                                    <span className="ml-1 text-white/40">(matched: {qaManual.matchedName})</span>
                                 )}
                             </div>
                         </div>
@@ -1067,13 +1630,11 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
 
                     {/* Weekly Schedule */}
                     {schedule && (
-                        <div className="space-y-4">
-                            <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wider flex items-center gap-2">
-                                <Clock size={14} className="text-indigo-500" />
-                                Weekly Schedule
+                        <div className="rounded-2xl bg-gradient-to-br from-slate-800 via-gray-900 to-slate-900 p-5 shadow-lg">
+                            <h3 className="text-sm font-bold text-white flex items-center gap-2 mb-4">
+                                Schedule
                                 {(() => {
                                     const grossHours = calculateWeeklyHours(schedule);
-                                    // Deduct 1hr break per working day if agent has a break schedule
                                     const workingDays = WEEKDAYS.filter(day => {
                                         const s = schedule[day];
                                         return s && s.trim().toLowerCase() !== 'off' && s.trim() !== '';
@@ -1084,11 +1645,11 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                                     const ft = displayHours >= 30;
                                     return (
                                         <>
-                                            <span className={`text-xs px-2 py-0.5 rounded-full font-medium normal-case ${ft ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'}`}>
+                                            <span className={`text-[11px] px-2.5 py-0.5 rounded-full font-semibold normal-case ${ft ? 'bg-emerald-500/20 text-emerald-300 ring-1 ring-emerald-400/30' : 'bg-amber-500/20 text-amber-300 ring-1 ring-amber-400/30'}`}>
                                                 {displayHours}h/wk &middot; {ft ? 'Full-Time' : 'Part-Time'}
                                             </span>
                                             {breakSchedule && breakDeduction > 0 && (
-                                                <span className="text-[10px] text-gray-400 normal-case ml-1">
+                                                <span className="text-[10px] text-white/50 normal-case ml-1">
                                                     (1hr break/day deducted)
                                                 </span>
                                             )}
@@ -1097,23 +1658,23 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                                 })()}
                             </h3>
 
-                            <div className="space-y-1.5">
+                            <div className="bg-white/5 rounded-xl divide-y divide-white/5 overflow-hidden">
                                 {WEEKDAYS.map((day) => {
                                     const shift = schedule[day];
                                     const isOff = !shift || shift.trim().toLowerCase() === 'off' || shift.trim() === '';
                                     const grossHours = parseShiftDuration(shift);
                                     const netHours = breakSchedule && grossHours > 0 ? Math.max(grossHours - 1, 0) : grossHours;
                                     return (
-                                        <div key={day} className={`flex items-center justify-between px-3 py-2 rounded-lg ${isOff ? 'bg-gray-50' : 'bg-indigo-50/50'}`}>
-                                            <span className={`text-sm font-medium ${isOff ? 'text-gray-400' : 'text-gray-700'}`}>
+                                        <div key={day} className={`flex items-center justify-between px-4 py-2.5 ${isOff ? '' : 'bg-indigo-500/10'}`}>
+                                            <span className={`text-[13px] font-semibold ${isOff ? 'text-white/30' : 'text-white/90'}`}>
                                                 {day}
                                             </span>
-                                            <div className="text-right">
-                                                <span className={`text-sm ${isOff ? 'text-gray-400 italic' : 'text-gray-800 font-medium'}`}>
+                                            <div className="text-right flex items-center gap-2">
+                                                <span className={`text-[13px] font-mono ${isOff ? 'text-white/30 italic' : 'text-white font-medium'}`}>
                                                     {isOff ? 'OFF' : normalizeShiftTime(shift).trim()}
                                                 </span>
                                                 {!isOff && netHours > 0 && (
-                                                    <span className="text-xs text-gray-500 ml-2">({netHours}h)</span>
+                                                    <span className="text-[11px] text-white/50 font-mono bg-white/10 px-1.5 py-0.5 rounded">({netHours}h)</span>
                                                 )}
                                             </div>
                                         </div>
@@ -1122,9 +1683,9 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                             </div>
 
                             {schedule.Notes && (
-                                <div className="px-1 mt-1">
-                                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-0.5">Notes</p>
-                                    <p className="text-xs text-gray-500 italic">{schedule.Notes}</p>
+                                <div className="mt-3 bg-white/5 rounded-xl px-4 py-2.5">
+                                    <p className="text-[10px] font-semibold text-white/50 uppercase tracking-wider mb-0.5">Notes</p>
+                                    <p className="text-[12px] text-white/60 italic">{schedule.Notes}</p>
                                 </div>
                             )}
                         </div>
@@ -1132,20 +1693,18 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
 
                     {/* Break Schedule */}
                     {breakSchedule && (
-                        <div className="space-y-4">
-                            <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wider flex items-center gap-2">
-                                <Coffee size={14} className="text-amber-500" />
-                                Break Schedule
+                        <div className="rounded-2xl bg-gradient-to-br from-slate-800 via-gray-900 to-slate-900 p-5 shadow-lg">
+                            <h3 className="text-sm font-bold text-white flex items-center gap-2 mb-4">
+                                Breaks
                             </h3>
 
-                            <div className="space-y-1.5">
+                            <div className="bg-white/5 rounded-xl divide-y divide-white/5 overflow-hidden">
                                 {[
                                     { label: 'First Break', key: 'First Break' },
                                     { label: 'Lunch Break', key: 'Lunch Break' },
                                     { label: 'Second Break', key: 'Second Break' },
                                 ].map(({ label, key }) => {
                                     const raw = breakSchedule[key];
-                                    // Parse time from Google Sheets date string (e.g. "Sat Dec 30 1899 11:00:00 GMT-0500 ...")
                                     let displayTime = '';
                                     if (raw && raw.trim() && raw.trim() !== '-') {
                                         const parsed = new Date(raw);
@@ -1161,11 +1720,11 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                                     }
                                     const hasValue = displayTime.length > 0;
                                     return (
-                                        <div key={key} className={`flex items-center justify-between px-3 py-2 rounded-lg ${hasValue ? 'bg-amber-50/50' : 'bg-gray-50'}`}>
-                                            <span className={`text-sm font-medium ${hasValue ? 'text-gray-700' : 'text-gray-400'}`}>
+                                        <div key={key} className={`flex items-center justify-between px-4 py-2.5 ${hasValue ? 'bg-amber-500/10' : ''}`}>
+                                            <span className={`text-[13px] font-semibold ${hasValue ? 'text-white/90' : 'text-white/30'}`}>
                                                 {label}
                                             </span>
-                                            <span className={`text-sm ${hasValue ? 'text-gray-800 font-medium' : 'text-gray-400 italic'}`}>
+                                            <span className={`text-[13px] font-mono ${hasValue ? 'text-white font-medium' : 'text-white/30 italic'}`}>
                                                 {hasValue ? displayTime : '—'}
                                             </span>
                                         </div>
@@ -1174,18 +1733,18 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                             </div>
 
                             {breakSchedule.Notes && (
-                                <div className="px-1 mt-1">
-                                    <p className="text-[10px] font-semibold text-gray-400 uppercase tracking-wider mb-0.5">Notes</p>
-                                    <p className="text-xs text-gray-500 italic">{breakSchedule.Notes}</p>
+                                <div className="mt-3 bg-white/5 rounded-xl px-4 py-2.5">
+                                    <p className="text-[10px] font-semibold text-white/50 uppercase tracking-wider mb-0.5">Notes</p>
+                                    <p className="text-[12px] text-white/60 italic">{breakSchedule.Notes}</p>
                                 </div>
                             )}
                         </div>
                     )}
 
-                    <div className="space-y-4">
-                        <div className="flex items-center justify-between">
-                            <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wider">Documents</h3>
-                            <label className="cursor-pointer bg-gray-900 text-white p-1.5 rounded-lg hover:bg-gray-800 transition-colors shadow-sm">
+                    <div className="rounded-2xl bg-gradient-to-br from-slate-800 via-gray-900 to-slate-900 p-5 shadow-lg">
+                        <div className="flex items-center justify-between mb-4">
+                            <h3 className="text-sm font-bold text-white">Documents</h3>
+                            <label className="cursor-pointer bg-white/10 text-white/70 p-1.5 rounded-lg hover:bg-white/15 hover:text-white transition-colors">
                                 <Upload size={14} />
                                 <input
                                     type="file"
@@ -1198,66 +1757,67 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
 
                         <div className="space-y-2">
                             {uploading && (
-                                <div className="text-xs text-blue-600 animate-pulse font-medium">
+                                <div className="text-xs text-violet-300 animate-pulse font-medium">
                                     Uploading document...
                                 </div>
                             )}
 
                             {!documents || documents.length === 0 ? (
-                                <p className="text-sm text-gray-400 italic">No documents uploaded.</p>
+                                <p className="text-sm text-white/50 italic">No documents uploaded.</p>
                             ) : (
-                                documents.map((doc, idx) => (
-                                    <div key={idx} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-100 group hover:border-blue-100 transition-colors">
-                                        <div className="flex items-center gap-3 overflow-hidden cursor-pointer" onClick={() => handleViewDocument(doc)}>
-                                            <div className="p-2 bg-white rounded-md border border-gray-100 text-blue-500">
-                                                <FileText size={16} />
+                                <div className="bg-white/5 rounded-xl divide-y divide-white/5 overflow-hidden">
+                                    {documents.map((doc, idx) => (
+                                        <div key={idx} className="flex items-center justify-between p-3 group hover:bg-white/5 transition-colors">
+                                            <div className="flex items-center gap-3 overflow-hidden cursor-pointer" onClick={() => handleViewDocument(doc)}>
+                                                <div className="p-2 bg-white/10 rounded-md text-violet-400">
+                                                    <FileText size={16} />
+                                                </div>
+                                                <div className="min-w-0">
+                                                    <p className="text-sm font-medium text-white/90 truncate pr-4 hover:text-violet-300 transition-colors" title={doc.name}>
+                                                        {doc.name}
+                                                    </p>
+                                                    <p className="text-[10px] text-white/50">
+                                                        {(doc.size / 1024).toFixed(0)} KB • {new Date(doc.uploaded_at).toLocaleDateString()}
+                                                    </p>
+                                                </div>
                                             </div>
-                                            <div className="min-w-0">
-                                                <p className="text-sm font-medium text-gray-900 truncate pr-4 hover:text-blue-600 transition-colors" title={doc.name}>
-                                                    {doc.name}
-                                                </p>
-                                                <p className="text-[10px] text-gray-400">
-                                                    {(doc.size / 1024).toFixed(0)} KB • {new Date(doc.uploaded_at).toLocaleDateString()}
-                                                </p>
+                                            <div className="flex items-center gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
+                                                <button
+                                                    onClick={() => handleViewDocument(doc)}
+                                                    className="p-1.5 text-white/40 hover:text-violet-300 hover:bg-white/10 rounded-md transition-colors"
+                                                    title="View"
+                                                >
+                                                    <Eye size={14} />
+                                                </button>
+                                                <button
+                                                    onClick={() => handleDownload(doc)}
+                                                    className="p-1.5 text-white/40 hover:text-violet-300 hover:bg-white/10 rounded-md transition-colors"
+                                                    title="Download"
+                                                >
+                                                    <Download size={14} />
+                                                </button>
+                                                <button
+                                                    onClick={() => handleDeleteDocument(doc)}
+                                                    className="p-1.5 text-white/40 hover:text-red-400 hover:bg-red-500/10 rounded-md transition-colors"
+                                                    title="Delete"
+                                                >
+                                                    <Trash2 size={14} />
+                                                </button>
                                             </div>
                                         </div>
-                                        <div className="flex items-center gap-1 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition-opacity">
-                                            <button
-                                                onClick={() => handleViewDocument(doc)}
-                                                className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
-                                                title="View"
-                                            >
-                                                <Eye size={14} />
-                                            </button>
-                                            <button
-                                                onClick={() => handleDownload(doc)}
-                                                className="p-1.5 text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-md transition-colors"
-                                                title="Download"
-                                            >
-                                                <Download size={14} />
-                                            </button>
-                                            <button
-                                                onClick={() => handleDeleteDocument(doc)}
-                                                className="p-1.5 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-md transition-colors"
-                                                title="Delete"
-                                            >
-                                                <Trash2 size={14} />
-                                            </button>
-                                        </div>
-                                    </div>
-                                ))
+                                    ))}
+                                </div>
                             )}
                         </div>
                     </div>
 
                     {/* Attendance History */}
-                    <div className="space-y-4">
-                        <div className="flex items-center justify-between">
-                            <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wider flex items-center gap-2">
-                                <Activity size={14} className="text-cyan-500" />
-                                Attendance History
+                    <div className="rounded-2xl bg-gradient-to-br from-slate-800 via-gray-900 to-slate-900 p-5 shadow-lg">
+                        <div className="flex items-center justify-between mb-4">
+                            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                                Attendance
                                 {attendanceEvents.length > 0 && (
-                                    <span className="text-xs bg-cyan-50 text-cyan-700 px-2 py-0.5 rounded-full font-medium normal-case">
+                                    <span className="text-[11px] bg-white/10 text-white/70 px-2 py-0.5 rounded-full font-medium">
                                         {attendanceEvents.length}
                                     </span>
                                 )}
@@ -1265,7 +1825,7 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                             {attendanceEvents.length > 3 && (
                                 <button
                                     onClick={() => setAttendanceExpanded(!attendanceExpanded)}
-                                    className="text-xs text-blue-600 hover:text-blue-700 flex items-center gap-1"
+                                    className="text-xs text-violet-300 hover:text-violet-200 flex items-center gap-1"
                                 >
                                     {attendanceExpanded ? <>Show less <ChevronUp size={12} /></> : <>Show all <ChevronDown size={12} /></>}
                                 </button>
@@ -1273,7 +1833,7 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                         </div>
 
                         {attendanceEvents.length === 0 ? (
-                            <p className="text-sm text-gray-400 italic">No attendance events on record.</p>
+                            <p className="text-sm text-white/50 italic">No attendance events on record.</p>
                         ) : (
                             <>
                                 {/* 30-day score */}
@@ -1289,40 +1849,68 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                                         }
                                         return new Date(s);
                                     };
-                                    const weights: Record<string, number> = { late: 1, early_leave: 1, absent: 1.5, no_show: 1.5 };
+                                    const weights: Record<string, number> = { planned: 1, unplanned: 1.5 };
                                     const recentScore = attendanceEvents
                                         .filter(e => { try { return parseDate(e.date) >= thirtyDaysAgo; } catch { return false; } })
                                         .reduce((sum, e) => sum + (weights[e.eventType] || 1), 0);
-                                    const color = recentScore >= 6 ? 'text-red-600 bg-red-50 border-red-200' : recentScore >= 3 ? 'text-amber-600 bg-amber-50 border-amber-200' : 'text-emerald-600 bg-emerald-50 border-emerald-200';
+                                    const color = recentScore >= 6 ? 'text-red-400 bg-red-500/10 ring-red-400/20' : recentScore >= 3 ? 'text-amber-400 bg-amber-500/10 ring-amber-400/20' : 'text-emerald-400 bg-emerald-500/10 ring-emerald-400/20';
                                     return (
-                                        <div className={`flex items-center justify-between px-3 py-2 rounded-lg border ${color}`}>
+                                        <div className={`flex items-center justify-between px-3 py-2 rounded-lg ring-1 mb-3 ${color}`}>
                                             <span className="text-xs font-medium">30-Day Occurrence Score</span>
-                                            <span className="text-sm font-bold">{recentScore.toFixed(1)} pts</span>
+                                            <span className="text-sm font-bold font-mono">{recentScore.toFixed(1)} pts</span>
                                         </div>
                                     );
                                 })()}
-                                <div className="space-y-2">
+                                {/* Days since last absence */}
+                                {(() => {
+                                    const months: Record<string, string> = { Jan: '01', Feb: '02', Mar: '03', Apr: '04', May: '05', Jun: '06', Jul: '07', Aug: '08', Sep: '09', Oct: '10', Nov: '11', Dec: '12' };
+                                    const parseDate = (s: string) => {
+                                        if (s.includes('-')) return new Date(s);
+                                        const parts = s.trim().split(/\s+/);
+                                        if (parts.length === 3 && months[parts[1]]) {
+                                            return new Date(`${parts[2]}-${months[parts[1]]}-${parts[0].padStart(2, '0')}`);
+                                        }
+                                        return new Date(s);
+                                    };
+                                    let latestDate: Date | null = null;
+                                    for (const evt of attendanceEvents) {
+                                        try {
+                                            const d = parseDate(evt.date);
+                                            if (!isNaN(d.getTime()) && (!latestDate || d > latestDate)) latestDate = d;
+                                        } catch { /* skip */ }
+                                    }
+                                    if (!latestDate) return null;
+                                    const diffMs = Date.now() - latestDate.getTime();
+                                    const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+                                    if (diffDays < 0) return null;
+                                    const color = diffDays >= 30 ? 'text-emerald-400' : diffDays >= 14 ? 'text-white/60' : 'text-amber-400';
+                                    return (
+                                        <div className="flex items-center justify-between px-3 py-1.5 mb-3">
+                                            <span className="text-[11px] text-white/50">Days since last event</span>
+                                            <span className={`text-xs font-bold font-mono ${color}`}>{diffDays}d</span>
+                                        </div>
+                                    );
+                                })()}
+                                <div className="bg-white/5 rounded-xl divide-y divide-white/5 overflow-hidden">
                                     {(attendanceExpanded ? attendanceEvents : attendanceEvents.slice(0, 3)).map((evt, idx) => {
                                         const configs: Record<string, { color: string; bg: string; label: string; Icon: typeof Clock }> = {
-                                            late: { color: 'text-yellow-600', bg: 'bg-yellow-50', label: 'Late', Icon: Clock },
-                                            early_leave: { color: 'text-orange-600', bg: 'bg-orange-50', label: 'Early Leave', Icon: ArrowLeft },
-                                            no_show: { color: 'text-amber-600', bg: 'bg-amber-50', label: 'Unplanned', Icon: AlertTriangle },
-                                            absent: { color: 'text-rose-600', bg: 'bg-rose-50', label: 'Absent', Icon: AlertTriangle },
+                                            planned: { color: 'text-sky-400', bg: 'bg-sky-500/10', label: 'Planned', Icon: Calendar },
+                                            unplanned: { color: 'text-rose-400', bg: 'bg-rose-500/10', label: 'Unplanned', Icon: AlertTriangle },
                                         };
-                                        const cfg = configs[evt.eventType] || configs.absent;
+                                        const cfg = configs[evt.eventType] || configs.unplanned;
                                         const Icon = cfg.Icon;
                                         return (
-                                            <div key={idx} className={`flex items-center gap-3 p-3 rounded-lg border border-gray-100 ${cfg.bg}`}>
+                                            <div key={idx} className={`flex items-center gap-3 px-4 py-3 ${cfg.bg}`}>
                                                 <Icon size={14} className={cfg.color} />
                                                 <div className="flex-1 min-w-0">
                                                     <div className="flex items-center justify-between">
                                                         <span className={`text-xs font-semibold ${cfg.color}`}>
                                                             {cfg.label}{evt.minutes ? ` (${evt.minutes} min)` : ''}
                                                         </span>
-                                                        <span className="text-[10px] text-gray-500">{evt.date}</span>
+                                                        <span className="text-[10px] text-white/50">{evt.date}</span>
                                                     </div>
                                                     {evt.reason && (
-                                                        <p className="text-[11px] text-gray-500 mt-0.5 truncate">{evt.reason}</p>
+                                                        <p className="text-[11px] text-white/50 mt-0.5 truncate">{evt.reason}</p>
                                                     )}
                                                 </div>
                                             </div>
@@ -1334,13 +1922,12 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                     </div>
 
                     {/* Write-Up History */}
-                    <div className="space-y-4">
-                        <div className="flex items-center justify-between">
-                            <h3 className="text-sm font-semibold text-gray-900 uppercase tracking-wider flex items-center gap-2">
-                                <AlertTriangle size={14} className="text-amber-500" />
-                                Write-Up History
+                    <div className="rounded-2xl bg-gradient-to-br from-slate-800 via-gray-900 to-slate-900 p-5 shadow-lg">
+                        <div className="flex items-center justify-between mb-4">
+                            <h3 className="text-sm font-bold text-white flex items-center gap-2">
+                                Write-Ups
                                 {writeUps.length > 0 && (
-                                    <span className="text-xs bg-amber-50 text-amber-700 px-2 py-0.5 rounded-full font-medium normal-case">
+                                    <span className="text-[11px] bg-white/10 text-white/70 px-2 py-0.5 rounded-full font-medium">
                                         {writeUps.length}
                                     </span>
                                 )}
@@ -1348,7 +1935,7 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                             {writeUps.length > 2 && (
                                 <button
                                     onClick={() => setWriteUpsExpanded(!writeUpsExpanded)}
-                                    className="text-xs text-blue-600 hover:text-blue-700 flex items-center gap-1"
+                                    className="text-xs text-violet-300 hover:text-violet-200 flex items-center gap-1"
                                 >
                                     {writeUpsExpanded ? <>Show less <ChevronUp size={12} /></> : <>Show all <ChevronDown size={12} /></>}
                                 </button>
@@ -1356,37 +1943,37 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                         </div>
 
                         {writeUps.length === 0 ? (
-                            <p className="text-sm text-gray-400 italic">No write-ups on record.</p>
+                            <p className="text-sm text-white/50 italic">No write-ups on record.</p>
                         ) : (
-                            <div className="space-y-2">
+                            <div className="bg-white/5 rounded-xl divide-y divide-white/5 overflow-hidden">
                                 {(writeUpsExpanded ? writeUps : writeUps.slice(0, 2)).map((wu) => (
                                     <div
                                         key={wu.id}
-                                        className="p-3 bg-amber-50/50 rounded-lg border border-amber-100 cursor-pointer hover:border-amber-200 transition-colors"
+                                        className="p-3 cursor-pointer hover:bg-white/5 transition-colors"
                                         onClick={() => setExpandedWriteUp(expandedWriteUp === wu.id ? null : wu.id)}
                                     >
                                         <div className="flex items-center justify-between mb-1">
-                                            <span className="text-sm font-medium text-gray-900 truncate pr-4">
+                                            <span className="text-sm font-medium text-white/90 truncate pr-4">
                                                 {wu.subject}
                                             </span>
                                             <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
-                                                wu.status === 'sent' ? 'bg-emerald-100 text-emerald-700' :
-                                                wu.status === 'simulated' ? 'bg-blue-100 text-blue-700' :
-                                                'bg-red-100 text-red-700'
+                                                wu.status === 'sent' ? 'bg-emerald-500/20 text-emerald-300' :
+                                                wu.status === 'simulated' ? 'bg-blue-500/20 text-blue-300' :
+                                                'bg-red-500/20 text-red-300'
                                             }`}>
                                                 {wu.status}
                                             </span>
                                         </div>
-                                        <p className="text-[10px] text-gray-500">
+                                        <p className="text-[10px] text-white/50">
                                             {new Date(wu.sent_at).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
                                             {' '}&bull;{' '}{wu.type.replace(/_/g, ' ')}
                                             {wu.sent_by && <> &bull; by {wu.sent_by}</>}
                                         </p>
                                         {expandedWriteUp === wu.id && (
-                                            <div className="mt-2 pt-2 border-t border-amber-100">
-                                                <p className="text-xs text-gray-600 whitespace-pre-line">{wu.body}</p>
+                                            <div className="mt-2 pt-2 border-t border-white/10">
+                                                <p className="text-xs text-white/60 whitespace-pre-line">{wu.body}</p>
                                                 {wu.message_id && (
-                                                    <p className="text-[10px] text-gray-400 mt-2 font-mono">
+                                                    <p className="text-[10px] text-white/40 mt-2 font-mono">
                                                         Message ID: {wu.message_id}
                                                     </p>
                                                 )}
@@ -1398,36 +1985,172 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                         )}
                     </div>
 
+                    {/* Notes */}
+                    {notes.length > 0 && (
+                        <div className="pt-6">
+                            <button
+                                onClick={() => setNotesExpanded(!notesExpanded)}
+                                className="w-full flex items-center justify-between text-[10px] text-white/70 uppercase tracking-wider font-semibold mb-2 hover:text-white/90 transition-colors"
+                            >
+                                <span className="flex items-center gap-1.5"><StickyNote size={12} /> Notes ({notes.length})</span>
+                                {notesExpanded ? <ChevronUp size={12} /> : <ChevronDown size={12} />}
+                            </button>
+                            {notesExpanded && (
+                                <div className="bg-white/5 rounded-xl divide-y divide-white/5 max-h-48 overflow-y-auto">
+                                    {notes.map((n) => (
+                                        <div key={n.id} className="px-3 py-2.5 group/note">
+                                            <div className="flex items-center justify-between mb-1">
+                                                <span className="text-[10px] text-white/50 font-mono">
+                                                    {new Date(n.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}
+                                                </span>
+                                                <div className="flex items-center gap-2">
+                                                    <span className="text-[10px] text-violet-300 font-medium">{n.added_by}</span>
+                                                    <button
+                                                        onClick={() => deleteNote(n.id)}
+                                                        className="opacity-0 group-hover/note:opacity-100 text-red-400/70 hover:text-red-400 transition-all"
+                                                        title="Delete note"
+                                                    >
+                                                        <Trash2 size={11} />
+                                                    </button>
+                                                </div>
+                                            </div>
+                                            <p className="text-[12px] text-white/90 whitespace-pre-line">{n.note}</p>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    )}
+
                     {/* Actions */}
                     <div className="pt-8 flex flex-col gap-3">
                         <div className="flex gap-3">
-                            <button className="flex-1 py-2.5 bg-gray-900 text-white rounded-xl font-medium text-sm hover:bg-gray-800 transition-colors shadow-lg shadow-gray-900/10">
+                            <button
+                                onClick={() => { setShowMessageForm(!showMessageForm); setMessageStatus(null); }}
+                                className="flex-1 py-2.5 bg-violet-600 text-white rounded-xl font-medium text-sm hover:bg-violet-500 transition-colors shadow-lg shadow-violet-900/30 flex items-center justify-center gap-2"
+                            >
+                                <SlackIcon size={14} />
                                 Send Message
                             </button>
-                            <button className="flex-1 py-2.5 bg-gray-100 text-gray-700 rounded-xl font-medium text-sm hover:bg-gray-200 transition-colors">
-                                Edit Profile
+                            <button
+                                onClick={() => setShowNoteForm(true)}
+                                className="flex-1 py-2.5 bg-white/10 text-white/80 rounded-xl font-medium text-sm hover:bg-white/15 transition-colors ring-1 ring-white/10 flex items-center justify-center gap-2"
+                            >
+                                <StickyNote size={14} />
+                                Add Note
                             </button>
                         </div>
+                        {showMessageForm && (
+                            <div className="p-3 bg-white/5 rounded-xl ring-1 ring-white/10">
+                                <label className="text-[10px] text-white/50 uppercase tracking-wider font-semibold mb-1 block">Send to</label>
+                                <select
+                                    value={messageRecipient}
+                                    onChange={(e) => setMessageRecipient(e.target.value)}
+                                    className="w-full bg-white/10 text-white/90 text-sm rounded-lg px-3 py-2 border border-white/10 focus:border-violet-400/50 focus:outline-none mb-2 [&>option]:bg-zinc-800 [&>option]:text-white"
+                                >
+                                    <option value="employee">{employee.first_name} {employee.last_name} (Employee)</option>
+                                    {getManagerNames().map(name => (
+                                        <option key={name} value={name}>{name} (Manager)</option>
+                                    ))}
+                                    <option value="Miki Furman">Miki Furman (Test)</option>
+                                </select>
+                                <div className="flex flex-wrap gap-1.5 mb-2">
+                                    {(messageRecipient === "employee" ? [
+                                        { label: "Schedule", text: `Hi ${employee.first_name}, this is ${profile?.first_name || "HR"} from management. I wanted to check in about your schedule — please confirm your availability for this week.` },
+                                        { label: "Performance", text: `Hi ${employee.first_name}, this is ${profile?.first_name || "HR"}. I'd like to discuss your recent performance metrics with you. When would be a good time to chat?` },
+                                        { label: "Attendance", text: `Hi ${employee.first_name}, this is ${profile?.first_name || "HR"}. I noticed some attendance concerns and wanted to touch base. Please reach out when you get a chance.` },
+                                        { label: "Follow-up", text: `Hi ${employee.first_name}, just following up on our last conversation. Let me know if you have any questions or need anything.` },
+                                    ] : [
+                                        { label: "Agent Update", text: `Hi ${messageRecipient.split(" ")[0]}, this is ${profile?.first_name || "HR"}. I wanted to flag something regarding ${employee.first_name} ${employee.last_name} — could you take a look when you get a chance?` },
+                                        { label: "Performance", text: `Hi ${messageRecipient.split(" ")[0]}, this is ${profile?.first_name || "HR"}. Can we discuss ${employee.first_name} ${employee.last_name}'s recent performance? I have some notes I'd like to go over.` },
+                                        { label: "Attendance", text: `Hi ${messageRecipient.split(" ")[0]}, this is ${profile?.first_name || "HR"}. I wanted to bring ${employee.first_name} ${employee.last_name}'s recent attendance to your attention. Let me know how you'd like to handle it.` },
+                                        { label: "Escalation", text: `Hi ${messageRecipient.split(" ")[0]}, this is ${profile?.first_name || "HR"}. I need to escalate a matter regarding ${employee.first_name} ${employee.last_name}. Can we connect today?` },
+                                    ]).map(t => (
+                                        <button
+                                            key={t.label}
+                                            onClick={() => setMessageText(t.text)}
+                                            className="text-[10px] px-2 py-1 rounded-full bg-white/10 text-white/60 hover:bg-white/15 hover:text-white/90 transition-colors"
+                                        >
+                                            {t.label}
+                                        </button>
+                                    ))}
+                                </div>
+                                <textarea
+                                    value={messageText}
+                                    onChange={(e) => setMessageText(e.target.value)}
+                                    placeholder="Type your message..."
+                                    rows={3}
+                                    className="w-full bg-white/5 text-white/90 text-sm rounded-lg px-3 py-2 placeholder-white/30 border border-white/10 focus:border-violet-400/50 focus:outline-none resize-none"
+                                />
+                                {messageStatus && (
+                                    <p className={`text-xs mt-1.5 ${messageStatus.type === "success" ? "text-emerald-400" : "text-red-400"}`}>
+                                        {messageStatus.text}
+                                    </p>
+                                )}
+                                <div className="flex gap-2 mt-2 justify-end">
+                                    <button
+                                        onClick={() => { setShowMessageForm(false); setMessageText(""); setMessageStatus(null); setMessageRecipient("employee"); }}
+                                        className="px-3 py-1.5 text-[12px] text-white/60 hover:text-white/80 transition-colors"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        onClick={sendMessage}
+                                        disabled={!messageText.trim() || messageSending}
+                                        className="px-4 py-1.5 text-[12px] bg-violet-600 text-white rounded-lg font-medium hover:bg-violet-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed flex items-center gap-1.5"
+                                    >
+                                        <SlackIcon size={12} />
+                                        {messageSending ? "Sending..." : "Send via Slack"}
+                                    </button>
+                                </div>
+                            </div>
+                        )}
+                        {showNoteForm && (
+                            <div className="p-3 bg-white/5 rounded-xl ring-1 ring-white/10">
+                                <textarea
+                                    value={noteText}
+                                    onChange={(e) => setNoteText(e.target.value)}
+                                    placeholder="Write a note..."
+                                    rows={3}
+                                    className="w-full bg-white/5 text-white/90 text-sm rounded-lg px-3 py-2 placeholder-white/30 border border-white/10 focus:border-violet-400/50 focus:outline-none resize-none"
+                                />
+                                <div className="flex gap-2 mt-2 justify-end">
+                                    <button
+                                        onClick={() => { setShowNoteForm(false); setNoteText(""); }}
+                                        className="px-3 py-1.5 text-[12px] text-white/60 hover:text-white/80 transition-colors"
+                                    >
+                                        Cancel
+                                    </button>
+                                    <button
+                                        onClick={saveNote}
+                                        disabled={!noteText.trim() || noteSaving}
+                                        className="px-4 py-1.5 text-[12px] bg-violet-600 text-white rounded-lg font-medium hover:bg-violet-500 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                                    >
+                                        {noteSaving ? "Saving..." : "Save Note"}
+                                    </button>
+                                </div>
+                            </div>
+                        )}
                         {employee.employee_status === 'Active' && (
                             <>
                                 {!showTerminateConfirm ? (
                                     <button
                                         onClick={() => { setShowTerminateConfirm(true); setTerminateError(null); }}
-                                        className="w-full py-2.5 bg-red-50 text-red-600 rounded-xl font-medium text-sm hover:bg-red-100 transition-colors flex items-center justify-center gap-2"
+                                        className="w-full py-2.5 bg-red-500/10 text-red-400 rounded-xl font-medium text-sm hover:bg-red-500/20 transition-colors ring-1 ring-red-400/20 flex items-center justify-center gap-2"
                                     >
                                         <Ban size={14} />
                                         Terminate Employee
                                     </button>
                                 ) : (
-                                    <div className="p-4 bg-red-50 rounded-xl border border-red-200">
-                                        <p className="text-sm text-red-800 font-medium mb-1">
+                                    <div className="p-4 bg-red-500/10 rounded-xl ring-1 ring-red-400/20">
+                                        <p className="text-sm text-red-300 font-medium mb-1">
                                             Terminate {employee.first_name} {employee.last_name}?
                                         </p>
-                                        <p className="text-xs text-red-600 mb-3">
+                                        <p className="text-xs text-red-400/70 mb-3">
                                             This will mark them as Terminated and remove them from all Slack channels.
                                         </p>
                                         {terminateError && (
-                                            <p className="text-xs text-red-700 bg-red-100 rounded-lg px-3 py-2 mb-3">{terminateError}</p>
+                                            <p className="text-xs text-red-300 bg-red-500/20 rounded-lg px-3 py-2 mb-3">{terminateError}</p>
                                         )}
                                         <div className="flex gap-2">
                                             <button
@@ -1461,7 +2184,7 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                                             <button
                                                 onClick={() => setShowTerminateConfirm(false)}
                                                 disabled={isTerminating}
-                                                className="flex-1 py-2 bg-white text-gray-700 rounded-lg font-medium text-sm hover:bg-gray-50 transition-colors border border-gray-200 disabled:opacity-50"
+                                                className="flex-1 py-2 bg-white/10 text-white/70 rounded-lg font-medium text-sm hover:bg-white/15 transition-colors ring-1 ring-white/10 disabled:opacity-50"
                                             >
                                                 Cancel
                                             </button>
@@ -1471,7 +2194,7 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                             </>
                         )}
                         {employee.employee_status === 'Terminated' && (
-                            <div className="py-2.5 bg-red-50 text-red-500 rounded-xl font-medium text-sm text-center flex items-center justify-center gap-2">
+                            <div className="py-2.5 bg-red-500/10 text-red-400 rounded-xl font-medium text-sm text-center flex items-center justify-center gap-2 ring-1 ring-red-400/20">
                                 <Ban size={14} />
                                 Terminated
                             </div>

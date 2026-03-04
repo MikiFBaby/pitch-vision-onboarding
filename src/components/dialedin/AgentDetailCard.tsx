@@ -3,7 +3,7 @@
 import { useEffect, useRef } from "react";
 import { X, Trophy, Medal, DollarSign, ShieldAlert, ShieldCheck } from "lucide-react";
 import { heatmapClass } from "@/utils/dialedin-heatmap";
-import { getRevenuePerTransfer, getCampaignType } from "@/utils/dialedin-revenue";
+import { getRevenuePerTransfer, getCampaignType, getBreakEvenTPH } from "@/utils/dialedin-revenue";
 import type { AgentPerformance, AgentQAStats } from "@/types/dialedin-types";
 
 interface AgentDetailCardProps {
@@ -103,7 +103,14 @@ export default function AgentDetailCard({ agent, onClose, wages, qaStats }: Agen
 
       {/* Metrics Grid */}
       <div className="px-3 py-2 flex-1">
-        <Metric label="SLA/hr" value={agent.tph.toFixed(2)} color={heatmapClass(agent.tph, "tph")} />
+        <Metric label="SLA/hr (adj)" value={(agent.adjusted_tph ?? agent.tph).toFixed(2)} color={(() => {
+          const threshold = getBreakEvenTPH(agent.team || null);
+          const tph = agent.adjusted_tph ?? agent.tph;
+          if (tph >= threshold * 1.2) return "text-emerald-400";
+          if (tph >= threshold) return "text-white/80";
+          if (tph >= threshold * 0.8) return "text-amber-400";
+          return "text-red-400";
+        })()} />
         <Metric label="SLA" value={agent.transfers.toLocaleString()} />
         <Metric label="Conversion" value={`${agent.conversion_rate.toFixed(1)}%`} color={heatmapClass(agent.conversion_rate, "conversion")} />
         <Metric label="Connect Rate" value={`${agent.connect_rate.toFixed(1)}%`} color={heatmapClass(agent.connect_rate, "connect")} />
@@ -113,11 +120,13 @@ export default function AgentDetailCard({ agent, onClose, wages, qaStats }: Agen
         <Metric label="Contacts" value={agent.contacts.toLocaleString()} />
         <Metric label="Conn/Hr" value={agent.connects_per_hour.toFixed(2)} />
         <div className="border-t border-[#1a2332] my-1.5" />
-        <Metric label="Hours Worked" value={agent.hours_worked.toFixed(2)} />
+        <Metric label="Gross Hours" value={agent.hours_worked.toFixed(2)} />
+        <Metric label="Paid Hours" value={(agent.paid_time_hours ?? agent.hours_worked).toFixed(2)} />
         <Metric label="Logged In" value={`${agent.logged_in_time_min.toFixed(0)}m`} />
         <Metric label="Talk Time" value={`${agent.talk_time_min.toFixed(0)}m`} />
         <Metric label="Wait Time" value={`${agent.wait_time_min.toFixed(0)}m`} />
         <Metric label="Wrap Time" value={`${agent.wrap_time_min.toFixed(0)}m`} />
+        <Metric label="Pause Time" value={`${(agent.pause_time_min ?? 0).toFixed(0)}m`} />
         {agent.dead_air_ratio > 0 && (
           <Metric label="Dead Air %" value={`${agent.dead_air_ratio.toFixed(1)}%`} color="text-red-400" />
         )}
@@ -135,7 +144,7 @@ export default function AgentDetailCard({ agent, onClose, wages, qaStats }: Agen
           <span className="text-[9px] uppercase tracking-wider text-white/30 font-mono">Revenue & Cost</span>
         </div>
         {(() => {
-          const ratePerTransfer = getRevenuePerTransfer(agent.team || null);
+          const ratePerTransfer = getRevenuePerTransfer(agent.team || null, agent.skill);
           const campaign = getCampaignType(agent.team || null);
           const revenue = agent.transfers * ratePerTransfer;
           const wage = wages?.[agent.agent_name];
@@ -176,6 +185,31 @@ export default function AgentDetailCard({ agent, onClose, wages, qaStats }: Agen
                   color="text-white/50"
                 />
               )}
+            </>
+          );
+        })()}
+
+        {/* Break-Even Analysis */}
+        {(() => {
+          const threshold = getBreakEvenTPH(agent.team || null);
+          const adjTph = agent.adjusted_tph ?? agent.tph;
+          const delta = adjTph - threshold;
+          const campaign = getCampaignType(agent.team || null);
+          return (
+            <>
+              <div className="border-t border-[#1a2332] my-1.5" />
+              <div className="flex items-center gap-1 mb-1">
+                <span className="text-[9px] uppercase tracking-wider text-white/30 font-mono">Break-Even</span>
+              </div>
+              <Metric
+                label={`Threshold (${(campaign || "aca").toUpperCase()})`}
+                value={`${threshold.toFixed(1)} SLA/hr`}
+              />
+              <Metric
+                label="vs Break-Even"
+                value={`${delta >= 0 ? "+" : ""}${delta.toFixed(2)} SLA/hr`}
+                color={delta >= 0 ? "text-emerald-400" : "text-red-400"}
+              />
             </>
           );
         })()}

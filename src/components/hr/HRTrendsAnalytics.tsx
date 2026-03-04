@@ -10,7 +10,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { motion } from "framer-motion";
 import { TrendingUp, Activity } from "lucide-react";
-import { deduplicateBookedOff, deduplicateUnplannedOff } from '@/lib/hr-utils';
+import { deduplicateBookedOff, deduplicateUnplannedOff, scheduleNameKeys } from '@/lib/hr-utils';
 
 type TrendRange = '7d' | '30d' | '60d' | '90d';
 
@@ -69,12 +69,13 @@ export default function HRTrendsAnalytics() {
                 from += PAGE_SIZE;
             }
 
-            // Build set of active employee keys
-            const activeKeys = new Set(
-                (employeeRes.data || []).map(e =>
-                    `${(e.first_name || '').trim().toLowerCase()} ${(e.last_name || '').trim().toLowerCase()}`
-                )
-            );
+            // Build set of active employee keys (all name variants)
+            const activeKeys = new Set<string>();
+            (employeeRes.data || []).forEach(e => {
+                for (const key of scheduleNameKeys(e.first_name, e.last_name)) {
+                    activeKeys.add(key);
+                }
+            });
 
             // Pre-compute scheduled counts per day of week
             const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -84,10 +85,11 @@ export default function HRTrendsAnalytics() {
                 const seen = new Set<string>();
                 let count = 0;
                 allSchedules.forEach(agent => {
-                    const key = `${(agent['First Name'] || '').trim().toLowerCase()} ${(agent['Last Name'] || '').trim().toLowerCase()}`;
+                    const rowKeys = scheduleNameKeys(agent['First Name'], agent['Last Name']);
+                    const primaryKey = rowKeys[0] || '';
                     const shift = agent[day];
-                    if (activeKeys.has(key) && !seen.has(key) && shift && shift.trim() !== '' && shift.trim().toLowerCase() !== 'off') {
-                        seen.add(key);
+                    if (rowKeys.some(k => activeKeys.has(k)) && !seen.has(primaryKey) && shift && shift.trim() !== '' && shift.trim().toLowerCase() !== 'off') {
+                        seen.add(primaryKey);
                         count++;
                     }
                 });
@@ -113,8 +115,12 @@ export default function HRTrendsAnalytics() {
             supabase.channel('hr_trends_nonbooked').on('postgres_changes', { event: '*', schema: 'public', table: 'Non Booked Days Off' }, fetchData).subscribe(),
         ];
 
+        // 15-minute polling backup in case Supabase Realtime disconnects
+        const pollInterval = setInterval(fetchData, 15 * 60 * 1000);
+
         return () => {
             channels.forEach(channel => supabase.removeChannel(channel));
+            clearInterval(pollInterval);
         };
     }, [fetchData]);
 

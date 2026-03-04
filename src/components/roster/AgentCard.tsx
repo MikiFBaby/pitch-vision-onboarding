@@ -75,7 +75,7 @@ export function AgentCard({ agent, onClick }: { agent: RosterAgent; onClick?: ()
       {/* Stats Grid */}
       <div className="grid grid-cols-2 gap-x-3 gap-y-1 text-[10px]">
         <div>
-          <span className="text-white/40">TPH </span>
+          <span className="text-white/40">SLA/hr </span>
           <span className="text-white font-semibold">{agent.avg_tph.toFixed(2)}</span>
         </div>
         <div>

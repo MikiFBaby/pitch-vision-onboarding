@@ -78,7 +78,7 @@ export function ScoutingReport({
       {/* Ramp Curve Visualization */}
       {avgRamp.length > 0 && (
         <div className="bg-[#0c1018] border border-[#1a2332] rounded-lg p-4">
-          <div className="text-[11px] text-white/40 tracking-widest mb-3">AVERAGE RAMP CURVE (TPH BY TENURE)</div>
+          <div className="text-[11px] text-white/40 tracking-widest mb-3">AVERAGE RAMP CURVE (SLA/hr BY TENURE)</div>
           <div className="flex items-end gap-1 h-24">
             {avgRamp.map((point) => {
               const maxTph = Math.max(...avgRamp.map((p) => p.avgTph), 1);
@@ -114,7 +114,7 @@ export function ScoutingReport({
                 <span className="text-[10px] text-white/30">{bucket.agents.length} agents</span>
               </div>
               <div className="flex items-center gap-4 text-[10px]">
-                <span className="text-white/40">Avg TPH: <span className="text-white">{avgTph.toFixed(2)}</span></span>
+                <span className="text-white/40">Avg SLA/hr: <span className="text-white">{avgTph.toFixed(2)}</span></span>
                 <span className="text-white/40">
                   Net P&L: <span className={pnlColor}>{totalPnl >= 0 ? "+" : ""}{fmt(totalPnl)}</span>
                 </span>
@@ -144,7 +144,7 @@ export function ScoutingReport({
                     </div>
                     <div className="flex items-center gap-3 text-white/50">
                       <span>{agent.days_active}d tenure</span>
-                      <span>TPH: <span className="text-white">{agent.avg_tph.toFixed(2)}</span></span>
+                      <span>SLA/hr: <span className="text-white">{agent.avg_tph.toFixed(2)}</span></span>
                       <span>P&L: <span className={aPnl}>{agent.pnl >= 0 ? "+" : ""}{fmt(agent.pnl)}</span></span>
                     </div>
                   </div>

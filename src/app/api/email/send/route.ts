@@ -14,15 +14,13 @@ export async function POST(req: Request) {
             );
         }
 
-        // Check for SMTP Config - if missing, simulate success for dev/demo
+        // Check for SMTP Config — fail loudly so callers know the email was NOT sent
         if (!process.env.SMTP_HOST || !process.env.SMTP_USER) {
-            console.log('[Email API] SMTP not configured. Simulating send to:', to);
-            return NextResponse.json({
-                success: true,
-                simulated: true,
-                messageId: `simulated_${Date.now()}`,
-                message: "Message queued (Simulation Mode)"
-            });
+            console.error('[Email API] SMTP not configured (missing SMTP_HOST or SMTP_USER). Email NOT sent to:', to);
+            return NextResponse.json(
+                { error: 'SMTP not configured. Set SMTP_HOST and SMTP_USER environment variables.', to },
+                { status: 503 }
+            );
         }
 
         // Configure transporter with Google Workspace settings

@@ -65,6 +65,9 @@ export async function POST(request: NextRequest) {
             'auto_fail_override_reason': null,
             'auto_fail_override_at': null,
             'auto_fail_override_by': null,
+            // Confidence tier: manual QA review = highest confidence
+            'af_confidence_level': 'HIGH',
+            'af_needs_review': false,
         };
 
         const { error: updateError } = await supabaseAdmin

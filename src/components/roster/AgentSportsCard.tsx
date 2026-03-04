@@ -249,7 +249,7 @@ export function AgentSportsCard({ agent, onClose }: { agent: RosterAgent; onClos
             <div className="text-[8px] text-white/20 tracking-[0.2em] mb-2">PERFORMANCE</div>
             <div className="grid grid-cols-3 gap-3">
               <StatBlock
-                label="TPH"
+                label="SLA/hr"
                 value={agent.avg_tph.toFixed(2)}
                 sub={`${trendArrow} ${Math.abs(agent.trend_pct)}%`}
                 accent="text-white"
@@ -269,7 +269,7 @@ export function AgentSportsCard({ agent, onClose }: { agent: RosterAgent; onClos
             {/* Sparkline */}
             <div className="mt-2 bg-black/10 rounded-lg p-2">
               <div className="flex items-center justify-between mb-1">
-                <span className="text-[8px] text-white/20 tracking-wider">TPH TREND</span>
+                <span className="text-[8px] text-white/20 tracking-wider">SLA TREND</span>
                 <span className={`text-[9px] ${trendColor}`}>{trendArrow} {Math.abs(agent.trend_pct)}%</span>
               </div>
               <Sparkline data={agent.sparkline} color={sparkColor} width={370} height={36} />

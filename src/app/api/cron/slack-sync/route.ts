@@ -23,6 +23,8 @@ const EXCLUDED_SLACK_IDS = new Set([
     'U09K9NUQ691', // Alex Pitch Perfect — Alex Bershadsky's alt account
     'U0470TMNGLB', // Hanan Abogamil (Demi) — not in our department
     'U032D1HHH2M', // Mohamed Roumieh (Moe) — not in our department
+    'U0A2F5D9HKQ', // Maz — duplicate/alt of Maaz Khan (U06GRC03A5R)
+    'U0A2H6GBGCA', // Maaz/Can — duplicate/alt of Maaz Khan (U06GRC03A5R)
 ]);
 
 // Slack display names / real names that should be skipped (lowercased)
@@ -38,9 +40,49 @@ const MAIN_CHANNEL = process.env.SLACK_HIRES_CHANNEL_ID || '';
 // Roles that are excluded from campaign tagging (leadership, QA, HR, etc.)
 const AGENT_ROLE = 'Agent';
 
+// Default starting wages by country
+const DEFAULT_WAGES: Record<string, number> = { Canada: 19.50, USA: 15.00 };
+
+// Canadian Slack timezones (IANA)
+const CANADIAN_TZS = new Set([
+    'America/Toronto', 'America/Montreal', 'America/Vancouver', 'America/Edmonton',
+    'America/Winnipeg', 'America/Halifax', 'America/St_Johns', 'America/Regina',
+    'America/Whitehorse', 'America/Yellowknife', 'America/Iqaluit',
+]);
+
+/** Infer country from Slack IANA timezone. Returns 'Canada', 'USA', or null. */
+function countryFromTimezone(tz: string): string | null {
+    if (!tz) return null;
+    if (CANADIAN_TZS.has(tz)) return 'Canada';
+    if (tz.startsWith('America/') || tz.startsWith('US/') || tz === 'Pacific/Honolulu') return 'USA';
+    return null;
+}
+
+/** Title-case a name: "john doe-smith" → "John Doe-Smith" */
+function titleCase(name: string): string {
+    return name.replace(/\b\w/g, c => c.toUpperCase());
+}
+
+/** Simple Levenshtein distance for fuzzy duplicate detection */
+function levenshtein(a: string, b: string): number {
+    const m = a.length, n = b.length;
+    if (m === 0) return n;
+    if (n === 0) return m;
+    const d: number[][] = Array.from({ length: m + 1 }, (_, i) => [i]);
+    for (let j = 1; j <= n; j++) d[0][j] = j;
+    for (let i = 1; i <= m; i++) {
+        for (let j = 1; j <= n; j++) {
+            d[i][j] = a[i - 1] === b[j - 1]
+                ? d[i - 1][j - 1]
+                : 1 + Math.min(d[i - 1][j], d[i][j - 1], d[i - 1][j - 1]);
+        }
+    }
+    return d[m][n];
+}
+
 // ---------------------------------------------------------------------------
 // GET /api/cron/slack-sync — Daily Slack reconciliation + campaign sync
-// Schedule: 0 6 * * * (6 AM UTC daily)
+// Schedule: 0 11 * * * (11 AM UTC / 6 AM ET daily)
 // ---------------------------------------------------------------------------
 
 export async function GET(request: NextRequest) {
@@ -50,14 +92,14 @@ export async function GET(request: NextRequest) {
     }
 
     const results: {
-        reconcile: { matched: number; added: number; reactivated: number; backfilled: number; terminated: number };
+        reconcile: { matched: number; added: number; reactivated: number; backfilled: number; terminated: number; duplicateSkipped: number };
         campaigns: { updated: number; cleared: number };
-        photos: { backfilled: number };
+        photos: { backfilled: number; refreshed: number };
         errors: string[];
     } = {
-        reconcile: { matched: 0, added: 0, reactivated: 0, backfilled: 0, terminated: 0 },
+        reconcile: { matched: 0, added: 0, reactivated: 0, backfilled: 0, terminated: 0, duplicateSkipped: 0 },
         campaigns: { updated: 0, cleared: 0 },
-        photos: { backfilled: 0 },
+        photos: { backfilled: 0, refreshed: 0 },
         errors: [],
     };
 
@@ -81,6 +123,11 @@ export async function GET(request: NextRequest) {
         // =====================================================================
         await backfillMissingPhotos(results);
 
+        // =====================================================================
+        // PHASE 4: Refresh Stale Profile Photos (Slack CDN URLs expire)
+        // =====================================================================
+        await refreshStalePhotos(results);
+
         console.log('[SlackSync] Complete:', JSON.stringify(results));
         return NextResponse.json(results);
     } catch (err: any) {
@@ -94,7 +141,7 @@ export async function GET(request: NextRequest) {
 // Phase 1: Reconcile main hires channel with employee_directory
 // ---------------------------------------------------------------------------
 async function reconcileMainChannel(
-    results: { reconcile: { matched: number; added: number; reactivated: number; backfilled: number; terminated: number }; errors: string[] }
+    results: { reconcile: { matched: number; added: number; reactivated: number; backfilled: number; terminated: number; duplicateSkipped: number }; errors: string[] }
 ) {
     const memberIds = await getChannelMembers(MAIN_CHANNEL);
     console.log(`[SlackSync] Main channel: ${memberIds.length} members`);
@@ -205,13 +252,28 @@ async function reconcileMainChannel(
                 continue;
             }
 
+            // Fuzzy duplicate check — skip if a very similar name already exists
+            const newFullName = profile.realName.trim().toLowerCase();
+            const possibleDup = employees.find(e => {
+                const existingName = `${e.first_name} ${e.last_name}`.trim().toLowerCase();
+                return existingName.length > 3 && levenshtein(newFullName, existingName) <= 2 && newFullName !== existingName;
+            });
+            if (possibleDup) {
+                console.log(`[SlackSync] Skipped possible duplicate: "${profile.realName}" ≈ "${possibleDup.first_name} ${possibleDup.last_name}"`);
+                results.reconcile.duplicateSkipped++;
+                continue;
+            }
+
             // Genuinely new employee — add to directory
-            const country = lookupCountry(profile.realName);
+            const country = lookupCountry(profile.realName) || countryFromTimezone(profile.tz);
+            const firstName = titleCase(profile.firstName || profile.realName.split(' ')[0] || '');
+            const lastName = titleCase(profile.lastName || profile.realName.split(' ').slice(1).join(' ') || '');
+            const wage = country ? DEFAULT_WAGES[country] || null : null;
             const { error } = await supabaseAdmin
                 .from('employee_directory')
                 .insert({
-                    first_name: profile.firstName || profile.realName.split(' ')[0] || '',
-                    last_name: profile.lastName || profile.realName.split(' ').slice(1).join(' ') || '',
+                    first_name: firstName,
+                    last_name: lastName,
                     email: profile.email || null,
                     slack_user_id: profile.slackUserId,
                     slack_display_name: profile.displayName || profile.realName,
@@ -220,6 +282,7 @@ async function reconcileMainChannel(
                     role: AGENT_ROLE,
                     hired_at: new Date().toISOString(),
                     ...(country ? { country } : {}),
+                    ...(wage ? { hourly_wage: wage } : {}),
                 });
             if (!error) results.reconcile.added++;
             else results.errors.push(`Insert failed: ${profile.realName} — ${error.message}`);
@@ -380,4 +443,56 @@ async function backfillMissingPhotos(
     }
 
     console.log(`[SlackSync] Phase 3: Backfilled ${results.photos.backfilled} photos`);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 4: Refresh stale Slack avatar URLs (CDN URLs can return 403 over time)
+// ---------------------------------------------------------------------------
+async function refreshStalePhotos(
+    results: { photos: { refreshed: number }; errors: string[] }
+) {
+    // Fetch a batch of active employees with Slack-sourced images
+    // Rotate through employees: check 50 per cron run, ordered by oldest-checked
+    // We use a simple approach: pick employees whose image is a slack-edge URL
+    const { data: candidates } = await supabaseAdmin
+        .from('employee_directory')
+        .select('id, slack_user_id, user_image')
+        .eq('employee_status', 'Active')
+        .not('slack_user_id', 'is', null)
+        .not('user_image', 'is', null)
+        .like('user_image', '%slack-edge%')
+        .limit(50);
+
+    if (!candidates || candidates.length === 0) {
+        console.log('[SlackSync] Phase 4: No Slack images to refresh');
+        return;
+    }
+
+    console.log(`[SlackSync] Phase 4: Checking ${candidates.length} Slack images for staleness`);
+
+    for (const emp of candidates) {
+        try {
+            // HEAD request to check if current URL is still valid
+            // 200 = OK, 301/302 = redirect (Gravatar) — both are valid
+            const headRes = await fetch(emp.user_image, { method: 'HEAD', redirect: 'manual' });
+            if (headRes.status >= 200 && headRes.status < 400) continue; // Image still valid
+
+            // Image is stale (403, 404, etc.) — re-fetch from Slack API
+            const profile = await getSlackUserProfile(emp.slack_user_id);
+            if (profile?.image && profile.image !== emp.user_image) {
+                const { error } = await supabaseAdmin
+                    .from('employee_directory')
+                    .update({ user_image: profile.image })
+                    .eq('id', emp.id);
+
+                if (!error) {
+                    results.photos.refreshed++;
+                }
+            }
+        } catch (err: any) {
+            // Network errors on HEAD check — skip silently
+        }
+    }
+
+    console.log(`[SlackSync] Phase 4: Refreshed ${results.photos.refreshed} stale photos`);
 }

@@ -227,13 +227,14 @@ IMPORTANT: Strip conversational greetings and filler words from agent names. Wor
         const greetingPrefixes = /^(hey|hi|hello|so|yeah|ok|oh|yo|sup)\b[,\s]*/i;
 
         // Validate and clean events
+        // Sam is unplanned-only — planned absences go directly into Google Sheets by HR
         return parsed.filter((e: any) =>
             e.agent_name &&
             ['planned', 'unplanned'].includes(e.event_type) &&
             e.date && /^\d{4}-\d{2}-\d{2}$/.test(e.date)
         ).map((e: any) => ({
             agent_name: String(e.agent_name).trim().replace(greetingPrefixes, '').trim(),
-            event_type: e.event_type as ParsedAttendanceEvent['event_type'],
+            event_type: 'unplanned' as ParsedAttendanceEvent['event_type'],
             date: e.date,
             minutes: typeof e.minutes === 'number' ? e.minutes : null,
             reason: e.reason ? String(e.reason).trim() : null,
@@ -383,10 +384,7 @@ export async function resolveAgentNames(events: ParsedAttendanceEvent[]): Promis
 // Block Kit Builders
 // ---------------------------------------------------------------------------
 
-const TYPE_DROPDOWN_OPTIONS = [
-    { text: { type: 'plain_text' as const, text: ':palm_tree: Planned', emoji: true }, value: 'planned' },
-    { text: { type: 'plain_text' as const, text: ':warning: Unplanned', emoji: true }, value: 'unplanned' },
-];
+// Sam is unplanned-only — no type dropdown needed
 
 const COMPACT_THRESHOLD = 6;
 
@@ -448,12 +446,12 @@ export function buildConfirmationBlocks(events: ParsedAttendanceEvent[], pending
             elements: [{ type: 'mrkdwn', text: `_Date: ${formatDateForDisplay(events[0].date)} · Types auto-detected from your message_` }],
         });
     } else {
-        // Detailed mode: individual dropdowns per event
+        // Detailed mode: list events (all unplanned)
         blocks.push({
             type: 'section',
             text: {
                 type: 'mrkdwn',
-                text: 'I parsed the following from your message. Use the dropdowns to change the type if needed:',
+                text: 'I parsed the following unplanned absences from your message:',
             },
         });
 
@@ -469,20 +467,12 @@ export function buildConfirmationBlocks(events: ParsedAttendanceEvent[], pending
 
             const dateFormatted = formatDateForDisplay(e.date);
 
-            const initialOption = TYPE_DROPDOWN_OPTIONS.find(o => o.value === e.event_type) || TYPE_DROPDOWN_OPTIONS[1];
-
             blocks.push({
                 type: 'section',
                 block_id: `event_${i}`,
                 text: {
                     type: 'mrkdwn',
-                    text: `*${name}*${fuzzyNote}${nameWarning}${detail} — ${dateFormatted}`,
-                },
-                accessory: {
-                    type: 'static_select',
-                    action_id: `type_override_${i}`,
-                    initial_option: initialOption,
-                    options: TYPE_DROPDOWN_OPTIONS,
+                    text: `:warning: *${name}*${fuzzyNote}${nameWarning}${detail} — ${dateFormatted}`,
                 },
             });
         });

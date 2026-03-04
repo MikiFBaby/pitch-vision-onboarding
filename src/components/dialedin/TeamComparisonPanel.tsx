@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo } from "react";
-import { isExcludedTeam } from "@/utils/dialedin-revenue";
+import { isExcludedTeam, getBreakEvenTPH } from "@/utils/dialedin-revenue";
 import type { AgentPerformance } from "@/types/dialedin-types";
 
 interface TeamComparisonPanelProps {
@@ -97,9 +97,12 @@ export default function TeamComparisonPanel({
                 <td className="py-1 px-2 font-mono truncate max-w-[100px]">{t.team}</td>
                 <td className="py-1 px-1 text-right font-mono text-white/40">{t.agents}</td>
                 <td className="py-1 px-1 text-right font-mono">{t.transfers.toLocaleString()}</td>
-                <td className={`py-1 px-1 text-right font-mono font-bold ${
-                  t.tph >= 2 ? "text-emerald-400" : t.tph >= 1 ? "text-white/80" : "text-amber-400"
-                }`}>
+                <td className={`py-1 px-1 text-right font-mono font-bold ${(() => {
+                  const threshold = getBreakEvenTPH(t.team);
+                  if (t.tph >= threshold) return "text-emerald-400";
+                  if (t.tph >= threshold * 0.8) return "text-amber-400";
+                  return "text-red-400";
+                })()}`}>
                   {t.tph.toFixed(2)}
                 </td>
                 <td className="py-1 px-2 text-right font-mono">{t.convRate.toFixed(1)}%</td>

@@ -71,7 +71,7 @@ function parsePct(val: unknown): number {
 function toNum(val: unknown): number {
   if (typeof val === 'number') return isNaN(val) ? 0 : val;
   if (typeof val === 'string') {
-    const cleaned = val.replace(',', '').trim();
+    const cleaned = val.replace(/,/g, '').trim();
     return parseFloat(cleaned) || 0;
   }
   return 0;
@@ -392,6 +392,25 @@ function parseCampaignSummaryRows(rows: Record<string, unknown>[]): CampaignSumm
 // ═══════════════════════════════════════════════════════════
 
 function parseSubcampaignRows(rows: Record<string, unknown>[]): SubcampaignRow[] {
+  // Sanity check: detect if DialedIn fixed the column shift.
+  // If the first data row has "S-L-A Rate Value" as a header but its value looks like a date/period,
+  // the shift is still active. If "Period" contains a date-like value, the shift may have been removed.
+  if (rows.length > 0) {
+    const firstRow = rows[0];
+    const periodVal = String(firstRow['Period'] || '').trim();
+    const slaRateVal = String(firstRow['S-L-A Rate Value'] || '').trim();
+    // If "S-L-A Rate Value" column is missing entirely, DialedIn likely fixed the export
+    const hasShiftColumn = 'S-L-A Rate Value' in firstRow;
+    if (!hasShiftColumn) {
+      console.warn('[SubcampaignSummary] Column shift may have been fixed by DialedIn — "S-L-A Rate Value" column no longer present. Falling back to direct column mapping.');
+      return parseSubcampaignRowsDirect(rows);
+    }
+    // If the shifted "campaign" field (Period column) is numeric, something is wrong
+    if (periodVal && !isNaN(Number(periodVal)) && Number(periodVal) > 0) {
+      console.warn(`[SubcampaignSummary] Sanity check warning: "Period" column contains numeric value "${periodVal}" — expected campaign name. Column shift may have changed.`);
+    }
+  }
+
   return rows
     .filter((r) => {
       // Skip grand total row (shifted: r['Period'] contains campaign name, "Total:" = grand total)
@@ -414,6 +433,30 @@ function parseSubcampaignRows(rows: Record<string, unknown>[]): SubcampaignRow[]
       connect_rate_pct: parsePct(r['S-L-A/HR']),
       conversion_rate_pct: parsePct(r['Connect Rate']),
       operator_disconnects: toNum(r['Conversion Factor']),
+    }));
+}
+
+/** Direct column mapping fallback — used if DialedIn fixes the column shift */
+function parseSubcampaignRowsDirect(rows: Record<string, unknown>[]): SubcampaignRow[] {
+  return rows
+    .filter((r) => {
+      const campaign = String(r['Campaign'] || '').trim();
+      const subcampaign = String(r['Subcampaign'] || '').trim();
+      return campaign !== '' && campaign !== 'Total:' && subcampaign !== '';
+    })
+    .map((r) => ({
+      period: String(r['Period'] || '').trim(),
+      campaign: String(r['Campaign'] || '').trim(),
+      subcampaign: String(r['Subcampaign'] || '').trim(),
+      total_leads: toNum(r['Total Leads']),
+      dialed: toNum(r['Dialed']),
+      connects: toNum(r['Connects']),
+      contacts: toNum(r['Contacts']),
+      transfers: toNum(r['Sale/Lead/App']),
+      man_hours: toNum(r['Man Hours']),
+      connect_rate_pct: parsePct(r['Connect Rate']),
+      conversion_rate_pct: parsePct(r['Conversion Rate']),
+      operator_disconnects: toNum(r['Operator Disconnects']),
     }));
 }
 

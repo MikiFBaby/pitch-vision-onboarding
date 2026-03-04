@@ -3,7 +3,7 @@
 import { useState, useMemo } from "react";
 import { ArrowUpDown, Flag, AlertTriangle } from "lucide-react";
 import { heatmapClass } from "@/utils/dialedin-heatmap";
-import { getRevenuePerTransfer, isExcludedTeam } from "@/utils/dialedin-revenue";
+import { getRevenuePerTransfer, isExcludedTeam, getBreakEvenTPH } from "@/utils/dialedin-revenue";
 import type { AgentPerformance, AgentTrend, AgentQAStats, LiveAgentStatus } from "@/types/dialedin-types";
 
 function MiniSparkline({ data, trend }: { data: number[]; trend: "up" | "down" | "flat" }) {
@@ -90,9 +90,9 @@ export default function AgentRankingTable({
       ? validAgents.filter((a) => (a.team || "Unassigned") === selectedTeam)
       : validAgents;
 
-    // Bottom board: only agents with >= 2 hours (meaningful sample)
+    // Bottom board: only tenured agents with >= 2 hours (exclude new hires with ≤5 shifts)
     if (boardMode === "bottom") {
-      list = list.filter((a) => a.hours_worked >= 2);
+      list = list.filter((a) => a.hours_worked >= 2 && !a.is_new_hire);
     }
 
     return list;
@@ -100,7 +100,7 @@ export default function AgentRankingTable({
 
   // Bottom 10% TPH threshold
   const bottom10Threshold = useMemo(() => {
-    const qualified = validAgents.filter((a) => a.hours_worked >= 2);
+    const qualified = validAgents.filter((a) => a.hours_worked >= 2 && !a.is_new_hire);
     if (qualified.length === 0) return 0;
     const sorted = [...qualified].sort((a, b) => a.tph - b.tph);
     return sorted[Math.floor(sorted.length * 0.1)]?.tph || 0;
@@ -114,7 +114,7 @@ export default function AgentRankingTable({
   const getWaitWrap = (a: AgentPerformance) => a.wait_time_min + a.wrap_time_min;
 
   const getRevenue = (a: AgentPerformance) =>
-    a.transfers * getRevenuePerTransfer(a.team || null);
+    a.transfers * getRevenuePerTransfer(a.team || null, a.skill);
 
   const getCost = (a: AgentPerformance) => {
     const wage = wages?.[a.agent_name];
@@ -321,6 +321,9 @@ export default function AgentRankingTable({
                   })()}
                   <td className="py-0.5 px-1 text-white/90 font-mono font-medium truncate max-w-[130px]">
                     {agent.agent_name}
+                    {agent.is_new_hire && (
+                      <span className="ml-1 text-[7px] px-1 py-0 bg-cyan-500/20 text-cyan-400 rounded font-bold uppercase">NEW</span>
+                    )}
                   </td>
                   <td className="py-0.5 px-1 text-white/30 font-mono truncate max-w-[80px] text-[10px]">
                     {agent.team || "—"}
@@ -335,8 +338,15 @@ export default function AgentRankingTable({
                       ) : null}
                     </td>
                   )}
-                  <td className={`py-0.5 px-1 text-right font-mono font-bold ${heatmapClass(agent.tph, "tph")}`}>
-                    {agent.tph.toFixed(2)}
+                  <td className={`py-0.5 px-1 text-right font-mono font-bold ${(() => {
+                    const threshold = getBreakEvenTPH(agent.team || null);
+                    const tph = agent.adjusted_tph ?? agent.tph;
+                    if (tph >= threshold * 1.2) return "text-emerald-400";
+                    if (tph >= threshold) return "text-white/80";
+                    if (tph >= threshold * 0.8) return "text-amber-400";
+                    return "text-red-400";
+                  })()}`}>
+                    {(agent.adjusted_tph ?? agent.tph).toFixed(2)}
                   </td>
                   <td className="py-0.5 px-1 text-right font-mono text-white/70">
                     {agent.transfers}
@@ -354,7 +364,7 @@ export default function AgentRankingTable({
                     {agent.connect_rate.toFixed(1)}%
                   </td>
                   <td className="py-0.5 px-1 text-right font-mono text-white/50">
-                    {agent.hours_worked.toFixed(1)}
+                    {(agent.paid_time_hours ?? agent.hours_worked).toFixed(1)}
                   </td>
                   <td className="py-0.5 px-1 text-right font-mono text-white/40">
                     {agent.talk_time_min.toFixed(0)}m

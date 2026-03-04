@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { getCached, setCache } from "@/utils/dialedin-cache";
+import { getCadToUsdRate, convertWageToUsd } from "@/utils/fx";
+import { fetchNewHireSet, isNewHireAgent } from "@/utils/dialedin-new-hires";
 
 export const runtime = "nodejs";
 
@@ -22,6 +24,7 @@ interface PerfRow {
   team?: string | null;
   transfers: number;
   hours_worked: number;
+  paid_time_hours?: number | null;
 }
 
 export async function GET(request: NextRequest) {
@@ -57,7 +60,7 @@ export async function GET(request: NextRequest) {
 
   try {
     // Parallel fetches: Retreaver revenue, DialedIn performance, cost config, labor data
-    const [revenueResult, allPerfData, costsResult, laborResult] = await Promise.all([
+    const [revenueResult, allPerfData, costsResult, laborResult, newHireSet] = await Promise.all([
       // 1. Retreaver revenue events
       fetchAllRetreaverEvents(startDate, endDate),
       // 2. DialedIn performance (hours, transfers) — paginated to avoid 1000-row default limit
@@ -71,10 +74,15 @@ export async function GET(request: NextRequest) {
       // 4. Employee wages (for labor cost)
       supabaseAdmin
         .from("employee_directory")
-        .select("first_name, last_name, hourly_wage, employee_status, role")
+        .select("first_name, last_name, hourly_wage, country, employee_status, role")
         .eq("employee_status", "Active")
         .eq("role", "Agent"),
+      // 5. New hire agents (≤5 shifts) — excluded from averages
+      fetchNewHireSet(supabaseAdmin),
     ]);
+
+    // Fetch CAD→USD rate for Canadian agent wage conversion
+    const cadToUsdRate = await getCadToUsdRate();
 
     const events = revenueResult;
     // Filter out Pitch Health — separate department, not our labor cost
@@ -93,10 +101,12 @@ export async function GET(request: NextRequest) {
     console.log(`P&L: ${costConfigs.length} configs (${salaryConfigs.length} salary), ${allPerfData.length} total perf rows → ${perfData.length} ours (${pitchHealthFiltered} Pitch Health excluded), period ${startDate}→${endDate}`);
 
     // Build wage lookup with multiple name variants for better matching
+    // Convert Canadian wages to USD at build time so all downstream math is in USD
     const wageLookup = new Map<string, number>();
     for (const emp of employees) {
       if (!emp.hourly_wage) continue;
-      const wage = Number(emp.hourly_wage) || 0;
+      const rawWage = Number(emp.hourly_wage) || 0;
+      const wage = convertWageToUsd(rawWage, emp.country, cadToUsdRate);
       const first = (emp.first_name || "").trim().toLowerCase();
       const last = (emp.last_name || "").trim().toLowerCase();
       const full = `${first} ${last}`.trim();
@@ -138,13 +148,20 @@ export async function GET(request: NextRequest) {
     // Two-pass: first compute average wage from matched agents, then apply to unmatched
     let totalLaborCost = 0;
     let totalHoursWorked = 0;
+    let totalPaidHours = 0;
     let totalTransfers = 0;
     const unmatchedAgentSet = new Set<string>();
     const laborByAgent = new Map<string, { hours: number; cost: number; transfers: number }>();
     const laborByCampaign = new Map<string, { hours: number; cost: number; transfers: number }>();
 
-    // Compute average hourly wage from all employees with wages set
-    const allWages = employees.map((e) => Number(e.hourly_wage) || 0).filter((w) => w > 0);
+    // Compute average hourly wage from tenured employees only (excludes new hires with ≤5 shifts)
+    const allWages = employees
+      .filter((e) => {
+        if (Number(e.hourly_wage) <= 0) return false;
+        const name = `${(e.first_name || "").trim()} ${(e.last_name || "").trim()}`.trim().toLowerCase();
+        return !isNewHireAgent(name, newHireSet);
+      })
+      .map((e) => convertWageToUsd(Number(e.hourly_wage), e.country, cadToUsdRate));
     const avgWage = allWages.length > 0 ? allWages.reduce((a, b) => a + b, 0) / allWages.length : 0;
 
     for (const p of perfData) {
@@ -159,6 +176,7 @@ export async function GET(request: NextRequest) {
       const laborCost = hours * wage;
 
       totalHoursWorked += hours;
+      totalPaidHours += Number(p.paid_time_hours) || hours;
       totalLaborCost += laborCost;
       totalTransfers += transfers;
 
@@ -265,7 +283,9 @@ export async function GET(request: NextRequest) {
       sla_transfers: totalTransfers,
       billable_calls: totalBillable,
       hours_worked: round2(totalHoursWorked),
+      paid_hours: round2(totalPaidHours),
       agent_count: employees.length,
+      new_hire_count: newHireSet.size,
       avg_hourly_wage: round2(avgWage),
       unmatched_agents: unmatchedAgentSet.size,
       unmatched_agent_names: unmatchedNames,
@@ -349,7 +369,7 @@ async function fetchAllPerfData(startDate: string, endDate: string): Promise<Per
   while (true) {
     const { data, error } = await supabaseAdmin
       .from("dialedin_agent_performance")
-      .select("report_date, agent_name, skill, team, transfers, hours_worked")
+      .select("report_date, agent_name, skill, team, transfers, hours_worked, paid_time_hours")
       .gte("report_date", startDate)
       .lte("report_date", endDate)
       .range(from, from + PAGE - 1);

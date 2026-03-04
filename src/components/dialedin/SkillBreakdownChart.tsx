@@ -105,7 +105,7 @@ export default function SkillBreakdownChart({ skills, loading }: SkillBreakdownC
               <Bar
                 yAxisId="right"
                 dataKey="tph"
-                name="TPH"
+                name="SLA/hr"
                 fill="#10b981"
                 radius={[4, 4, 0, 0]}
               />

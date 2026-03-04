@@ -3,6 +3,7 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 import { isExcludedTeam } from '@/utils/dialedin-revenue';
 import { buildSparkline, subtractDays, mean, std, computeConsistencyScore } from '@/utils/dialedin-analytics';
 import { getCached, setCache } from '@/utils/dialedin-cache';
+import { fetchNewHireSet, isNewHireAgent } from '@/utils/dialedin-new-hires';
 import type { AgentTrend } from '@/types/dialedin-types';
 
 export const runtime = 'nodejs';
@@ -56,8 +57,9 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: agentErr.message }, { status: 500 });
     }
 
+    const newHireSet = await fetchNewHireSet(supabaseAdmin);
     const agentNames = (topAgents || [])
-      .filter((a: { agent_name: string; team: string | null }) => !isExcludedTeam(a.team))
+      .filter((a: { agent_name: string; team: string | null }) => !isExcludedTeam(a.team) && !isNewHireAgent(a.agent_name, newHireSet))
       .map((a: { agent_name: string }) => a.agent_name);
 
     if (agentNames.length === 0) {

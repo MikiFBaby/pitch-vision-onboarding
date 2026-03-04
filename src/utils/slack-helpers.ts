@@ -43,6 +43,7 @@ export interface SlackProfile {
     email: string;
     image: string;
     isBot: boolean;
+    tz: string;
 }
 
 /**
@@ -72,8 +73,9 @@ export async function getSlackUserProfile(userId: string, botToken?: string): Pr
         lastName: profile.last_name || '',
         displayName: profile.display_name || '',
         email: profile.email || '',
-        image: profile.image_192 || profile.image_72 || '',
+        image: profile.image_512 || profile.image_192 || profile.image_72 || '',
         isBot: user.is_bot || user.id === 'USLACKBOT',
+        tz: user.tz || '',
     };
 }
 
@@ -134,13 +136,16 @@ export async function postSlackMessage(
     channel: string,
     text: string,
     blocks?: any[],
-    botToken?: string
+    botToken?: string,
+    opts?: { username?: string; icon_url?: string }
 ): Promise<{ ok: boolean; ts?: string } | null> {
     const token = botToken || process.env.SLACK_BOT_TOKEN;
     if (!token) throw new Error('SLACK_BOT_TOKEN is not set');
 
     const body: Record<string, any> = { channel, text };
     if (blocks) body.blocks = blocks;
+    if (opts?.username) body.username = opts.username;
+    if (opts?.icon_url) body.icon_url = opts.icon_url;
 
     const res = await fetch('https://slack.com/api/chat.postMessage', {
         method: 'POST',
@@ -237,6 +242,38 @@ export async function postTeamsWebhook(
         console.error('[Teams] Webhook error:', err);
         return false;
     }
+}
+
+// ---------------------------------------------------------------------------
+// Direct Messages
+// ---------------------------------------------------------------------------
+
+/**
+ * Opens a DM channel with a Slack user using conversations.open.
+ * Returns the channel ID for sending messages.
+ */
+export async function openDmChannel(
+    userId: string,
+    botToken?: string
+): Promise<{ ok: boolean; channelId?: string; error?: string }> {
+    const token = botToken || process.env.SLACK_BOT_TOKEN;
+    if (!token) return { ok: false, error: 'No bot token' };
+
+    const res = await fetch('https://slack.com/api/conversations.open', {
+        method: 'POST',
+        headers: {
+            Authorization: `Bearer ${token}`,
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ users: userId }),
+    });
+
+    const data = await res.json();
+    if (!data.ok) {
+        console.error('[Slack] conversations.open failed:', data.error);
+        return { ok: false, error: data.error };
+    }
+    return { ok: true, channelId: data.channel?.id };
 }
 
 // ---------------------------------------------------------------------------

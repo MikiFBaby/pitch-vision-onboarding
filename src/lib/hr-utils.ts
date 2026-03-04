@@ -247,6 +247,90 @@ export function getTodayISO(): string {
 }
 
 // ============================================
+// NAME MATCHING FOR SCHEDULE/BREAK CROSS-REFERENCE
+// Google Sheets schedule data often uses shortened or variant names
+// that don't exactly match employee_directory (e.g. middle names,
+// hyphens, apostrophes, full-name-in-first-column).
+// ============================================
+
+/**
+ * Strip common punctuation (apostrophes, periods, commas, backticks) from a name.
+ */
+function stripPunct(s: string): string {
+    return s.replace(/['\u2019\u2018.,`]/g, '').trim();
+}
+
+/**
+ * Collapse a string to lowercase letters only (no spaces, hyphens, punctuation).
+ */
+function collapseLetters(s: string): string {
+    return s.replace(/[^a-z]/g, '');
+}
+
+/**
+ * Generate all plausible lookup keys for a person's name.
+ * Used to cross-reference schedule/break data against employee directory.
+ * Keys are pipe-separated "first|last" format, all lowercase.
+ *
+ * Handles:
+ * - Multi-part first names / middle names ("Tanisha Elizabeth Ania"|"King" → "tanisha|king")
+ * - Hyphenated last names ("Brian"|"Johnson-Lennord" → "brian|lennord")
+ * - Apostrophes/punctuation ("Jurnee'"|"Cason" → "jurnee|cason")
+ * - Full name in first column ("Portia Washington"|"" → "portia|washington")
+ */
+export function scheduleNameKeys(firstName: string | null, lastName: string | null): string[] {
+    const f = (firstName || '').trim().toLowerCase();
+    const l = (lastName || '').trim().toLowerCase();
+    if (!f && !l) return [];
+
+    const keys = new Set<string>();
+
+    // Exact normalized
+    keys.add(`${f}|${l}`);
+
+    // Stripped punctuation
+    keys.add(`${stripPunct(f)}|${stripPunct(l)}`);
+
+    // Collapsed (letters only)
+    keys.add(`${collapseLetters(f)}|${collapseLetters(l)}`);
+
+    const fParts = f.split(/\s+/).filter(Boolean);
+
+    // First word of first name + last name (skips middle names)
+    if (fParts.length > 1) {
+        keys.add(`${fParts[0]}|${l}`);
+        keys.add(`${stripPunct(fParts[0])}|${stripPunct(l)}`);
+    }
+
+    // Full name in first column, empty last name
+    if (!l && fParts.length >= 2) {
+        const lastWord = fParts[fParts.length - 1];
+        keys.add(`${fParts[0]}|${lastWord}`);
+        keys.add(`${stripPunct(fParts[0])}|${stripPunct(lastWord)}`);
+    }
+
+    // Hyphenated/compound last name → each part as separate key
+    const lParts = l.split(/[\s-]+/).filter(p => p.length > 1);
+    if (lParts.length > 1) {
+        const fKey = fParts[0] || f;
+        for (const part of lParts) {
+            keys.add(`${fKey}|${part}`);
+            keys.add(`${stripPunct(fKey)}|${stripPunct(part)}`);
+        }
+    }
+
+    // Trailing-s tolerance (Barrow/Barrows, Williams/William)
+    const fKey = fParts[0] || f;
+    if (l.endsWith('s') && l.length > 3) {
+        keys.add(`${fKey}|${l.slice(0, -1)}`);
+    } else if (l.length > 2) {
+        keys.add(`${fKey}|${l}s`);
+    }
+
+    return [...keys].filter(k => k !== '|');
+}
+
+// ============================================
 // DATA DEDUPLICATION
 // Google Sheets → Supabase sync creates 2-3x
 // duplicate rows. These helpers remove them.

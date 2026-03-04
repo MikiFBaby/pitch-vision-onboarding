@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import {
     categorizeWorkforce,
     getWeekDateRange,
+    scheduleNameKeys,
 } from "@/lib/hr-utils";
 import {
     generateReportPDF,
@@ -149,12 +150,13 @@ export default function HRReports() {
             const bookedOff = deduplicateRows(bookedRes.data || [], r => `${r['Agent Name']}|${r['Date']}`);
             const unbookedOff = deduplicateRows(unbookedRes.data || [], r => `${r['Agent Name']}|${r['Date']}`);
 
-            // Build set of active employee names from employee_directory (source of truth)
-            const activeEmployeeNames = new Set(
-                (activeEmpRes.data || []).map(e =>
-                    `${e.first_name?.toLowerCase()?.trim()} ${e.last_name?.toLowerCase()?.trim()}`
-                )
-            );
+            // Build set of active employee names (all name variants)
+            const activeEmployeeNames = new Set<string>();
+            (activeEmpRes.data || []).forEach(e => {
+                for (const key of scheduleNameKeys(e.first_name, e.last_name)) {
+                    activeEmployeeNames.add(key);
+                }
+            });
 
             // Fetch Agent Schedule and cross-reference with actual active employees
             const { data: scheduleData } = await supabase
@@ -168,8 +170,8 @@ export default function HRReports() {
 
             // Only keep schedule rows that match an active employee in employee_directory
             const matchedAgents = dedupedSchedule.filter(agent => {
-                const name = `${agent['First Name']?.toLowerCase()?.trim()} ${agent['Last Name']?.toLowerCase()?.trim()}`;
-                return activeEmployeeNames.has(name);
+                const rowKeys = scheduleNameKeys(agent['First Name'], agent['Last Name']);
+                return rowKeys.some(k => activeEmployeeNames.has(k));
             });
 
             const { fullTime, partTime } = categorizeWorkforce(matchedAgents);

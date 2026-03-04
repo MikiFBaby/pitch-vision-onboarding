@@ -12,7 +12,7 @@ const ANOMALY_LABELS: Record<string, string> = {
   zero_transfers: "Zero Transfers",
   high_dead_air: "High Dead Air",
   high_hung_up: "High Hung Up",
-  low_tph: "Low TPH",
+  low_tph: "Low SLA/hr",
   outlier_dials: "Outlier Dials",
   stat_outlier: "Statistical Outlier",
 };

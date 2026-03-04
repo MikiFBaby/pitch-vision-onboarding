@@ -327,6 +327,7 @@ export interface AgentPerformance {
   tph_rank: number | null;
   conversion_rank: number | null;
   dials_rank: number | null;
+  is_new_hire?: boolean;
 }
 
 export interface SkillSummary {
@@ -490,7 +491,7 @@ export const REPORT_TYPE_CONFIG: Record<ReportType, { pattern: RegExp }> = {
 // Analytics Types — Workspace features
 // ═══════════════════════════════════════════════════════════
 
-export type Workspace = 'live' | 'analytics' | 'coaching' | 'revenue';
+export type Workspace = 'live' | 'analytics' | 'coaching' | 'revenue' | 'intraday';
 
 export interface AgentTrend {
   sparkline: number[];
@@ -540,6 +541,7 @@ export interface TeamROI {
   campaign_type: string | null;
   transfers: number;
   revenue: number;
+  actual_revenue?: number;
   cost: number;
   profit: number;
   hours: number;
@@ -893,6 +895,7 @@ export interface PnLSummary {
   sla_transfers: number;
   billable_calls: number;
   hours_worked: number;
+  paid_hours?: number;
   agent_count: number;
   unmatched_agents: number;
   unmatched_agent_names: string[];
@@ -1023,7 +1026,8 @@ export interface RosterAgent {
 
   // Financials
   est_revenue: number;
-  hourly_wage: number | null;
+  hourly_wage: number | null;       // USD (converted for Canadian agents)
+  hourly_wage_raw: number | null;   // Original currency (CAD or USD)
   est_cost: number;
   true_cost: number | null;
   pnl: number;
@@ -1051,6 +1055,7 @@ export interface RosterAgent {
 
   // Profile
   user_image: string | null;
+  is_new_hire?: boolean;
 }
 
 export interface RosterTeamSummary {
@@ -1092,4 +1097,65 @@ export interface CertaintyAnnotation {
   level: CertaintyLevel;
   label: string;
   coverage_pct?: number;
+}
+
+// ═══════════════════════════════════════════════════════════
+// Intraday Snapshot Types (scraped every 5 min)
+// ═══════════════════════════════════════════════════════════
+
+export interface IntradayTotals {
+  sla_total: number;
+  production_hours: number;
+  active_agents: number;
+  avg_sla_hr: number;
+  team_sla_hr: number;
+  adjusted_sla_hr: number;
+  total_dialed: number;
+  total_connects: number;
+}
+
+export interface IntradayHourlyTrend {
+  hour: number;
+  sla_total: number;
+  production_hours: number;
+  agent_count: number;
+  snapshot_at: string;
+}
+
+export interface IntradayAgentRow {
+  name: string;
+  team: string | null;
+  sla_hr: number;
+  adjusted_sla_hr: number;
+  transfers: number;
+  hours_worked: number;
+  dialed: number;
+  connects: number;
+  connects_per_hour: number;
+  conversion_rate_pct: number;
+  logged_in_time_min: number;
+  pause_time_min: number;
+  is_new_hire: boolean;
+  rank?: number;
+}
+
+export interface IntradayData {
+  latest_snapshot_at: string | null;
+  stale: boolean;
+  minutes_since_update: number;
+  totals: IntradayTotals;
+  hourly_trend: IntradayHourlyTrend[];
+  agents: IntradayAgentRow[];
+  break_even: { aca: number; medicare: number };
+  total_agents_ranked?: number;
+  agent_hourly_trend?: IntradayHourlyTrend[];
+}
+
+export interface IntradayAlert {
+  id: string;
+  alert_type: 'below_break_even' | 'team_sla_decline' | 'agent_missing';
+  agent_name: string | null;
+  team: string | null;
+  details: Record<string, unknown>;
+  created_at: string;
 }

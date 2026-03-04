@@ -15,6 +15,7 @@ import LivePresencePanel from "@/components/dialedin/LivePresencePanel";
 import AnalyticsWorkspace from "@/components/dialedin/AnalyticsWorkspace";
 import CoachingWorkspace from "@/components/dialedin/CoachingWorkspace";
 import RevenueWorkspace from "@/components/dialedin/RevenueWorkspace";
+import IntradayWorkspace from "@/components/dialedin/IntradayWorkspace";
 import { useLiveData } from "@/hooks/useLiveData";
 import { Upload, Loader2, CheckCircle2, XCircle, FileSpreadsheet, X } from "lucide-react";
 import type { DailyKPIs, AgentPerformance, Anomaly, Alert, Workspace, AgentTrend, WoWComparison, AgentQAStats, LiveAgentStatus } from "@/types/dialedin-types";
@@ -313,6 +314,10 @@ export default function DialedinDashboard() {
 
         {workspace === "revenue" && (
           <RevenueWorkspace />
+        )}
+
+        {workspace === "intraday" && (
+          <IntradayWorkspace />
         )}
 
         {/* Empty State */}

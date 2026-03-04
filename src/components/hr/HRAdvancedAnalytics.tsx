@@ -12,7 +12,7 @@ import {
     Clock, Users, MapPin, Briefcase, Calendar, TrendingDown,
     AlertTriangle, CheckCircle2, Activity
 } from "lucide-react";
-import { deduplicateFired, deduplicateHired, deduplicateUnplannedOff, deduplicateBookedOff } from '@/lib/hr-utils';
+import { deduplicateFired, deduplicateHired, deduplicateUnplannedOff, deduplicateBookedOff, scheduleNameKeys } from '@/lib/hr-utils';
 
 interface TenureData {
     type: string;
@@ -195,14 +195,25 @@ export default function HRAdvancedAnalytics() {
             return !isNaN(date.getTime()) ? dayNames[date.getDay()] : null;
         };
 
+        // Build booked agent|date set for cross-table dedup
+        const bookedAgentDates = new Set<string>();
         booked.forEach(item => {
             const dayName = parseDateDay(item['Date']);
-            if (dayName && bookedCounts[dayName] !== undefined) bookedCounts[dayName]++;
+            if (dayName && bookedCounts[dayName] !== undefined) {
+                bookedCounts[dayName]++;
+                const name = (item['Agent Name'] || '').trim().toLowerCase();
+                if (name) bookedAgentDates.add(`${name}|${item['Date']}`);
+            }
         });
 
+        // Skip unplanned entries where the agent is already booked for that date
         unplanned.forEach(item => {
             const dayName = parseDateDay(item['Date']);
-            if (dayName && unplannedCounts[dayName] !== undefined) unplannedCounts[dayName]++;
+            if (dayName && unplannedCounts[dayName] !== undefined) {
+                const name = (item['Agent Name'] || '').trim().toLowerCase();
+                if (name && bookedAgentDates.has(`${name}|${item['Date']}`)) return;
+                unplannedCounts[dayName]++;
+            }
         });
 
         const result: DayOfWeekData[] = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri'].map(day => ({
@@ -237,12 +248,13 @@ export default function HRAdvancedAnalytics() {
             from += PAGE_SIZE;
         }
 
-        // Build active employee keys
-        const activeKeys = new Set(
-            (employeeData || []).map(e =>
-                `${(e.first_name || '').trim().toLowerCase()} ${(e.last_name || '').trim().toLowerCase()}`
-            )
-        );
+        // Build active employee keys (all name variants)
+        const activeKeys = new Set<string>();
+        (employeeData || []).forEach(e => {
+            for (const key of scheduleNameKeys(e.first_name, e.last_name)) {
+                activeKeys.add(key);
+            }
+        });
 
         // Pre-compute scheduled counts per day of week
         const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -251,10 +263,11 @@ export default function HRAdvancedAnalytics() {
             const seen = new Set<string>();
             let count = 0;
             allSchedules.forEach(agent => {
-                const key = `${(agent['First Name'] || '').trim().toLowerCase()} ${(agent['Last Name'] || '').trim().toLowerCase()}`;
+                const rowKeys = scheduleNameKeys(agent['First Name'], agent['Last Name']);
+                const primaryKey = rowKeys[0] || '';
                 const shift = agent[day];
-                if (activeKeys.has(key) && !seen.has(key) && shift && shift.trim() !== '' && shift.trim().toLowerCase() !== 'off') {
-                    seen.add(key);
+                if (rowKeys.some(k => activeKeys.has(k)) && !seen.has(primaryKey) && shift && shift.trim() !== '' && shift.trim().toLowerCase() !== 'off') {
+                    seen.add(primaryKey);
                     count++;
                 }
             });

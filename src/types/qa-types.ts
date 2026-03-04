@@ -124,6 +124,10 @@ export interface CallData {
         additional_info?: string;  // Extra context
         count?: number;            // For threshold violations (e.g., 4 quality issues)
         threshold?: number;        // The threshold that triggered it
+        confidence?: number;       // 0-100 confidence score (v2.2)
+        confidence_reasoning?: string;  // Why this confidence level
+        confidence_tier?: 'HIGH' | 'MEDIUM' | 'LOW';  // Tier classification
+        second_pass_confirmed?: boolean;  // Whether second-pass AI confirmed this AF
     }> | string[];  // Keep string[] for backward compatibility
 
     // Auto-fail override fields (for false positive marking by QA)
@@ -131,6 +135,11 @@ export interface CallData {
     autoFailOverrideReason?: string;
     autoFailOverrideAt?: string;
     autoFailOverrideBy?: string;
+
+    // Confidence tier fields (v2.2)
+    afConfidenceLevel?: 'HIGH' | 'MEDIUM' | 'LOW';
+    afNeedsReview?: boolean;
+    afSecondPass?: any;
 
     // Speaker turn metrics
     speakerMetrics?: SpeakerMetrics;
@@ -224,6 +233,11 @@ export interface DatabaseCallRow {
     auto_fail_override_reason: string | null;
     auto_fail_override_at: string | null;
     auto_fail_override_by: string | null;
+
+    // Confidence tier columns (v2.2)
+    af_confidence_level: string | null;
+    af_needs_review: boolean | null;
+    af_second_pass: any | null;
 
     // Licensed Agent (LA) detection columns
     transfer_detected: boolean | null;

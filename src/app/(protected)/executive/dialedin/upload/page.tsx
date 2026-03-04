@@ -202,7 +202,7 @@ export default function DialedinUploadPage() {
                     </div>
                     <div className="text-center">
                       <p className="text-2xl font-bold text-white">{summary.tph}</p>
-                      <p className="text-white/40 text-xs">TPH</p>
+                      <p className="text-white/40 text-xs">SLA/hr</p>
                     </div>
                     <div className="text-center">
                       <p className="text-2xl font-bold text-amber-400">{summary.anomalies}</p>

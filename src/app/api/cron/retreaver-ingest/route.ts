@@ -29,7 +29,7 @@ const BUCKET = "reatrever-data";
  * Vercel cron endpoint — fetches Retreaver CSV reports from miki's Gmail via IMAP
  * and enriches existing ping records with the full data.
  *
- * Runs daily at 9 AM (30 min buffer after expected 8:30 email delivery).
+ * Runs daily at 2 AM UTC (9 PM ET) via Vercel cron.
  * Searches the last 3 days to catch any gaps. Deduplicates via retreaver_import_log.
  */
 export async function GET(request: NextRequest) {

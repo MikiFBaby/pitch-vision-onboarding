@@ -109,7 +109,8 @@ export default function HRAttendanceWatchList() {
         recentPlannedCount: number; recentScore: number;
         occurrenceScore: number; trend: "worsening" | "improving" | "stable" | "new";
     } | null>(null);
-    const COLLAPSED_COUNT = 10;
+    const COLLAPSED_COUNT = 5;
+    const MAX_EXPANDED_COUNT = 10;
 
     const handleAgentClick = useCallback(async (agent: WatchListAgent) => {
         if (!agent.employeeId) return;
@@ -312,10 +313,11 @@ Pitch Perfect Solutions`,
         setLoading(true);
 
         try {
-            // Parallel fetch: employee directory + Non Booked Days Off (sole absence source)
-            const [empRes, absRes] = await Promise.all([
+            // Parallel fetch: employee directory + both absence sources
+            const [empRes, absRes, bookedRes] = await Promise.all([
                 supabase.from('employee_directory').select('id, first_name, last_name, email').eq('employee_status', 'Active'),
                 supabase.from('Non Booked Days Off').select('"Agent Name", "Reason", "Date"'),
+                supabase.from('Booked Days Off').select('"Agent Name", "Date"'),
             ]);
 
             const emailMap = new Map<string, string>();
@@ -337,7 +339,7 @@ Pitch Perfect Solutions`,
             const priorCutoff = new Date(now);
             priorCutoff.setDate(priorCutoff.getDate() - 28);
 
-            // Count absences per agent from Non Booked Days Off (sole source)
+            // Count unplanned absences per agent from Non Booked Days Off
             // Scored by recency: 90-day lookback for chronic patterns, 14/28 days for trend
             const absenceCounts = new Map<string, number>();
             const recentAbsenceCounts = new Map<string, number>();
@@ -351,11 +353,10 @@ Pitch Perfect Solutions`,
                 const dateRaw = (row['Date'] || '').trim();
                 const d = parseAbsenceDate(dateRaw);
                 const isoDate = d ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` : dateRaw;
-                const dedupKey = `${name}|${isoDate}`;
+                const dedupKey = `${name}|NB|${isoDate}`;
                 if (seen.has(dedupKey)) return;
                 seen.add(dedupKey);
 
-                // Skip events older than 90 days for scoring
                 if (d && d < lookbackCutoff) return;
 
                 absenceCounts.set(name, (absenceCounts.get(name) || 0) + 1);
@@ -370,7 +371,27 @@ Pitch Perfect Solutions`,
                 }
             });
 
-            // Compute trend per agent (14d vs prior 14d)
+            // Count planned absences per agent from Booked Days Off (90-day window)
+            const plannedCounts = new Map<string, number>();
+            const recentPlannedCounts = new Map<string, number>();
+            (bookedRes.data || []).forEach((row: any) => {
+                const name = (row['Agent Name'] || '').trim().toLowerCase();
+                if (!name) return;
+                const dateRaw = (row['Date'] || '').trim();
+                const d = parseAbsenceDate(dateRaw);
+                const isoDate = d ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` : dateRaw;
+                const dedupKey = `${name}|B|${isoDate}`;
+                if (seen.has(dedupKey)) return;
+                seen.add(dedupKey);
+
+                if (d && d < lookbackCutoff) return;
+                plannedCounts.set(name, (plannedCounts.get(name) || 0) + 1);
+                if (d && d >= recentCutoff) {
+                    recentPlannedCounts.set(name, (recentPlannedCounts.get(name) || 0) + 1);
+                }
+            });
+
+            // Compute trend per agent (14d vs prior 14d — unplanned only)
             const getTrend = (nameLower: string): { trend: Trend; recent: number; prior: number } => {
                 const recent = recentAbsences.get(nameLower) || 0;
                 const prior = priorAbsences.get(nameLower) || 0;
@@ -380,26 +401,33 @@ Pitch Perfect Solutions`,
                 return { trend: 'stable', recent, prior };
             };
 
-            // Build watch list from NB absence counts
+            // Build watch list: merge unplanned + planned counts
+            const allNames = new Set([...absenceCounts.keys(), ...plannedCounts.keys()]);
             const agentMap = new Map<string, WatchListAgent>();
-            absenceCounts.forEach((count, nameLower) => {
+            allNames.forEach(nameLower => {
                 if (!activeNames.has(nameLower)) return;
+                const unplanned = absenceCounts.get(nameLower) || 0;
+                const planned = plannedCounts.get(nameLower) || 0;
                 const { trend, recent, prior } = getTrend(nameLower);
-                const recentCount = recentAbsenceCounts.get(nameLower) || 0;
+                const recentUnplanned = recentAbsenceCounts.get(nameLower) || 0;
+                const recentPlanned = recentPlannedCounts.get(nameLower) || 0;
+                // Occurrence score: unplanned × 1.5, planned × 1.0
+                const occurrenceScore = unplanned * 1.5 + planned * 1.0;
+                const recentScore = recentUnplanned * 1.5 + recentPlanned * 1.0;
                 agentMap.set(nameLower, {
                     name: toTitleCase(nameLower),
-                    plannedCount: 0,
-                    unplannedCount: count,
-                    occurrenceScore: count * 1.5,
-                    recentScore: recentCount * 1.5,
+                    plannedCount: planned,
+                    unplannedCount: unplanned,
+                    occurrenceScore,
+                    recentScore,
                     isActive: true,
                     email: emailMap.get(nameLower),
                     employeeId: idMap.get(nameLower),
                     trend,
                     recentCount: recent,
                     priorCount: prior,
-                    recentPlannedCount: 0,
-                    recentUnplannedCount: recentCount,
+                    recentPlannedCount: recentPlanned,
+                    recentUnplannedCount: recentUnplanned,
                 });
             });
 
@@ -421,11 +449,13 @@ Pitch Perfect Solutions`,
 
         // Real-time subscriptions for instant updates
         const channels = [
-            supabase.channel('attendance_watchlist_absences').on('postgres_changes', { event: '*', schema: 'public', table: 'Non Booked Days Off' }, fetchData).subscribe(),
+            supabase.channel('attendance_watchlist_unplanned').on('postgres_changes', { event: '*', schema: 'public', table: 'Non Booked Days Off' }, fetchData).subscribe(),
+            supabase.channel('attendance_watchlist_planned').on('postgres_changes', { event: '*', schema: 'public', table: 'Booked Days Off' }, fetchData).subscribe(),
+            supabase.channel('attendance_watchlist_directory').on('postgres_changes', { event: '*', schema: 'public', table: 'employee_directory', filter: 'employee_status=eq.Active' }, fetchData).subscribe(),
         ];
 
-        // 15-minute polling backup — Supabase real-time can occasionally disconnect
-        const pollInterval = setInterval(fetchData, 15 * 60 * 1000);
+        // 5-minute polling backup — Supabase real-time can occasionally disconnect
+        const pollInterval = setInterval(fetchData, 5 * 60 * 1000);
 
         return () => {
             channels.forEach(c => supabase.removeChannel(c));
@@ -437,9 +467,9 @@ Pitch Perfect Solutions`,
         return <Skeleton className="h-[300px] w-full rounded-2xl" />;
     }
 
-    // Sort by recent (14-day) score primary, occurrence score secondary
+    // Sort by most unplanned days off in 14-day window, then by weighted score
     const sortedList = watchList
-        .sort((a, b) => b.recentScore - a.recentScore || b.occurrenceScore - a.occurrenceScore);
+        .sort((a, b) => b.recentUnplannedCount - a.recentUnplannedCount || b.recentScore - a.recentScore || b.occurrenceScore - a.occurrenceScore);
 
     const maxScore = Math.max(...sortedList.map(a => a.recentScore), 1);
 
@@ -490,28 +520,28 @@ Pitch Perfect Solutions`,
                                     )}
                                 </div>
                                 Attendance Watch List
-                                <span className="text-[11px] font-normal text-white/30 ml-0.5">14-day window</span>
+                                <span className="text-[11px] font-normal text-white/60 ml-0.5">14-day window</span>
                             </CardTitle>
 
                             {/* Compact summary stats */}
                             {sortedList.length > 0 && (
                                 <div className="flex items-center gap-3 text-[11px] pl-[38px]">
-                                    <span className="text-white/50 tabular-nums">
-                                        <span className="text-white/80 font-semibold">{sortedList.length}</span> flagged
+                                    <span className="text-white/80 tabular-nums">
+                                        <span className="text-white font-semibold">{sortedList.length}</span> flagged
                                     </span>
                                     {criticalCount > 0 && (
-                                        <span className="flex items-center gap-1 text-red-400/90 font-medium">
+                                        <span className="flex items-center gap-1 text-red-400 font-medium">
                                             <Flame className="w-3 h-3" />
                                             {criticalCount} critical
                                         </span>
                                     )}
                                     {worseningCount > 0 && (
-                                        <span className="flex items-center gap-1 text-amber-400/80 font-medium">
+                                        <span className="flex items-center gap-1 text-amber-400 font-medium">
                                             <TrendingUp className="w-3 h-3" />
                                             {worseningCount} worsening
                                         </span>
                                     )}
-                                    <span className="text-white/30 tabular-nums">
+                                    <span className="text-white/80 tabular-nums">
                                         {totalRecentEvents} events
                                     </span>
                                 </div>
@@ -532,17 +562,17 @@ Pitch Perfect Solutions`,
 
                 <CardContent className="pt-0 flex-1 flex flex-col relative z-10">
                     {sortedList.length === 0 ? (
-                        <div className="h-[200px] flex flex-col items-center justify-center text-white/30">
+                        <div className="h-[200px] flex flex-col items-center justify-center text-white/40">
                             <div className="w-12 h-12 rounded-2xl bg-emerald-500/10 flex items-center justify-center mb-3">
                                 <CheckCircle2 className="w-5 h-5 text-emerald-400" />
                             </div>
                             <span className="text-sm font-medium">No attendance issues detected</span>
-                            <span className="text-[11px] text-white/20 mt-1">All agents are in good standing</span>
+                            <span className="text-[11px] text-white/30 mt-1">All agents are in good standing</span>
                         </div>
                     ) : (
                         <div className="space-y-0 flex-1 flex flex-col">
                             {/* Column headers */}
-                            <div className="flex items-center gap-2 px-2 pb-2 mb-0.5 border-b border-white/[0.08] text-[10px] text-white/40 uppercase tracking-[0.08em] font-semibold select-none">
+                            <div className="flex items-center gap-2 px-2 pb-2 mb-0.5 border-b border-white/[0.08] text-[10px] text-white/80 uppercase tracking-[0.08em] font-semibold select-none">
                                 <span className="w-5 shrink-0 text-center">#</span>
                                 <span className="flex-1 pl-1">Agent</span>
                                 <span className="w-[140px] shrink-0 text-center">Recent Activity</span>
@@ -551,8 +581,9 @@ Pitch Perfect Solutions`,
                                 <span className="w-7 shrink-0" />
                             </div>
 
+                            <div className="flex-1 flex flex-col justify-evenly">
                             <AnimatePresence>
-                                {(expanded ? sortedList : sortedList.slice(0, COLLAPSED_COUNT)).map((agent, index) => {
+                                {(expanded ? sortedList.slice(0, MAX_EXPANDED_COUNT) : sortedList.slice(0, COLLAPSED_COUNT)).map((agent, index) => {
                                     const severity = getSeverity(agent);
                                     const barPct = (agent.recentScore / maxScore) * 100;
                                     const isHovered = hoveredRow === index;
@@ -602,7 +633,7 @@ Pitch Perfect Solutions`,
                                                         {agent.name}
                                                     </button>
                                                     {totalAllTime > 0 && (
-                                                        <span className="text-[10px] text-white/25 tabular-nums shrink-0" title={`${totalAllTime} total events (90 days)`}>
+                                                        <span className="text-[10px] text-white/65 tabular-nums shrink-0" title={`${totalAllTime} total events (90 days)`}>
                                                             {totalAllTime} total
                                                         </span>
                                                     )}
@@ -635,7 +666,7 @@ Pitch Perfect Solutions`,
                                                 )}
                                                 {agent.recentPlannedCount > 0 && (
                                                     <span
-                                                        className="inline-flex items-center gap-[3px] text-[10px] font-medium tabular-nums px-1.5 py-[2px] rounded bg-white/[0.06] text-white/40"
+                                                        className="inline-flex items-center gap-[3px] text-[10px] font-medium tabular-nums px-1.5 py-[2px] rounded bg-white/[0.06] text-white/60"
                                                         title={`${agent.recentPlannedCount} planned in last 14 days`}
                                                     >
                                                         <Calendar className="w-[10px] h-[10px]" />
@@ -643,7 +674,7 @@ Pitch Perfect Solutions`,
                                                     </span>
                                                 )}
                                                 {agent.recentPlannedCount === 0 && agent.recentUnplannedCount === 0 && (
-                                                    <span className="text-[10px] text-white/20">no recent</span>
+                                                    <span className="text-[10px] text-white/50">no recent</span>
                                                 )}
                                             </div>
 
@@ -691,6 +722,7 @@ Pitch Perfect Solutions`,
                                     );
                                 })}
                             </AnimatePresence>
+                            </div>
 
                             {sortedList.length > COLLAPSED_COUNT && (
                                 <button
@@ -700,7 +732,7 @@ Pitch Perfect Solutions`,
                                     {expanded ? (
                                         <>Show Less <ChevronUp className="w-3 h-3" /></>
                                     ) : (
-                                        <>Show {sortedList.length - COLLAPSED_COUNT} More <ChevronDown className="w-3 h-3" /></>
+                                        <>Show {Math.min(sortedList.length, MAX_EXPANDED_COUNT) - COLLAPSED_COUNT} More <ChevronDown className="w-3 h-3" /></>
                                     )}
                                 </button>
                             )}

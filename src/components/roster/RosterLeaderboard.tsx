@@ -14,7 +14,7 @@ const TIER_BADGE: Record<AgentTier, { color: string; bg: string }> = {
 type SortKey = "pnl_per_hour" | "pnl" | "est_revenue" | "avg_tph" | "total_transfers" | "total_hours" | "avg_conversion" | "roi_pct" | "qa_score";
 
 const COLUMNS: { key: SortKey; label: string; fmt: (v: number | null) => string; align?: string }[] = [
-  { key: "avg_tph", label: "TPH", fmt: (v) => (v ?? 0).toFixed(2) },
+  { key: "avg_tph", label: "SLA/hr", fmt: (v) => (v ?? 0).toFixed(2) },
   { key: "total_transfers", label: "XFERS", fmt: (v) => (v ?? 0).toLocaleString() },
   { key: "total_hours", label: "HRS", fmt: (v) => (v ?? 0).toFixed(1) },
   { key: "est_revenue", label: "REVENUE", fmt: (v) => `$${((v ?? 0) / 1000).toFixed(1)}K` },

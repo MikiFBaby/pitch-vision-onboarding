@@ -206,6 +206,11 @@ export function transformRow(row: DatabaseCallRow): CallData {
         autoFailOverrideAt: row.auto_fail_override_at ?? undefined,
         autoFailOverrideBy: row.auto_fail_override_by ?? undefined,
 
+        // Confidence tier fields (v2.2)
+        afConfidenceLevel: (row.af_confidence_level as 'HIGH' | 'MEDIUM' | 'LOW') || undefined,
+        afNeedsReview: row.af_needs_review ?? false,
+        afSecondPass: parseJsonField(row.af_second_pass, null) || undefined,
+
         // Speaker turn metrics
         speakerMetrics: (() => {
             const raw = parseJsonField(row.speaker_metrics, null);

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { getRevenuePerTransfer, getCampaignType, isExcludedTeam } from '@/utils/dialedin-revenue';
+import { getCadToUsdRate, convertWageToUsd } from '@/utils/fx';
 import {
   getYearStart, getMonthStart, todayStr, safeDiv,
   getMondayOfWeek, addDays,
@@ -9,6 +10,7 @@ import {
   getStartDateFromPeriod,
 } from '@/utils/dialedin-analytics';
 import { getCached, setCache } from '@/utils/dialedin-cache';
+import { fetchNewHireSet, isNewHireAgent } from '@/utils/dialedin-new-hires';
 import type {
   RevenueSummary, TeamROI, RetreaverRevenueSummary,
   TimeSeriesBucket, VarianceSummary, VarianceDateRow,
@@ -54,17 +56,23 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: agentErr.message }, { status: 500 });
     }
 
-    // Fetch wages
+    // Fetch wages (convert Canadian wages to USD)
     const { data: employees } = await supabaseAdmin
       .from('employee_directory')
-      .select('first_name, last_name, hourly_wage')
+      .select('first_name, last_name, hourly_wage, country')
       .eq('employee_status', 'Active')
       .not('hourly_wage', 'is', null);
 
+    const [cadToUsdRate, newHireSet] = await Promise.all([
+      getCadToUsdRate(),
+      fetchNewHireSet(supabaseAdmin),
+    ]);
     const wageMap = new Map<string, number>();
     for (const emp of employees || []) {
       const name = `${emp.first_name} ${emp.last_name}`.trim().toLowerCase();
-      if (emp.hourly_wage != null) wageMap.set(name, Number(emp.hourly_wage));
+      if (emp.hourly_wage != null) {
+        wageMap.set(name, convertWageToUsd(Number(emp.hourly_wage), emp.country, cadToUsdRate));
+      }
     }
 
     // Fetch daily KPIs for trend chart
@@ -96,7 +104,32 @@ export async function GET(request: NextRequest) {
       teamMap.set(team, existing);
     }
 
-    // Compute per-team revenue
+    // ── Fetch Retreaver actuals (from retreaver_events directly) ──
+    // Fetched BEFORE team loop so we can use per-agent actual revenue
+    let retreaver: RetreaverRevenueSummary | undefined;
+    try {
+      retreaver = await buildRetreaverSummary(startDate, endDate);
+    } catch {
+      // Non-critical — fall back to flat rates
+    }
+
+    // Build agent → actual Retreaver revenue map
+    const retAgentRevMap = new Map<string, number>();
+    if (retreaver?.by_agent) {
+      for (const a of retreaver.by_agent) {
+        retAgentRevMap.set(a.agent.toLowerCase(), a.revenue);
+      }
+    }
+
+    // Build date → actual Retreaver revenue map for daily trend
+    const retDateRevMap = new Map<string, number>();
+    if (retreaver?.daily_trend) {
+      for (const d of retreaver.daily_trend) {
+        retDateRevMap.set(d.date, d.revenue);
+      }
+    }
+
+    // Compute per-team revenue (prefer Retreaver actuals, fall back to flat rate)
     let totalRevenue = 0;
     let totalCost = 0;
     let totalTransfers = 0;
@@ -105,9 +138,19 @@ export async function GET(request: NextRequest) {
 
     for (const [team, data] of teamMap) {
       const rate = getRevenuePerTransfer(team);
-      const revenue = data.transfers * rate;
+      const estimatedRevenue = data.transfers * rate;
+
+      // Sum actual Retreaver revenue for agents in this team
+      let teamActualRev = 0;
+      for (const agentName of data.agents) {
+        teamActualRev += retAgentRevMap.get(agentName.toLowerCase()) || 0;
+      }
+
+      const hasActual = teamActualRev > 0;
+      const revenue = hasActual ? teamActualRev : estimatedRevenue;
 
       const agentWages = Array.from(data.agents)
+        .filter((n) => !isNewHireAgent(n, newHireSet))
         .map((n) => wageMap.get(n.toLowerCase()))
         .filter(Boolean) as number[];
       const avgWage = agentWages.length > 0 ? agentWages.reduce((a, b) => a + b, 0) / agentWages.length : 0;
@@ -119,6 +162,7 @@ export async function GET(request: NextRequest) {
         campaign_type: getCampaignType(team),
         transfers: data.transfers,
         revenue: Math.round(revenue * 100) / 100,
+        actual_revenue: hasActual ? Math.round(teamActualRev * 100) / 100 : undefined,
         cost: Math.round(teamCost * 100) / 100,
         profit: Math.round(profit * 100) / 100,
         hours: Math.round(data.hours * 10) / 10,
@@ -136,12 +180,13 @@ export async function GET(request: NextRequest) {
 
     byTeam.sort((a, b) => b.profit - a.profit);
 
-    // Build daily revenue trend
+    // Build daily revenue trend (use Retreaver actuals when available)
     const blendedRate = totalTransfers > 0 ? totalRevenue / totalTransfers : 7.0;
     const costPerHr = totalHours > 0 ? totalCost / totalHours : 0;
 
     const dailyRevenue = (dailyKpis || []).map((d) => {
-      const rev = d.total_transfers * blendedRate;
+      const actualRev = retDateRevMap.get(d.report_date);
+      const rev = actualRev != null && actualRev > 0 ? actualRev : d.total_transfers * blendedRate;
       const cost = d.total_man_hours * costPerHr;
       return {
         date: d.report_date,
@@ -152,14 +197,6 @@ export async function GET(request: NextRequest) {
 
     const workingDays = new Set((dailyKpis || []).map((d) => d.report_date)).size;
     const totalProfit = totalRevenue - totalCost;
-
-    // ── Fetch Retreaver actuals (from retreaver_events directly) ──
-    let retreaver: RetreaverRevenueSummary | undefined;
-    try {
-      retreaver = await buildRetreaverSummary(startDate, endDate);
-    } catch {
-      // Non-critical
-    }
 
     // ── Build time series ──
     let timeSeries: TimeSeriesBucket[] | undefined;

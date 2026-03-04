@@ -1,12 +1,13 @@
 "use client";
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import StatsCard from "@/components/dashboard/StatsCard";
 import RecentCallsTable from "@/components/dashboard/RecentCallsTable";
 import InteractiveChart from "@/components/dashboard/InteractiveChart";
 import VoiceTrainingAgent from "@/components/dashboard/VoiceTrainingAgent";
 import { useAuth } from "@/context/AuthContext";
 import { useAgentDialedinStats } from "@/hooks/useAgentDialedinStats";
-import { CheckCircle, Clock, Trophy, TrendingUp, Phone, DollarSign, BarChart2, Coins } from "lucide-react";
+import { useIntradayData } from "@/hooks/useIntradayData";
+import { CheckCircle, Clock, Trophy, TrendingUp, Phone, DollarSign, BarChart2, Coins, Zap, Target } from "lucide-react";
 import DashboardLayout from "@/components/layout/DashboardLayout";
 
 const STATUS_LABELS: Record<string, { label: string; color: string }> = {
@@ -26,6 +27,42 @@ export default function AgentDashboard() {
     // Fetch real DialedIn stats
     const { latest, recentDays, averages, liveStatus, hasLiveData, loading: statsLoading } =
         useAgentDialedinStats(agentName);
+
+    // Fetch intraday data for this agent (live scraper snapshots)
+    const { data: intradayData, loading: intradayLoading } = useIntradayData({
+        agent: agentName || undefined,
+        includeRank: true,
+        includeTrend: true,
+        interval: 120_000,
+        enabled: !!agentName && agentName.length >= 2,
+    });
+
+    // Extract this agent's data from intraday response
+    const intradayAgent = useMemo(() => {
+        if (!intradayData?.agents?.length) return null;
+        return intradayData.agents[0] ?? null;
+    }, [intradayData]);
+
+    // Determine break-even threshold from agent's team
+    const agentBreakEven = useMemo(() => {
+        if (!intradayAgent?.team || !intradayData?.break_even) return intradayData?.break_even?.aca ?? 2.5;
+        const team = intradayAgent.team.toLowerCase();
+        if (team.includes('aragon') || team.includes('medicare') || team.includes('whatif') || team.includes('elite') || team.includes('brandon')) {
+            return intradayData.break_even.medicare;
+        }
+        return intradayData.break_even.aca;
+    }, [intradayAgent, intradayData]);
+
+    // Hourly deltas for mini chart
+    const intradayHourlyDeltas = useMemo(() => {
+        const trend = intradayData?.agent_hourly_trend;
+        if (!trend || trend.length === 0) return [];
+        return trend.map((h, i) => ({
+            hour: h.hour,
+            sla_delta: i === 0 ? h.sla_total : h.sla_total - trend[i - 1].sla_total,
+            sla_total: h.sla_total,
+        }));
+    }, [intradayData]);
 
     useEffect(() => {
         if (profile?.id) {
@@ -91,6 +128,95 @@ export default function AgentDashboard() {
                     </div>
                 )}
 
+                {/* Today's Intraday Performance */}
+                {!intradayLoading && intradayAgent && (
+                    <div className="glass-card rounded-xl border-white/5 p-4 space-y-3">
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-2">
+                                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
+                                <span className="text-[11px] font-bold text-emerald-400 uppercase tracking-widest">Today&apos;s Performance</span>
+                            </div>
+                            <div className="flex items-center gap-2">
+                                {intradayData?.stale && (
+                                    <span className="text-[10px] text-amber-400/80 font-mono">stale</span>
+                                )}
+                                <span className="text-[10px] text-white/40 font-mono">
+                                    {intradayData?.latest_snapshot_at
+                                        ? new Date(intradayData.latest_snapshot_at).toLocaleTimeString("en-US", {
+                                            timeZone: "America/New_York",
+                                            hour: "numeric",
+                                            minute: "2-digit",
+                                        })
+                                        : ""}
+                                </span>
+                            </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                            {/* SLA/hr vs Break-Even */}
+                            <div className="bg-white/5 rounded-lg p-3">
+                                <div className="text-[10px] text-white/50 uppercase tracking-wider mb-1">SLA/hr</div>
+                                <div className={`text-xl font-bold font-mono tabular-nums ${intradayAgent.sla_hr >= agentBreakEven ? "text-emerald-400" : "text-red-400"}`}>
+                                    {intradayAgent.sla_hr.toFixed(2)}
+                                </div>
+                                <div className={`text-[10px] font-mono mt-0.5 ${intradayAgent.sla_hr >= agentBreakEven ? "text-emerald-400/70" : "text-red-400/70"}`}>
+                                    {intradayAgent.sla_hr >= agentBreakEven ? "+" : ""}{(intradayAgent.sla_hr - agentBreakEven).toFixed(2)} vs B/E ({agentBreakEven})
+                                </div>
+                            </div>
+
+                            {/* Transfers */}
+                            <div className="bg-white/5 rounded-lg p-3">
+                                <div className="text-[10px] text-white/50 uppercase tracking-wider mb-1">SLAs Today</div>
+                                <div className="text-xl font-bold font-mono tabular-nums text-white">
+                                    {intradayAgent.transfers}
+                                </div>
+                                <div className="text-[10px] text-white/40 font-mono mt-0.5">
+                                    {intradayAgent.dialed} dialed
+                                </div>
+                            </div>
+
+                            {/* Hours Worked */}
+                            <div className="bg-white/5 rounded-lg p-3">
+                                <div className="text-[10px] text-white/50 uppercase tracking-wider mb-1">Hours Today</div>
+                                <div className="text-xl font-bold font-mono tabular-nums text-white">
+                                    {intradayAgent.hours_worked.toFixed(1)}h
+                                </div>
+                                <div className="text-[10px] text-white/40 font-mono mt-0.5">
+                                    {intradayAgent.connects} connects
+                                </div>
+                            </div>
+
+                            {/* Rank */}
+                            <div className="bg-white/5 rounded-lg p-3">
+                                <div className="text-[10px] text-white/50 uppercase tracking-wider mb-1">Today&apos;s Rank</div>
+                                <div className="text-xl font-bold font-mono tabular-nums text-amber-400">
+                                    {intradayAgent.rank ? `#${intradayAgent.rank}` : "—"}
+                                </div>
+                                <div className="text-[10px] text-white/40 font-mono mt-0.5">
+                                    of {intradayData?.total_agents_ranked ?? "—"} agents
+                                </div>
+                            </div>
+                        </div>
+
+                        {/* Mini Hourly Progression Chart */}
+                        {intradayHourlyDeltas.length > 1 && (
+                            <div className="flex items-end gap-0.5 h-8">
+                                {intradayHourlyDeltas.map((h) => {
+                                    const maxDelta = Math.max(...intradayHourlyDeltas.map((d) => d.sla_delta), 1);
+                                    return (
+                                        <div key={h.hour} className="flex-1 flex flex-col items-center justify-end h-full" title={`${h.hour > 12 ? h.hour - 12 : h.hour}${h.hour >= 12 ? "PM" : "AM"}: +${h.sla_delta} SLA (${h.sla_total} total)`}>
+                                            <div
+                                                className="w-full max-w-[20px] bg-emerald-500/50 rounded-t"
+                                                style={{ height: `${Math.max((h.sla_delta / maxDelta) * 100, 8)}%` }}
+                                            />
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </div>
+                )}
+
                 {/* Stats Cards - Row 1 */}
                 <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
                     <StatsCard
@@ -122,7 +248,7 @@ export default function AgentDashboard() {
                         title="Avg SLA / Hour"
                         value={statsLoading ? "—" : (averages?.tph?.toFixed(2) || "—")}
                         trend={latest && averages ? (latest.tph > averages.tph ? "up" : latest.tph < averages.tph ? "down" : "neutral") : "neutral"}
-                        trendValue={latest ? `today ${latest.tph.toFixed(2)}` : ""}
+                        trendValue={intradayAgent ? `live ${intradayAgent.sla_hr.toFixed(2)}` : (latest ? `today ${latest.tph.toFixed(2)}` : "")}
                         icon={<BarChart2 size={18} />}
                     />
                 </div>
@@ -156,9 +282,9 @@ export default function AgentDashboard() {
                     <StatsCard
                         index={7}
                         title="Global Rank"
-                        value={statsLoading ? "—" : (latest?.tph_rank ? `#${latest.tph_rank}` : "—")}
+                        value={intradayAgent?.rank ? `#${intradayAgent.rank}` : (statsLoading ? "—" : (latest?.tph_rank ? `#${latest.tph_rank}` : "—"))}
                         trend="neutral"
-                        trendValue={latest?.tph_rank ? "by SLA/hr" : ""}
+                        trendValue={intradayAgent?.rank ? `of ${intradayData?.total_agents_ranked ?? "—"} today` : (latest?.tph_rank ? "by SLA/hr" : "")}
                         icon={<Trophy size={18} />}
                     />
                 </div>

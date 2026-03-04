@@ -1,14 +1,15 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useExecutiveFilters } from "@/context/ExecutiveFilterContext";
 import { useLiveData } from "@/hooks/useLiveData";
+import { useIntradayData } from "@/hooks/useIntradayData";
 import {
   Zap,
   Users,
-  AlertTriangle,
   Activity,
   Radio,
+  BarChart2,
 } from "lucide-react";
 import { PeriodLabel } from "./layout";
 import { fmt, num } from "@/utils/format";
@@ -165,6 +166,44 @@ export default function CommandCenterPage() {
     return () => clearInterval(id);
   }, []);
 
+  // Intraday scraper data (5-min cumulative snapshots)
+  const { data: intradayData, loading: intradayLoading } = useIntradayData({
+    includeTrend: true,
+    interval: 120_000,
+  });
+
+  // Intraday computed stats
+  const intradayStats = useMemo(() => {
+    if (!intradayData?.totals) return null;
+    const t = intradayData.totals;
+    const aboveBE = intradayData.agents.filter((a) => {
+      const team = a.team?.toLowerCase() || "";
+      const be = (team.includes("aragon") || team.includes("medicare") || team.includes("whatif") || team.includes("elite") || team.includes("brandon"))
+        ? intradayData.break_even.medicare
+        : intradayData.break_even.aca;
+      return a.sla_hr >= be && a.hours_worked > 0;
+    }).length;
+    const belowBE = intradayData.agents.filter((a) => {
+      const team = a.team?.toLowerCase() || "";
+      const be = (team.includes("aragon") || team.includes("medicare") || team.includes("whatif") || team.includes("elite") || team.includes("brandon"))
+        ? intradayData.break_even.medicare
+        : intradayData.break_even.aca;
+      return a.sla_hr < be && a.hours_worked > 0;
+    }).length;
+    return { ...t, aboveBE, belowBE };
+  }, [intradayData]);
+
+  // Hourly SLA deltas for sparkline
+  const intradayHourlyDeltas = useMemo(() => {
+    const trend = intradayData?.hourly_trend;
+    if (!trend || trend.length === 0) return [];
+    return trend.map((h, i) => ({
+      hour: h.hour,
+      sla_delta: i === 0 ? h.sla_total : h.sla_total - trend[i - 1].sla_total,
+      sla_total: h.sla_total,
+    }));
+  }, [intradayData]);
+
   const todayRevenue = retreaver?.today_revenue ?? 0;
   const periodRevenue = period?.revenue ?? 0;
   const periodCost = period?.cost ?? 0;
@@ -275,14 +314,83 @@ export default function CommandCenterPage() {
         </div>
       </div>
 
+      {/* Intraday Pulse Strip */}
+      {!intradayLoading && intradayStats && (
+        <div className="bg-[#0f1923] border border-[#1a2332] rounded-lg px-4 py-3 flex items-center gap-4">
+          {/* Sparkline */}
+          {intradayHourlyDeltas.length > 1 && (
+            <div className="flex items-end gap-[2px] h-[32px] shrink-0">
+              {intradayHourlyDeltas.map((h) => {
+                const maxDelta = Math.max(...intradayHourlyDeltas.map((d) => d.sla_delta), 1);
+                return (
+                  <div
+                    key={h.hour}
+                    className="w-[6px] bg-cyan-500/60 rounded-t hover:bg-cyan-400/80 transition-colors"
+                    style={{ height: `${Math.max((h.sla_delta / maxDelta) * 100, 10)}%` }}
+                    title={`${h.hour > 12 ? h.hour - 12 : h.hour}${h.hour >= 12 ? "PM" : "AM"}: +${h.sla_delta} SLA (${h.sla_total} total)`}
+                  />
+                );
+              })}
+            </div>
+          )}
+
+          {/* Summary Stats */}
+          <div className="flex items-center gap-5 text-[11px] flex-1">
+            <div className="flex items-center gap-1.5">
+              <BarChart2 size={12} className="text-cyan-400/70" />
+              <span className="text-white/70 tracking-wider uppercase">Intraday</span>
+            </div>
+            <div>
+              <span className="text-white/50">SLA: </span>
+              <span className="text-cyan-400 font-bold tabular-nums">{num(intradayStats.sla_total)}</span>
+            </div>
+            <div>
+              <span className="text-white/50">Agents: </span>
+              <span className="text-white/80 tabular-nums">{intradayStats.active_agents}</span>
+            </div>
+            <div>
+              <span className="text-white/50">Avg SLA/hr: </span>
+              <span className="text-white/80 tabular-nums">{intradayStats.avg_sla_hr.toFixed(2)}</span>
+            </div>
+            <div>
+              <span className="text-emerald-400/80 tabular-nums">{intradayStats.aboveBE}</span>
+              <span className="text-white/40"> above B/E</span>
+              <span className="text-white/20 mx-1">|</span>
+              <span className="text-red-400/80 tabular-nums">{intradayStats.belowBE}</span>
+              <span className="text-white/40"> below</span>
+            </div>
+          </div>
+
+          {/* Freshness */}
+          <div className="flex items-center gap-1.5 shrink-0">
+            <div className={`w-1.5 h-1.5 rounded-full ${intradayData?.stale ? "bg-amber-400" : "bg-emerald-500 animate-pulse"}`} />
+            <span className="text-[10px] text-white/40 tabular-nums">
+              {intradayData?.latest_snapshot_at
+                ? new Date(intradayData.latest_snapshot_at).toLocaleTimeString("en-US", {
+                    timeZone: "America/New_York",
+                    hour: "numeric",
+                    minute: "2-digit",
+                  })
+                : "---"}
+              {intradayData?.stale && <span className="text-amber-400 ml-1">stale</span>}
+            </span>
+          </div>
+        </div>
+      )}
+
       {/* KPI Cards */}
       <div className="grid grid-cols-6 gap-3">
         <KPICard
           label="SLA TODAY"
-          value={hasLiveData ? num(liveMetrics?.total_transfers ?? 0) : "---"}
+          value={hasLiveData
+            ? num(liveMetrics?.total_transfers ?? 0)
+            : intradayStats
+              ? num(intradayStats.sla_total)
+              : "---"}
           icon={<Zap size={14} />}
           accent="amber"
-          live={hasLiveData}
+          live={hasLiveData || !!intradayStats}
+          subtitle={hasLiveData && intradayStats ? `scraper: ${num(intradayStats.sla_total)}` : undefined}
         />
         <KPICard
           label="SLA PERIOD"
@@ -292,10 +400,14 @@ export default function CommandCenterPage() {
         />
         <KPICard
           label="ACTIVE AGENTS"
-          value={num(activeAgents)}
+          value={hasLiveData
+            ? num((liveMetrics?.agents_active ?? 0) + (liveMetrics?.agents_on_break ?? 0))
+            : intradayStats
+              ? num(intradayStats.active_agents)
+              : loading ? "---" : num(period?.agent_count ?? 0)}
           icon={<Users size={14} />}
           accent="emerald"
-          live={hasLiveData}
+          live={hasLiveData || !!intradayStats}
         />
         <KPICard
           label="ON BREAK"
@@ -305,16 +417,29 @@ export default function CommandCenterPage() {
           live={hasLiveData}
         />
         <KPICard
-          label="AVG TPH"
-          value={loading ? "---" : (period?.avg_tph ?? 0).toFixed(2)}
+          label="AVG SLA/hr"
+          value={intradayStats
+            ? intradayStats.avg_sla_hr.toFixed(2)
+            : loading ? "---" : (period?.avg_tph ?? 0).toFixed(2)}
           icon={<Activity size={14} />}
           accent="cyan"
+          live={!!intradayStats}
+          subtitle={intradayStats && period ? `period: ${(period.avg_tph ?? 0).toFixed(2)}` : undefined}
         />
         <KPICard
-          label="ALERTS"
-          value={num(period?.alerts_count ?? 0)}
-          icon={<AlertTriangle size={14} />}
-          accent={(period?.alerts_count ?? 0) > 0 ? "red" : "gray"}
+          label="vs B/E (ACA)"
+          value={(() => {
+            const slaHr = intradayStats ? intradayStats.avg_sla_hr : (period?.avg_tph ?? 0);
+            const be = intradayData?.break_even?.aca ?? 2.5;
+            const delta = slaHr - be;
+            return loading && !intradayStats ? "---" : `${delta >= 0 ? "+" : ""}${delta.toFixed(2)}`;
+          })()}
+          icon={<Activity size={14} />}
+          accent={(() => {
+            const slaHr = intradayStats ? intradayStats.avg_sla_hr : (period?.avg_tph ?? 0);
+            const be = intradayData?.break_even?.aca ?? 2.5;
+            return slaHr >= be ? "emerald" : "red";
+          })()}
         />
       </div>
 
@@ -408,12 +533,14 @@ function KPICard({
   icon,
   accent,
   live,
+  subtitle,
 }: {
   label: string;
   value: string;
   icon: React.ReactNode;
   accent: string;
   live?: boolean;
+  subtitle?: string;
 }) {
   const colors: Record<string, { border: string; text: string }> = {
     amber: { border: "border-amber-500/20", text: "text-amber-400" },
@@ -434,6 +561,7 @@ function KPICard({
         <span className="text-[11px] text-white/60 tracking-widest uppercase">{label}</span>
       </div>
       <div className={`text-lg font-bold tabular-nums ${c.text}`}>{value}</div>
+      {subtitle && <div className="text-[10px] text-white/40 mt-0.5 tabular-nums">{subtitle}</div>}
     </div>
   );
 }

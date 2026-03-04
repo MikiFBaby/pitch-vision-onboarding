@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { isExcludedTeam, getCampaignType, getRevenuePerTransfer } from "@/utils/dialedin-revenue";
+import { getCadToUsdRate, convertWageToUsd } from "@/utils/fx";
+import { fetchNewHireSet, isNewHireAgent } from "@/utils/dialedin-new-hires";
 import type { AgentTier, AgentQAStats, RosterAgent, RosterTeamSummary } from "@/types/dialedin-types";
 
 export const runtime = "nodejs";
@@ -103,7 +105,7 @@ interface QARow {
   auto_fail_overridden: boolean | null;
   risk_level: string | null;
   language_assessment: Record<string, unknown> | null;
-  created_at: string;
+  call_date: string | null;
 }
 
 async function fetchAllRosterQA(startDate: string, endDate: string): Promise<QARow[]> {
@@ -113,10 +115,11 @@ async function fetchAllRosterQA(startDate: string, endDate: string): Promise<QAR
 
   while (true) {
     const { data, error } = await supabaseAdmin
-      .from("qa_call_analyses")
-      .select("agent_name, compliance_score, auto_fail_triggered, auto_fail_overridden, risk_level, language_assessment, created_at")
-      .gte("created_at", `${startDate}T00:00:00`)
-      .lte("created_at", `${endDate}T23:59:59`)
+      .from("QA Results")
+      .select("agent_name, compliance_score, auto_fail_triggered, auto_fail_overridden, risk_level, language_assessment, call_date")
+      .gte("call_date", startDate)
+      .lte("call_date", endDate)
+      .not("agent_name", "is", null)
       .range(from, from + PAGE - 1);
 
     if (error) throw error;
@@ -212,7 +215,7 @@ export async function GET(request: NextRequest) {
 
   try {
     // Parallel fetches — perf and QA use paginated helpers
-    const [perfData, empResult, payrollResult, qaData] = await Promise.all([
+    const [perfData, empResult, payrollResult, qaData, newHireSet] = await Promise.all([
       fetchAllRosterPerf(startDate, endDate),
 
       // 2. Employee directory (wages, country, hire dates, avatar)
@@ -229,10 +232,16 @@ export async function GET(request: NextRequest) {
         .lte("period_start", endDate),
 
       fetchAllRosterQA(startDate, endDate),
+
+      // 5. New hire agents (≤5 shifts) — excluded from team averages
+      fetchNewHireSet(supabaseAdmin),
     ]);
 
     const employees = empResult.data || [];
     const payrollData = payrollResult.data || [];
+
+    // Fetch CAD→USD rate for Canadian agent wage conversion
+    const cadToUsdRate = await getCadToUsdRate();
 
     // Build employee lookup
     const empById = new Map<string, (typeof employees)[0]>();
@@ -267,7 +276,7 @@ export async function GET(request: NextRequest) {
           total_score: 0, count: 0,
           auto_fail_count: 0, auto_fail_overridden_count: 0,
           risk_high: 0, risk_medium: 0, risk_low: 0,
-          latest_date: q.created_at,
+          latest_date: q.call_date || "",
           prof_total: 0, prof_count: 0,
           empathy_total: 0, empathy_count: 0,
           clarity_total: 0, clarity_count: 0,
@@ -289,7 +298,7 @@ export async function GET(request: NextRequest) {
       else if (risk === "medium") agg.risk_medium++;
       else if (risk === "low") agg.risk_low++;
 
-      if (q.created_at > agg.latest_date) agg.latest_date = q.created_at;
+      if (q.call_date && q.call_date > agg.latest_date) agg.latest_date = q.call_date;
 
       // Language assessment extraction
       const la = q.language_assessment;
@@ -389,9 +398,10 @@ export async function GET(request: NextRequest) {
       const revenuePerTransfer = getRevenuePerTransfer(agg.team);
       const estRevenue = agg.total_transfers * revenuePerTransfer;
 
-      // Cost
+      // Cost (convert Canadian wages to USD)
       const emp = agg.employee_id ? empById.get(agg.employee_id) : null;
-      const wage = emp?.hourly_wage ?? null;
+      const rawWage = emp?.hourly_wage ?? null;
+      const wage = rawWage != null ? convertWageToUsd(Number(rawWage), emp?.country ?? null, cadToUsdRate) : null;
       const estCost = wage != null ? agg.total_hours * wage : 0;
 
       // True cost from payroll
@@ -459,7 +469,8 @@ export async function GET(request: NextRequest) {
         total_connects: agg.total_connects,
         days_worked: daysWorked,
         est_revenue: Math.round(estRevenue * 100) / 100,
-        hourly_wage: wage != null ? Number(wage) : null,
+        hourly_wage: wage != null ? Math.round(wage * 100) / 100 : null,
+        hourly_wage_raw: rawWage != null ? Number(rawWage) : null,
         est_cost: Math.round(estCost * 100) / 100,
         true_cost: trueCost != null ? Math.round(trueCost * 100) / 100 : null,
         pnl: Math.round(pnl * 100) / 100,
@@ -473,6 +484,7 @@ export async function GET(request: NextRequest) {
         qa_stats: qaStats,
         qa_language: qaLanguage,
         user_image: emp?.user_image ?? null,
+        is_new_hire: isNewHireAgent(agg.agent_name, newHireSet),
       };
 
       // Apply filters
@@ -487,8 +499,8 @@ export async function GET(request: NextRequest) {
     // Sort by P&L per hour descending
     roster.sort((a, b) => b.pnl_per_hour - a.pnl_per_hour);
 
-    // Compute team summaries
-    const teamMap = new Map<string, RosterTeamSummary>();
+    // Compute team summaries (avg_tph and avg_pnl_per_hour exclude new hires)
+    const teamMap = new Map<string, RosterTeamSummary & { tenured_transfers: number; tenured_hours: number; tenured_pnl: number }>();
     for (const agent of roster) {
       const team = agent.team || "Unknown";
       let ts = teamMap.get(team);
@@ -504,6 +516,9 @@ export async function GET(request: NextRequest) {
           avg_tph: 0,
           total_transfers: 0,
           total_hours: 0,
+          tenured_transfers: 0,
+          tenured_hours: 0,
+          tenured_pnl: 0,
         };
         teamMap.set(team, ts);
       }
@@ -513,12 +528,17 @@ export async function GET(request: NextRequest) {
       ts.net_pnl += agent.pnl;
       ts.total_transfers += agent.total_transfers;
       ts.total_hours += agent.total_hours;
+      if (!agent.is_new_hire) {
+        ts.tenured_transfers += agent.total_transfers;
+        ts.tenured_hours += agent.total_hours;
+        ts.tenured_pnl += agent.pnl;
+      }
     }
 
     const teams: RosterTeamSummary[] = Array.from(teamMap.values()).map((ts) => ({
       ...ts,
-      avg_pnl_per_hour: ts.total_hours > 0 ? Math.round((ts.net_pnl / ts.total_hours) * 100) / 100 : 0,
-      avg_tph: ts.total_hours > 0 ? Math.round((ts.total_transfers / ts.total_hours) * 100) / 100 : 0,
+      avg_pnl_per_hour: ts.tenured_hours > 0 ? Math.round((ts.tenured_pnl / ts.tenured_hours) * 100) / 100 : 0,
+      avg_tph: ts.tenured_hours > 0 ? Math.round((ts.tenured_transfers / ts.tenured_hours) * 100) / 100 : 0,
       total_revenue: Math.round(ts.total_revenue * 100) / 100,
       total_cost: Math.round(ts.total_cost * 100) / 100,
       net_pnl: Math.round(ts.net_pnl * 100) / 100,
@@ -539,11 +559,13 @@ export async function GET(request: NextRequest) {
       period: { start: startDate, end: endDate },
       summary: {
         total_agents: roster.length,
+        new_hire_count: roster.filter((a) => a.is_new_hire).length,
         total_revenue: Math.round(totalRevenue * 100) / 100,
         total_cost: Math.round(totalCost * 100) / 100,
         net_pnl: Math.round((totalRevenue - totalCost) * 100) / 100,
         tier_counts: tierCounts,
       },
+      fx: { cad_to_usd: cadToUsdRate },
     });
   } catch (err) {
     console.error("Roster API error:", err);

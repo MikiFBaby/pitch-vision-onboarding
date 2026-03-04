@@ -277,6 +277,24 @@ export async function computeAndStore(
     .eq('report_date', reportDate);
 
   if (result.agentPerformance.length > 0) {
+    // Populate employee_id by matching agent_name against employee_directory
+    const { data: employees } = await supabaseAdmin
+      .from('employee_directory')
+      .select('id, first_name, last_name')
+      .eq('employee_status', 'Active');
+
+    if (employees && employees.length > 0) {
+      const nameMap = new Map<string, string>();
+      for (const emp of employees) {
+        const full = `${emp.first_name} ${emp.last_name}`.toLowerCase().trim();
+        nameMap.set(full, emp.id);
+      }
+      for (const agent of result.agentPerformance) {
+        const key = (agent.agent_name || '').toLowerCase().trim();
+        agent.employee_id = nameMap.get(key) || null;
+      }
+    }
+
     for (let i = 0; i < result.agentPerformance.length; i += 100) {
       const batch = result.agentPerformance.slice(i, i + 100);
       await supabaseAdmin.from('dialedin_agent_performance').insert(batch);

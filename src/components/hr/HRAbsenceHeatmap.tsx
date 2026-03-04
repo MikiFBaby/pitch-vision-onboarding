@@ -61,10 +61,13 @@ export default function HRAbsenceHeatmap() {
 
             // Dedup set for unplanned: agent|date
             const seenUnplanned = new Set<string>();
+            // Cross-table dedup: agent|date pairs from Booked — skip from unplanned count
+            const bookedAgentDates = new Set<string>();
 
             booked.forEach((b: any) => {
                 if (!b['Date'] || !b['Agent Name']?.trim()) return;
                 const dateStr = (b['Date'] || '').toString().trim();
+                const agentName = (b['Agent Name'] || '').trim().toLowerCase();
                 const d = new Date(dateStr + 'T00:00:00');
                 const dow = d.getDay();
                 if (dow >= 1 && dow <= 5) {
@@ -72,10 +75,12 @@ export default function HRAbsenceHeatmap() {
                     if (!bookedDatesByDow[dow]) bookedDatesByDow[dow] = new Set();
                     bookedDatesByDow[dow].add(dateStr);
                     if (dateStr === todayStr) todayBookedCount++;
+                    bookedAgentDates.add(`${agentName}|${dateStr}`);
                 }
             });
 
             // Process Non Booked Days Off (unplanned absences)
+            // Skip agents who also appear in Booked for the same date (booked wins)
             unplanned.forEach((u: any) => {
                 if (!u['Date'] || !u['Agent Name']?.trim()) return;
                 const dateStr = (u['Date'] || '').toString().trim();
@@ -86,6 +91,7 @@ export default function HRAbsenceHeatmap() {
 
                 const dedupKey = `${agentName}|${dateStr}`;
                 if (seenUnplanned.has(dedupKey)) return;
+                if (bookedAgentDates.has(dedupKey)) return; // already counted as booked
                 seenUnplanned.add(dedupKey);
 
                 unplannedByDow[dow] = (unplannedByDow[dow] || 0) + 1;
@@ -260,7 +266,7 @@ export default function HRAbsenceHeatmap() {
                                             Today vs {today.day} Average
                                         </h3>
                                         {today.histDays > 0 && (
-                                            <span className="text-[11px] text-white/40">
+                                            <span className="text-[11px] text-white/55">
                                                 Based on {today.histDays} previous {today.day}{today.histDays !== 1 ? 's' : ''}
                                             </span>
                                         )}
@@ -321,7 +327,7 @@ export default function HRAbsenceHeatmap() {
                                         <div className={`text-2xl font-extrabold ${style.text} leading-none`}>
                                             {d.overallAvgUnplanned}
                                         </div>
-                                        <div className="text-[10px] text-white/50 mt-1 font-medium">avg unplanned</div>
+                                        <div className="text-[10px] text-white/60 mt-1 font-medium">avg unplanned</div>
 
                                         <div className={`text-xs font-bold mt-1.5 ${style.text}`}>
                                             {aboveBelow}

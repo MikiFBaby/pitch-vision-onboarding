@@ -22,7 +22,7 @@ const LOOKBACK_DAYS = 7;
  * Vercel cron endpoint — fetches DialedIn XLS reports from Gmail via IMAP
  * and feeds them through the existing ETL pipeline.
  *
- * Runs daily at 7 AM. Searches the last 7 days to catch any gaps.
+ * Runs daily at 10 PM UTC (5 PM ET). Searches the last 7 days to catch any gaps.
  * Deduplicates against the `dialedin_reports` table (filename + report_type + report_date).
  */
 export async function GET(request: NextRequest) {

@@ -228,10 +228,9 @@ async function handleAttendanceFlow(
         await postAttendanceBotMessage(
             channelId,
             `:thinking_face: I couldn't parse any attendance events from that.\n\n` +
-            `:one: *Planned absence* — mention PTO, vacation, or day off:\n` +
-            `_"Sarah has PTO Friday"_\n\n` +
-            `:two: *Unplanned absence* — describe what happened:\n` +
+            `Tell me who's absent and why:\n` +
             `_"Ade is sick today"_ or _"NCNS for David"_\n\n` +
+            `:palm_tree: _For planned absences (PTO/vacation), enter them directly in the Booked Days Off Google Sheet._\n\n` +
             `:bulb: _First names work great! For common names, add the last name._`
         );
         return NextResponse.json({ ok: true, result: 'no_events' });

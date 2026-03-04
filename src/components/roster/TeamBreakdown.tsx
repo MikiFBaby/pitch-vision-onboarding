@@ -54,7 +54,7 @@ export function TeamBreakdown({
         <div className="text-right">COST</div>
         <div className="text-right">NET P&L</div>
         <div className="text-right">AVG $/HR</div>
-        <div className="text-right">AVG TPH</div>
+        <div className="text-right">AVG SLA/hr</div>
       </div>
 
       {teams.map((team) => {

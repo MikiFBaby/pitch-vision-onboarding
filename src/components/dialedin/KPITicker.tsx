@@ -60,6 +60,7 @@ export default function KPITicker({ kpis, loading, wow, liveMetrics }: KPITicker
     { label: "MAN HRS", value: kpis.total_man_hours.toFixed(1),
       wowPct: wow?.deltas.hours.pct ?? null,
     },
+    { label: "PAID HRS", value: (kpis.total_paid_hours ?? kpis.total_man_hours).toFixed(1) },
     {
       label: "CONN %",
       value: `${kpis.connect_rate}%`,

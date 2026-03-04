@@ -20,7 +20,7 @@ import type {
   ParsedReportData,
 } from '@/types/dialedin-types';
 import { THRESHOLDS, WASTE_DISPOSITIONS } from '@/types/dialedin-types';
-import { isExcludedTeam } from '@/utils/dialedin-revenue';
+import { isExcludedTeam, getCampaignType } from '@/utils/dialedin-revenue';
 
 // ═══════════════════════════════════════════════════════════
 // Helpers
@@ -74,8 +74,15 @@ function normalizeDispKey(col: string): string {
     .replace(/\//g, '_');
 }
 
-// Paid hours = logged_in - wrap - pause + 1.16hr allowance (lunch/breaks)
-const BREAK_ALLOWANCE_MIN = 69.6; // 1.16 hours × 60
+// Paid hours = logged_in - wrap - pause + break allowance (lunch/breaks)
+// Full-shift (8hr) allowance = 1.16hr (69.6min). Prorated for shorter shifts:
+// Cap at 15% of logged-in time so a 2hr shift doesn't get 58% inflation.
+const FULL_BREAK_ALLOWANCE_MIN = 69.6; // 1.16 hours × 60
+const BREAK_ALLOWANCE_RATIO = 0.145; // ~69.6 / 480 (8hr shift)
+
+function getBreakAllowanceMin(loggedInMin: number): number {
+  return Math.min(FULL_BREAK_ALLOWANCE_MIN, loggedInMin * BREAK_ALLOWANCE_RATIO);
+}
 
 // ═══════════════════════════════════════════════════════════
 // Daily KPIs (from AgentSummaryCampaign data)
@@ -110,7 +117,7 @@ export function computeDailyKPIs(
   // Paid hours = logged_in - wrap - pause + 1.16hr allowance
   const totalPaidHours = agentSummary.reduce((s, a) => {
     const pauseMin = pauseByAgent.get(a.rep.toLowerCase()) || 0;
-    const paidMin = a.logged_in_time_min - a.wrap_time_min - pauseMin + BREAK_ALLOWANCE_MIN;
+    const paidMin = a.logged_in_time_min - a.wrap_time_min - pauseMin + getBreakAllowanceMin(a.logged_in_time_min);
     return s + Math.max(paidMin, 0) / 60;
   }, 0);
 
@@ -141,7 +148,7 @@ export function computeDailyKPIs(
     .filter((a) => a.hours_worked >= THRESHOLDS.min_hours_qualified)
     .map((a) => {
       const pauseMin = pauseByAgent.get(a.rep.toLowerCase()) || 0;
-      const paidHrs = Math.max(a.logged_in_time_min - a.wrap_time_min - pauseMin + BREAK_ALLOWANCE_MIN, 0) / 60;
+      const paidHrs = Math.max(a.logged_in_time_min - a.wrap_time_min - pauseMin + getBreakAllowanceMin(a.logged_in_time_min), 0) / 60;
       return paidHrs > 0 ? a.transfers / paidHrs : 0;
     })
     .sort((a, b) => a - b);
@@ -200,6 +207,7 @@ export function computeAgentPerformance(
   production: ProductionRow[] | undefined,
   reportDate: string,
   agentAnalysis?: AgentAnalysisRow[],
+  agentSummarySubcampaign?: AgentSummarySubcampaignRow[],
 ): Omit<AgentPerformance, 'id'>[] {
   // Build production lookup by agent name
   const prodByAgent = new Map<string, ProductionRow[]>();
@@ -220,14 +228,32 @@ export function computeAgentPerformance(
     }
   }
 
+  // Build per-agent primary subcampaign lookup (highest hours_worked)
+  const primarySubcampaign = new Map<string, string>();
+  const agentSubcampaignDetail = new Map<string, AgentSummarySubcampaignRow[]>();
+  if (agentSummarySubcampaign && agentSummarySubcampaign.length > 0) {
+    for (const row of agentSummarySubcampaign) {
+      const key = row.rep.toLowerCase();
+      if (!agentSubcampaignDetail.has(key)) agentSubcampaignDetail.set(key, []);
+      agentSubcampaignDetail.get(key)!.push(row);
+    }
+    // For each agent, pick subcampaign with most hours worked
+    for (const [key, rows] of agentSubcampaignDetail) {
+      const sorted = [...rows].sort((a, b) => b.hours_worked - a.hours_worked);
+      if (sorted[0]?.campaign) {
+        primarySubcampaign.set(key, sorted[0].campaign);
+      }
+    }
+  }
+
   const agents: Omit<AgentPerformance, 'id'>[] = agentSummary.map((a) => {
     const tph = safeDiv(a.transfers, a.hours_worked);
     const agentKey = a.rep.toLowerCase();
     const prodRows = prodByAgent.get(agentKey) || [];
     const pauseMin = pauseByAgent.get(agentKey) || 0;
 
-    // Paid hours = logged_in - wrap - pause + 1.16hr allowance (lunch/breaks)
-    const paidMin = a.logged_in_time_min - a.wrap_time_min - pauseMin + BREAK_ALLOWANCE_MIN;
+    // Paid hours = logged_in - wrap - pause + prorated break allowance
+    const paidMin = a.logged_in_time_min - a.wrap_time_min - pauseMin + getBreakAllowanceMin(a.logged_in_time_min);
     const paidHours = Math.max(paidMin, 0) / 60;
     const adjustedTph = paidHours > 0 ? round(a.transfers / paidHours, 2) : null;
 
@@ -245,13 +271,25 @@ export function computeAgentPerformance(
     // Use primary skill from production data if available
     const skill = prodRows.length > 0 ? prodRows[0].skill : null;
 
+    // Derive team from skill when AgentSummary doesn't provide it
+    const derivedTeam = a.team || (() => {
+      if (!skill) return null;
+      const s = skill.toLowerCase();
+      if (s.includes('aragon') || s.includes('medicare aragon')) return 'Aragon Team A';
+      if (s.includes('jade') || s.includes('aca')) return 'Jade ACA Team';
+      if (s.includes('whatif')) return 'Team WhatIf';
+      if (s.includes('elite') || s.includes('fym')) return 'Elite FYM';
+      if (s.includes('tld')) return 'TLD';
+      return null;
+    })();
+
     return {
       report_date: reportDate,
       agent_name: a.rep,
-      team: a.team || null,
+      team: derivedTeam,
       employee_id: null,
       skill,
-      subcampaign: null,
+      subcampaign: primarySubcampaign.get(agentKey) || null,
       dials: a.dialed,
       connects: a.connects,
       contacts: a.contacts,
@@ -274,30 +312,57 @@ export function computeAgentPerformance(
       tph_rank: null,
       conversion_rank: null,
       dials_rank: null,
-      raw_data: {},
+      raw_data: (() => {
+        const subcRows = agentSubcampaignDetail.get(agentKey);
+        if (!subcRows || subcRows.length === 0) return {};
+        return {
+          subcampaigns: subcRows
+            .sort((x, y) => y.hours_worked - x.hours_worked)
+            .map((r) => ({
+              campaign: r.campaign,
+              subcampaign: r.subcampaign,
+              transfers: r.transfers,
+              hours: round(r.hours_worked, 2),
+              tph: round(safeDiv(r.transfers, r.hours_worked), 2),
+              connects: r.connects,
+              contacts: r.contacts,
+            })),
+        };
+      })(),
     };
   });
 
-  // Compute rankings among qualified agents
-  const qualified = agents
-    .filter((a) => a.hours_worked >= THRESHOLDS.min_hours_qualified)
-    .sort((a, b) => (b.adjusted_tph ?? b.tph) - (a.adjusted_tph ?? a.tph));
+  // Compute team-scoped rankings among qualified agents
+  const qualified = agents.filter((a) => a.hours_worked >= THRESHOLDS.min_hours_qualified);
 
-  qualified.forEach((a, i) => {
-    a.tph_rank = i + 1;
-  });
+  // Group qualified agents by campaign type for within-team ranking
+  const teamGroups = new Map<string, typeof qualified>();
+  for (const a of qualified) {
+    const campaign = getCampaignType(a.team) || 'other';
+    if (!teamGroups.has(campaign)) teamGroups.set(campaign, []);
+    teamGroups.get(campaign)!.push(a);
+  }
 
-  // Conversion ranking
-  const convSorted = [...qualified].sort((a, b) => b.conversion_rate - a.conversion_rate);
-  convSorted.forEach((a, i) => {
-    a.conversion_rank = i + 1;
-  });
+  // Rank within each team group
+  for (const [, group] of teamGroups) {
+    // TPH ranking
+    const tphSorted = [...group].sort((a, b) => (b.adjusted_tph ?? b.tph) - (a.adjusted_tph ?? a.tph));
+    tphSorted.forEach((a, i) => { a.tph_rank = i + 1; });
 
-  // Dials ranking
-  const dialsSorted = [...qualified].sort((a, b) => b.dials - a.dials);
-  dialsSorted.forEach((a, i) => {
-    a.dials_rank = i + 1;
-  });
+    // Conversion ranking
+    const convSorted = [...group].sort((a, b) => b.conversion_rate - a.conversion_rate);
+    convSorted.forEach((a, i) => { a.conversion_rank = i + 1; });
+
+    // Dials ranking
+    const dialsSorted = [...group].sort((a, b) => b.dials - a.dials);
+    dialsSorted.forEach((a, i) => { a.dials_rank = i + 1; });
+
+    // Stamp pool size into raw_data for percentile display
+    const poolSize = group.length;
+    for (const a of group) {
+      (a.raw_data as Record<string, unknown>).total_qualified = poolSize;
+    }
+  }
 
   return agents;
 }
@@ -570,6 +635,7 @@ export function processDay(
       production.length > 0 ? production : undefined,
       reportDate,
       agentAnalysis.length > 0 ? agentAnalysis : undefined,
+      agentSummarySubcampaign.length > 0 ? agentSummarySubcampaign : undefined,
     );
     anomalies = detectAnomalies(
       agentSummary,

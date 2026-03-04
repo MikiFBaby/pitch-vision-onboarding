@@ -63,14 +63,14 @@ export async function GET(req: Request) {
     // Calculate daily revenue
     const { data: dayAgents } = await supabaseAdmin
       .from("dialedin_agent_performance")
-      .select("transfers, team")
+      .select("transfers, team, skill")
       .eq("report_date", latest.report_date);
 
     let dailyRevenue = 0;
     if (dayAgents) {
       for (const a of dayAgents) {
         if (!isExcludedTeam(a.team || null)) {
-          dailyRevenue += (a.transfers || 0) * getRevenuePerTransfer(a.team || null);
+          dailyRevenue += (a.transfers || 0) * getRevenuePerTransfer(a.team || null, a.skill);
         }
       }
     }

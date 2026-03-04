@@ -78,8 +78,9 @@ export default function KPICards({ kpis, loading, rawData }: KPICardsProps) {
       />
       <StatsCard
         index={7}
-        title="Man Hours"
-        value={kpis.total_man_hours.toFixed(1)}
+        title="Gross / Paid Hrs"
+        value={`${kpis.total_man_hours.toFixed(0)} / ${(kpis.total_paid_hours ?? kpis.total_man_hours).toFixed(0)}`}
+        trendValue={kpis.total_paid_hours ? `${((1 - kpis.total_paid_hours / kpis.total_man_hours) * 100).toFixed(0)}% deducted` : undefined}
         icon={<Clock size={18} />}
       />
     </div>

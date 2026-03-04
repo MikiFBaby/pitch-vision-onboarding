@@ -75,14 +75,35 @@ function QADashboardContent() {
     const [selectedTag, setSelectedTag] = useState('');
     const [reviewQueueTab, setReviewQueueTab] = useState<'pending' | 'reviewed' | 'autofail'>('pending');
 
+    // Lightweight columns for list/dashboard view (excludes heavy transcript/analysis JSONB)
+    const LIST_COLUMNS = [
+        'id', 'created_at', 'call_id', 'product_type', 'campaign_type',
+        'agent_name', 'phone_number', 'call_duration', 'original_call_duration',
+        'call_date', 'call_time', 'call_status', 'call_score', 'risk_level',
+        'upload_type', 'checklist', 'violations', 'review_flags', 'summary',
+        'recording_url', 'analyzed_at', 'language_assessment', 'focus_areas',
+        'qa_status', 'qa_reviewed_by', 'qa_reviewed_at', 'qa_notes', 'review_priority',
+        'compliance_score', 'speaker_metrics', 'timeline_markers',
+        'agent_turn_count', 'customer_turn_count', 'agent_speaking_time',
+        'customer_speaking_time', 'tag', 'auto_fail_triggered', 'auto_fail_reasons',
+        'critical_moments', 'auto_fail_overridden', 'auto_fail_override_reason',
+        'auto_fail_override_at', 'auto_fail_override_by', 'transfer_detected',
+        'transfer_initiated_at_seconds', 'la_detected', 'la_started_at_seconds',
+        'analysis_cutoff_seconds', 'batch_id', 'suggested_listen_start',
+        'talk_ratio', 'dominant_speaker', 'total_talk_time',
+        'agent_speaking_pct', 'customer_speaking_pct',
+        'af_confidence_level', 'af_needs_review', 'af_second_pass'
+    ].join(',');
+
     // Fetch calls from Supabase
     const fetchCalls = useCallback(async (silent = false) => {
         if (!silent) setIsLoading(true);
         try {
             const { data, error } = await supabase
                 .from('QA Results')
-                .select('*')
-                .order('created_at', { ascending: false });
+                .select(LIST_COLUMNS)
+                .order('created_at', { ascending: false })
+                .limit(500);
 
             if (error) {
                 console.error('Error fetching calls:', error);
@@ -90,7 +111,7 @@ function QADashboardContent() {
             }
 
             if (data) {
-                const transformed = data.map((row: DatabaseCallRow) => transformRow(row));
+                const transformed = (data as unknown as DatabaseCallRow[]).map((row) => transformRow(row));
 
                 // Preserve local QA review state if database hasn't caught up yet
                 // This prevents optimistic updates from being overwritten by stale data
@@ -123,6 +144,41 @@ function QADashboardContent() {
             if (!silent) setIsLoading(false);
         }
     }, []);
+
+    // Fetch full call data (including transcript) for drawer view
+    const fetchFullCall = useCallback(async (call: CallData): Promise<CallData> => {
+        const { data, error } = await supabase
+            .from('QA Results')
+            .select('transcript,call_analysis,key_quotes,coaching_notes,duration_assessment')
+            .eq('id', Number(call.id))
+            .maybeSingle();
+
+        if (error || !data) return call;
+
+        const parseJson = <T,>(field: T | string | null, fallback: T): T => {
+            if (!field) return fallback;
+            if (typeof field === 'object') return field as T;
+            if (typeof field === 'string') {
+                try { return JSON.parse(field) as T; } catch { return fallback; }
+            }
+            return field as T;
+        };
+
+        return {
+            ...call,
+            transcript: data.transcript || '',
+            callAnalysis: data.call_analysis || null,
+            keyQuotes: parseJson(data.key_quotes, []),
+            coachingNotes: parseJson(data.coaching_notes, []),
+        };
+    }, []);
+
+    // Open a call in the transcript drawer (lazy-loads heavy fields)
+    const openCall = useCallback(async (call: CallData) => {
+        setSelectedCall(call); // Show drawer immediately with lightweight data
+        const fullCall = await fetchFullCall(call);
+        setSelectedCall(fullCall); // Update with full data once loaded
+    }, [fetchFullCall]);
 
     useEffect(() => {
         fetchCalls();
@@ -217,7 +273,7 @@ function QADashboardContent() {
                     // Next call
                     if (selectedCall && currentIndex < calls.length - 1) {
                         e.preventDefault();
-                        setSelectedCall(calls[currentIndex + 1]);
+                        openCall(calls[currentIndex + 1]);
                     }
                     break;
 
@@ -225,7 +281,7 @@ function QADashboardContent() {
                     // Previous call
                     if (selectedCall && currentIndex > 0) {
                         e.preventDefault();
-                        setSelectedCall(calls[currentIndex - 1]);
+                        openCall(calls[currentIndex - 1]);
                     }
                     break;
 
@@ -233,7 +289,7 @@ function QADashboardContent() {
                     // Next call with arrow
                     if (selectedCall && currentIndex < calls.length - 1) {
                         e.preventDefault();
-                        setSelectedCall(calls[currentIndex + 1]);
+                        openCall(calls[currentIndex + 1]);
                     }
                     break;
 
@@ -241,7 +297,7 @@ function QADashboardContent() {
                     // Previous call with arrow
                     if (selectedCall && currentIndex > 0) {
                         e.preventDefault();
-                        setSelectedCall(calls[currentIndex - 1]);
+                        openCall(calls[currentIndex - 1]);
                     }
                     break;
             }
@@ -249,7 +305,7 @@ function QADashboardContent() {
 
         window.addEventListener('keydown', handleKeyDown);
         return () => window.removeEventListener('keydown', handleKeyDown);
-    }, [selectedCall, calls]);
+    }, [selectedCall, calls, openCall]);
 
     // Delete handler - uses API route with admin client
     const handleDeleteCalls = async (ids: string[]) => {
@@ -788,7 +844,7 @@ function QADashboardContent() {
                         <div className="min-h-[500px]">
                             <RecentCallsTable
                                 calls={filteredCalls}
-                                onViewTranscript={setSelectedCall}
+                                onViewTranscript={openCall}
                                 selectedAgent={selectedAgent}
                                 onAgentChange={setSelectedAgent}
                                 availableAgents={uniqueAgents}
@@ -870,7 +926,7 @@ function QADashboardContent() {
                         <div className="min-h-[600px]">
                             <RecentCallsTable
                                 calls={filteredCalls}
-                                onViewTranscript={setSelectedCall}
+                                onViewTranscript={openCall}
                                 selectedAgent={selectedAgent}
                                 onAgentChange={setSelectedAgent}
                                 availableAgents={uniqueAgents}
@@ -1052,7 +1108,7 @@ function QADashboardContent() {
                         <div className="min-h-[600px]">
                             <RecentCallsTable
                                 calls={reviewCalls}
-                                onViewTranscript={setSelectedCall}
+                                onViewTranscript={openCall}
                                 selectedAgent={selectedAgent}
                                 onAgentChange={setSelectedAgent}
                                 availableAgents={uniqueAgents}

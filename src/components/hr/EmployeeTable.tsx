@@ -2,12 +2,14 @@
 
 import { useRef, useEffect, useState, useCallback, useMemo } from "react";
 import { supabase } from "@/lib/supabase-client";
-import { Eye, Mail, Search, Trash2, Upload, FileText, UserMinus, Slack, ChevronLeft, ChevronRight, Phone, MapPin, ClipboardPaste, X, AlertTriangle, CheckCircle2, XCircle, Loader2, Filter } from "lucide-react";
+import { Eye, Mail, Search, Trash2, Upload, FileText, UserMinus, Slack, ChevronLeft, ChevronRight, Phone, MapPin, ClipboardPaste, X, AlertTriangle, CheckCircle2, XCircle, Loader2, Filter, Download } from "lucide-react";
 import { motion } from "framer-motion";
 import EmployeeProfileDrawer from "./EmployeeProfileDrawer";
 import DeleteConfirmationModal from "./DeleteConfirmationModal";
-import { calculateWeeklyHours, WEEKDAYS } from "@/lib/hr-utils";
+import { calculateWeeklyHours, WEEKDAYS, scheduleNameKeys } from "@/lib/hr-utils";
 import { detectCampaignType, getPerformanceTier, isPilotCampaign, type PerformanceTier } from "@/utils/dialedin-heatmap";
+import { getBreakEvenTPH, getRevenuePerTransfer } from "@/utils/dialedin-revenue";
+import { CAMPAIGN_MANAGERS, getAllManagerNames, getManagerNamesForCampaigns } from "@/lib/campaign-config";
 
 interface Employee {
     id: string;
@@ -216,15 +218,36 @@ export default function EmployeeTable() {
     // Dropdown Filters
     const [countryFilter, setCountryFilter] = useState<'all' | 'Canada' | 'USA' | 'unknown'>('all');
     const [employmentFilter, setEmploymentFilter] = useState<'all' | 'full-time' | 'part-time' | 'unknown'>('all');
-    const [campaignFilter, setCampaignFilter] = useState<'all' | 'Medicare' | 'ACA' | 'Medicare WhatIF' | 'Hospital' | 'Pitch Meals' | 'Home Care Michigan' | 'Home Care PA' | 'none'>('all');
+    const [campaignFilter, setCampaignFilter] = useState<'all' | 'Medicare' | 'ACA' | 'Medicare WhatIF' | 'Hospital' | 'Pitch Meals' | 'Home Care Michigan' | 'Home Care PA' | 'Home Care NY' | 'none'>('all');
     const [statusFilter, setStatusFilter] = useState<'active' | 'pending' | 'terminated' | 'all'>('active');
     const [scheduleMap, setScheduleMap] = useState<Map<string, { hours: number; ft: boolean }>>(new Map());
     const [scheduleLoading, setScheduleLoading] = useState(true);
 
+    // Hire date filter
+    const [hireDateFilter, setHireDateFilter] = useState<'all' | 'last-7d' | 'last-30d' | 'last-90d' | 'last-year'>('all');
+
     // Performance filter (agents only — campaign-specific tiers)
-    const [performanceFilter, setPerformanceFilter] = useState<'all' | PerformanceTier>('all');
     const [perfMap, setPerfMap] = useState<Record<string, { adjusted_tph: number | null; tph: number; skill: string | null }>>({});
     const [perfLoading, setPerfLoading] = useState(true);
+
+    // Intraday data (TODAY SLA/hr column)
+    const [intradayMap, setIntradayMap] = useState<Record<string, { sla_hr: number; rank?: number; team: string | null }>>({});
+    const [intradayBreakEven, setIntradayBreakEven] = useState<{ aca: number; medicare: number }>({ aca: 2.5, medicare: 3.5 });
+
+    // Trend filter + roster data (for trend analysis + CSV export)
+    type TrendFilter = 'all' | 'crushing-it' | 'uptrend' | 'stable' | 'downtrend' | 'in-a-rut';
+    const [trendFilter, setTrendFilter] = useState<TrendFilter>('all');
+    interface RosterEntry { agent_name: string; employee_id: string | null; team: string | null; campaign_type: string | null; avg_tph: number; trend: 'up' | 'down' | 'flat'; trend_pct: number; total_transfers: number; total_hours: number; total_dials: number; total_connects: number; avg_conversion: number; days_worked: number; days_active: number; tier: string; est_revenue: number; hourly_wage: number | null; est_cost: number; true_cost: number | null; pnl: number; pnl_per_hour: number; roi_pct: number; qa_score: number | null; qa_stats: { avg_score: number; pass_rate: number; auto_fail_count: number; auto_fail_rate: number; total_calls: number; risk_breakdown: { high: number; medium: number; low: number } } | null; qa_language: { professionalism: number | null; empathy: number | null; clarity: number | null; pace: string | null; tone_keywords: string[] } | null; is_new_hire?: boolean; }
+    const [rosterMap, setRosterMap] = useState<Record<string, RosterEntry>>({});
+    const [rosterIdMap, setRosterIdMap] = useState<Record<string, RosterEntry>>({});
+    const [rosterLoading, setRosterLoading] = useState(true);
+    const [csvExporting, setCsvExporting] = useState(false);
+    const [pdfExporting, setPdfExporting] = useState(false);
+    // Cost/SLA filter: composite performance status based on break-even TPH
+    type CostSlaFilter = 'all' | 'performing' | 'trending-up' | 'trending-down' | 'critical' | 'negative-pnl';
+    const [costSlaFilter, setCostSlaFilter] = useState<CostSlaFilter>('all');
+    // Manager filter (derived from campaign → manager mapping)
+    const [managerFilter, setManagerFilter] = useState<string>('all');
 
     // Load all schedules once for PT/FT classification
     const loadSchedules = useCallback(async () => {
@@ -259,34 +282,43 @@ export default function EmployeeTable() {
                 from += batch;
             }
 
-            // Build break schedule lookup
+            // Build break schedule lookup (variant keys for fuzzy matching)
             const breakKeys = new Set<string>();
             allBreaks.forEach((b: any) => {
-                const f = (b['First Name'] || '').trim().toLowerCase();
-                const l = (b['Last Name'] || '').trim().toLowerCase();
-                if (f) breakKeys.add(`${f}|${l}`);
+                const f = (b['First Name'] || '').trim();
+                const l = (b['Last Name'] || '').trim();
+                if (!f) return;
+                for (const key of scheduleNameKeys(f, l)) {
+                    breakKeys.add(key);
+                }
             });
 
-            // Build schedule map (dedup by name, first match wins)
+            // Build schedule map (dedup by primary key, indexed by all variant keys)
             const map = new Map<string, { hours: number; ft: boolean }>();
+            const processedPrimary = new Set<string>();
             allSchedules.forEach((row: any) => {
-                const f = (row['First Name'] || '').trim().toLowerCase();
-                const l = (row['Last Name'] || '').trim().toLowerCase();
+                const f = (row['First Name'] || '').trim();
+                const l = (row['Last Name'] || '').trim();
                 if (!f) return;
-                const key = `${f}|${l}`;
-                if (map.has(key)) return;
+                const primaryKey = `${f.toLowerCase()}|${l.toLowerCase()}`;
+                if (processedPrimary.has(primaryKey)) return;
+                processedPrimary.add(primaryKey);
 
                 const grossHours = calculateWeeklyHours(row);
                 const workingDays = WEEKDAYS.filter(day => {
                     const s = row[day];
                     return s && s.trim().toLowerCase() !== 'off' && s.trim() !== '';
                 }).length;
-                const hasBreak = breakKeys.has(key);
+                const rowKeys = scheduleNameKeys(f, l);
+                const hasBreak = rowKeys.some(k => breakKeys.has(k));
                 const breakDeduction = hasBreak ? workingDays * 1 : 0;
                 const netHours = Math.round((grossHours - breakDeduction) * 100) / 100;
                 const displayHours = hasBreak ? netHours : grossHours;
 
-                map.set(key, { hours: displayHours, ft: displayHours >= 30 });
+                const entry = { hours: displayHours, ft: displayHours >= 30 };
+                for (const key of rowKeys) {
+                    if (!map.has(key)) map.set(key, entry);
+                }
             });
 
             setScheduleMap(map);
@@ -317,6 +349,57 @@ export default function EmployeeTable() {
         })();
     }, []);
 
+    // Load roster data for trend analysis + enriched CSV export
+    useEffect(() => {
+        (async () => {
+            setRosterLoading(true);
+            try {
+                const res = await fetch('/api/executive/roster?period=30d');
+                if (res.ok) {
+                    const json = await res.json();
+                    const map: Record<string, RosterEntry> = {};
+                    const idMap: Record<string, RosterEntry> = {};
+                    for (const agent of (json.roster || [])) {
+                        map[agent.agent_name.toLowerCase()] = agent;
+                        if (agent.employee_id) idMap[agent.employee_id] = agent;
+                    }
+                    setRosterMap(map);
+                    setRosterIdMap(idMap);
+                }
+            } catch (err) {
+                console.error('Error loading roster data:', err);
+            } finally {
+                setRosterLoading(false);
+            }
+        })();
+    }, []);
+
+    // Load intraday data for TODAY column
+    useEffect(() => {
+        (async () => {
+            try {
+                const res = await fetch('/api/dialedin/intraday?include_trend=false&include_rank=true');
+                if (res.ok) {
+                    const json = await res.json();
+                    const map: Record<string, { sla_hr: number; rank?: number; team: string | null }> = {};
+                    for (const a of (json.agents || [])) {
+                        map[a.name.toLowerCase().trim()] = { sla_hr: a.sla_hr, rank: a.rank, team: a.team };
+                    }
+                    setIntradayMap(map);
+                    if (json.break_even) setIntradayBreakEven(json.break_even);
+                }
+            } catch { /* silent */ }
+        })();
+    }, []);
+
+    // CAMPAIGN_MANAGERS imported from @/lib/campaign-config
+    const availableManagers = useMemo(() => getAllManagerNames(), []);
+
+    // Helper: get manager names for an employee's campaigns
+    const getManagersForEmployee = useCallback((emp: Employee): string[] => {
+        return getManagerNamesForCampaigns(emp.current_campaigns);
+    }, []);
+
     // Match employee to perf data (fuzzy name matching)
     const getAgentPerf = useCallback((emp: Employee) => {
         const f = (emp.first_name || '').trim().toLowerCase();
@@ -339,9 +422,44 @@ export default function EmployeeTable() {
         return null;
     }, [perfMap]);
 
+    // Match employee to intraday data (exact match by full name)
+    const getIntradayData = useCallback((emp: Employee) => {
+        const key = `${(emp.first_name || '').trim()} ${(emp.last_name || '').trim()}`.toLowerCase();
+        return intradayMap[key] || null;
+    }, [intradayMap]);
+
+    // Match employee to roster data (employee_id first, then fuzzy name matching)
+    const getRosterData = useCallback((emp: Employee): RosterEntry | null => {
+        // Direct match by employee_id (most reliable)
+        if (emp.id && rosterIdMap[emp.id]) return rosterIdMap[emp.id];
+        // Fuzzy name matching fallback
+        const f = (emp.first_name || '').trim().toLowerCase();
+        const l = (emp.last_name || '').trim().toLowerCase();
+        const fullName = `${f} ${l}`;
+        if (rosterMap[fullName]) return rosterMap[fullName];
+        // First initial + last
+        const initKey = `${f[0] || ''}. ${l}`;
+        if (rosterMap[initKey]) return rosterMap[initKey];
+        // Partial: first name + starts with last
+        for (const [key, val] of Object.entries(rosterMap)) {
+            const parts = key.split(' ');
+            const pf = parts[0];
+            const pl = parts.slice(1).join(' ');
+            if (pf === f && (pl.startsWith(l) || l.startsWith(pl))) return val;
+        }
+        return null;
+    }, [rosterMap, rosterIdMap]);
+
     // Get performance tier for an employee
+    // Minimum 7-day tenure required — new hires don't have meaningful performance data yet
     const getEmployeeTier = useCallback((emp: Employee): PerformanceTier | null => {
         if ((emp.role || '').toLowerCase() !== 'agent') return null;
+        // Skip agents hired less than 7 days ago
+        if (emp.hired_at) {
+            const hiredDate = new Date(emp.hired_at);
+            const daysSinceHire = (Date.now() - hiredDate.getTime()) / (1000 * 60 * 60 * 24);
+            if (daysSinceHire < 7) return null;
+        }
         const perf = getAgentPerf(emp);
         if (isPilotCampaign(emp.current_campaigns, perf?.skill)) return null; // pilot verticals — no metrics yet
         if (!perf) return null;
@@ -350,6 +468,461 @@ export default function EmployeeTable() {
         const campaign = detectCampaignType(emp.current_campaigns);
         return getPerformanceTier(tph, campaign);
     }, [getAgentPerf]);
+
+    // Detect new hires: ≤5 lifetime shifts (from server-side RPC)
+    const isNewHire = useCallback((emp: Employee): boolean => {
+        if ((emp.role || '').toLowerCase() !== 'agent') return false;
+        const roster = getRosterData(emp);
+        if (!roster) {
+            // No roster data at all — if hired recently, treat as new hire
+            if (emp.hired_at) {
+                const daysSinceHire = (Date.now() - new Date(emp.hired_at).getTime()) / (1000 * 60 * 60 * 24);
+                return daysSinceHire < 14;
+            }
+            return false;
+        }
+        return roster.is_new_hire === true;
+    }, [getRosterData]);
+
+    // Get cost/SLA composite status using full-period roster data (30d)
+    // Uses period avg TPH vs break-even, P&L, and trend to classify
+    const getCostSlaStatus = useCallback((emp: Employee): CostSlaFilter | null => {
+        if ((emp.role || '').toLowerCase() !== 'agent') return null;
+        if (isNewHire(emp)) return null; // Exclude new hires from classification
+        const roster = getRosterData(emp);
+        if (!roster || roster.days_worked < 3) return null;
+        const perf = getAgentPerf(emp);
+        if (isPilotCampaign(emp.current_campaigns, perf?.skill)) return null;
+        const be = getBreakEvenTPH(roster.team);
+        const periodTPH = roster.avg_tph;
+        const periodAbove = periodTPH >= be;
+        const trendUp = roster.trend === 'up';
+        // Period-based composite: above/below BE + trend direction
+        if (periodAbove && (trendUp || roster.trend === 'flat')) return 'performing';
+        if (periodAbove && roster.trend === 'down') return 'trending-down';
+        if (!periodAbove && trendUp) return 'trending-up';
+        return 'critical';
+    }, [getRosterData, getAgentPerf, isNewHire]);
+
+    // Shared: fetch + build roster lookups for export
+    const getExportData = useCallback(async () => {
+        let exportRoster: Record<string, RosterEntry> = rosterMap;
+        let exportRosterById: Record<string, RosterEntry> = rosterIdMap;
+        if (Object.keys(exportRoster).length === 0) {
+            const res = await fetch('/api/executive/roster?period=30d');
+            if (res.ok) {
+                const json = await res.json();
+                const map: Record<string, RosterEntry> = {};
+                const idMap: Record<string, RosterEntry> = {};
+                for (const agent of (json.roster || [])) {
+                    map[agent.agent_name.toLowerCase()] = agent;
+                    if (agent.employee_id) idMap[agent.employee_id] = agent;
+                }
+                exportRoster = map;
+                exportRosterById = idMap;
+            }
+        }
+
+        // Bulk fetch attendance events (last 90 days)
+        const ninetyDaysAgo = new Date();
+        ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+        const sinceDate = ninetyDaysAgo.toISOString().split('T')[0];
+
+        const [bookedRes, nbRes, writeUpRes] = await Promise.all([
+            supabase.from('Booked Days Off').select('"Agent Name", "Date"').gte('Date', sinceDate),
+            supabase.from('Non Booked Days Off').select('"Agent Name", "Reason", "Date"').gte('Date', sinceDate),
+            supabase.from('employee_write_ups').select('employee_id, type, sent_at'),
+        ]);
+
+        // Attendance by normalized name
+        const attendByName = new Map<string, { planned: number; unplanned: number; lastDate: string }>();
+        const normAttend = (n: string) => (n || '').trim().toLowerCase();
+        for (const b of (bookedRes.data || [])) {
+            const name = normAttend(b['Agent Name']);
+            if (!name) continue;
+            const entry = attendByName.get(name) || { planned: 0, unplanned: 0, lastDate: '' };
+            entry.planned++;
+            if (b.Date > entry.lastDate) entry.lastDate = b.Date;
+            attendByName.set(name, entry);
+        }
+        for (const n of (nbRes.data || [])) {
+            const name = normAttend(n['Agent Name']);
+            if (!name) continue;
+            const entry = attendByName.get(name) || { planned: 0, unplanned: 0, lastDate: '' };
+            entry.unplanned++;
+            if (n.Date > entry.lastDate) entry.lastDate = n.Date;
+            attendByName.set(name, entry);
+        }
+
+        // Write-ups by employee_id
+        const writeUpsByEmpId = new Map<string, number>();
+        for (const w of (writeUpRes.data || [])) {
+            if (!w.employee_id) continue;
+            writeUpsByEmpId.set(w.employee_id, (writeUpsByEmpId.get(w.employee_id) || 0) + 1);
+        }
+
+        const rows = filterEmployees(employees);
+
+        const findRoster = (emp: Employee): RosterEntry | null => {
+            if (emp.id && exportRosterById[emp.id]) return exportRosterById[emp.id];
+            const f = (emp.first_name || '').trim().toLowerCase();
+            const l = (emp.last_name || '').trim().toLowerCase();
+            const fullName = `${f} ${l}`;
+            if (exportRoster[fullName]) return exportRoster[fullName];
+            const initKey = `${f[0] || ''}. ${l}`;
+            if (exportRoster[initKey]) return exportRoster[initKey];
+            for (const [key, val] of Object.entries(exportRoster)) {
+                const parts = key.split(' ');
+                const pf = parts[0];
+                const pl = parts.slice(1).join(' ');
+                if (pf === f && (pl.startsWith(l) || l.startsWith(pl))) return val;
+            }
+            return null;
+        };
+
+        const findAttendance = (emp: Employee) => {
+            const f = (emp.first_name || '').trim().toLowerCase();
+            const l = (emp.last_name || '').trim().toLowerCase();
+            return attendByName.get(`${f} ${l}`) || null;
+        };
+
+        return { rows, findRoster, findAttendance, writeUpsByEmpId };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [employees, rosterMap, rosterIdMap, searchTerm, statusFilter, activeTab, countryFilter, employmentFilter, campaignFilter, managerFilter, hireDateFilter, trendFilter, costSlaFilter]);
+
+    // CSV download with full performance, QA, attendance, and write-up data
+    const downloadCSV = useCallback(async () => {
+        setCsvExporting(true);
+        try {
+            const { rows, findRoster, findAttendance, writeUpsByEmpId } = await getExportData();
+
+            const escapeCSV = (val: string) => {
+                if (val.includes(',') || val.includes('"') || val.includes('\n')) {
+                    return `"${val.replace(/"/g, '""')}"`;
+                }
+                return val;
+            };
+
+            const headers = [
+                // Employee Info
+                'First Name', 'Last Name', 'Role', 'Email', 'Phone', 'Country',
+                'Status', 'Hire Date', 'Days Active', 'Employment Type', 'Campaigns',
+                'Team', 'Campaign Type', 'Hourly Wage', 'Contract Status',
+                // Performance (30d)
+                'Performance Tier', 'Avg SLA/hr (30d)', 'SLA Trend', 'Trend %', 'Tier (S/A/B/C/D)',
+                'Total Transfers (30d)', 'Total Hours (30d)', 'Total Dials (30d)', 'Total Connects (30d)',
+                'Avg Conversion %', 'Days Worked (30d)',
+                // Financials
+                'Est Revenue ($)', 'Est Cost ($)', 'True Cost ($)', 'P&L ($)',
+                'P&L / Hour ($)', 'ROI %',
+                // QA Compliance
+                'QA Avg Score', 'QA Pass Rate %', 'QA Auto-Fails', 'QA Auto-Fail Rate %',
+                'QA Risk: High', 'QA Risk: Medium', 'QA Calls Reviewed',
+                // QA Language Assessment
+                'QA Professionalism', 'QA Empathy', 'QA Clarity', 'QA Pace', 'QA Tone Keywords',
+                // Attendance (90d)
+                'Planned Absences (90d)', 'Unplanned Absences (90d)', 'Total Absences (90d)', 'Last Absence Date',
+                // Write-Ups
+                'Write-Up Count',
+                // Weekly Schedule
+                'Weekly Hours',
+            ];
+
+            const csvRows = rows.map(emp => {
+                const empType = getEmploymentType(emp);
+                const perfTier = getEmployeeTier(emp);
+                const r = findRoster(emp);
+                const qa = r?.qa_stats;
+                const lang = r?.qa_language;
+                const att = findAttendance(emp);
+                const writeUps = emp.id ? (writeUpsByEmpId.get(emp.id) || 0) : 0;
+                const schedHours = (() => {
+                    for (const k of scheduleNameKeys(emp.first_name, emp.last_name)) {
+                        const v = scheduleMap.get(k);
+                        if (v) return v.hours;
+                    }
+                    return null;
+                })();
+
+                return [
+                    // Employee Info
+                    emp.first_name || '',
+                    emp.last_name || '',
+                    emp.role || '',
+                    emp.email || '',
+                    emp.phone || '',
+                    emp.country || '',
+                    emp.employee_status || '',
+                    emp.hired_at ? new Date(emp.hired_at).toLocaleDateString('en-US') : '',
+                    r ? String(r.days_active) : '',
+                    empType === 'unknown' ? '' : empType,
+                    (emp.current_campaigns || []).join('; '),
+                    r?.team || '',
+                    r?.campaign_type || '',
+                    emp.hourly_wage != null ? `$${emp.hourly_wage.toFixed(2)}` : '',
+                    emp.contract_status || '',
+                    // Performance
+                    perfTier || '',
+                    r ? r.avg_tph.toFixed(2) : '',
+                    r ? r.trend : '',
+                    r ? `${r.trend_pct > 0 ? '+' : ''}${r.trend_pct.toFixed(1)}%` : '',
+                    r ? r.tier : '',
+                    r ? String(r.total_transfers) : '',
+                    r ? r.total_hours.toFixed(1) : '',
+                    r ? String(r.total_dials || 0) : '',
+                    r ? String(r.total_connects || 0) : '',
+                    r ? r.avg_conversion.toFixed(1) : '',
+                    r ? String(r.days_worked) : '',
+                    // Financials
+                    r ? `$${r.est_revenue.toFixed(2)}` : '',
+                    r ? `$${r.est_cost.toFixed(2)}` : '',
+                    r?.true_cost != null ? `$${r.true_cost.toFixed(2)}` : '',
+                    r ? `$${r.pnl.toFixed(2)}` : '',
+                    r ? `$${(r.pnl_per_hour || 0).toFixed(2)}` : '',
+                    r ? `${r.roi_pct.toFixed(1)}%` : '',
+                    // QA
+                    qa ? String(qa.avg_score) : '',
+                    qa ? `${qa.pass_rate}%` : '',
+                    qa ? String(qa.auto_fail_count) : '',
+                    qa ? `${qa.auto_fail_rate}%` : '',
+                    qa ? String(qa.risk_breakdown.high) : '',
+                    qa ? String(qa.risk_breakdown.medium) : '',
+                    qa ? String(qa.total_calls) : '',
+                    // QA Language
+                    lang?.professionalism != null ? String(lang.professionalism) : '',
+                    lang?.empathy != null ? String(lang.empathy) : '',
+                    lang?.clarity != null ? String(lang.clarity) : '',
+                    lang?.pace || '',
+                    lang?.tone_keywords?.join('; ') || '',
+                    // Attendance
+                    att ? String(att.planned) : '0',
+                    att ? String(att.unplanned) : '0',
+                    att ? String(att.planned + att.unplanned) : '0',
+                    att?.lastDate || '',
+                    // Write-Ups
+                    String(writeUps),
+                    // Schedule
+                    schedHours != null ? schedHours.toFixed(1) : '',
+                ].map(v => escapeCSV(String(v)));
+            });
+
+            const csv = [headers.join(','), ...csvRows.map(r => r.join(','))].join('\n');
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `employee-directory-${new Date().toISOString().split('T')[0]}.csv`;
+            a.click();
+            URL.revokeObjectURL(url);
+        } catch (err) {
+            console.error('Error exporting CSV:', err);
+            alert('Failed to export CSV. Please try again.');
+        } finally {
+            setCsvExporting(false);
+        }
+    }, [getExportData, scheduleMap]);
+
+    // PDF download with comprehensive employee data
+    const downloadPDF = useCallback(async () => {
+        setPdfExporting(true);
+        try {
+            const { jsPDF } = await import('jspdf');
+            const autoTableModule = await import('jspdf-autotable');
+            const autoTable = autoTableModule.default;
+            const { rows, findRoster, findAttendance, writeUpsByEmpId } = await getExportData();
+
+            const doc = new jsPDF({ orientation: 'landscape', unit: 'mm', format: 'a4' });
+            const pageWidth = 297;
+            const pageHeight = 210;
+            const margin = 10;
+
+            // Colors
+            const BRAND: [number, number, number] = [109, 40, 217];
+            const NAVY: [number, number, number] = [15, 23, 42];
+            const MUTED: [number, number, number] = [100, 116, 139];
+            const GREEN: [number, number, number] = [16, 185, 129];
+            const RED: [number, number, number] = [244, 63, 94];
+            const AMBER: [number, number, number] = [245, 158, 11];
+
+            // Header
+            doc.setFillColor(...BRAND);
+            doc.rect(0, 0, pageWidth, 3, 'F');
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(10);
+            doc.setTextColor(...MUTED);
+            doc.text('PITCH PERFECT SOLUTIONS', margin, 12);
+            doc.setFontSize(20);
+            doc.setTextColor(...NAVY);
+            doc.text('Employee Directory Report', margin, 22);
+            doc.setFont('helvetica', 'normal');
+            doc.setFontSize(9);
+            doc.setTextColor(...MUTED);
+            const dateStr = new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+            doc.text(`Generated: ${dateStr}  |  ${rows.length} employees  |  30-day performance window`, margin, 29);
+            doc.setDrawColor(200, 200, 210);
+            doc.setLineWidth(0.3);
+            doc.line(margin, 32, pageWidth - margin, 32);
+
+            // Summary stats
+            let matched = 0;
+            let totalRev = 0;
+            let totalCost = 0;
+            let totalPnl = 0;
+            const tierCounts: Record<string, number> = { S: 0, A: 0, B: 0, C: 0, D: 0 };
+            for (const emp of rows) {
+                const r = findRoster(emp);
+                if (r) {
+                    matched++;
+                    totalRev += r.est_revenue;
+                    totalCost += r.true_cost ?? r.est_cost;
+                    totalPnl += r.pnl;
+                    if (r.tier in tierCounts) tierCounts[r.tier]++;
+                }
+            }
+
+            let sy = 38;
+            doc.setFont('helvetica', 'bold');
+            doc.setFontSize(8);
+            doc.setTextColor(...NAVY);
+            const summaryItems = [
+                `Agents w/ Data: ${matched}`,
+                `Revenue: $${(totalRev / 1000).toFixed(0)}K`,
+                `Cost: $${(totalCost / 1000).toFixed(0)}K`,
+                `P&L: $${(totalPnl / 1000).toFixed(0)}K`,
+                `Tier: S(${tierCounts.S}) A(${tierCounts.A}) B(${tierCounts.B}) C(${tierCounts.C}) D(${tierCounts.D})`,
+            ];
+            doc.text(summaryItems.join('    |    '), margin, sy);
+            sy += 5;
+
+            // Build table data
+            const tableHeaders = [
+                'Name', 'Role', 'Country', 'Campaigns', 'Wage',
+                'SLA/hr', 'Trend', 'Tier', 'Transfers', 'Hours',
+                'Revenue', 'Cost', 'P&L', 'ROI',
+                'QA Score', 'QA Pass', 'QA AF',
+                'Absent (90d)', 'Write-Ups',
+            ];
+
+            const tableData = rows.map(emp => {
+                const r = findRoster(emp);
+                const qa = r?.qa_stats;
+                const att = findAttendance(emp);
+                const writeUps = emp.id ? (writeUpsByEmpId.get(emp.id) || 0) : 0;
+                const absTotal = att ? att.planned + att.unplanned : 0;
+                const name = `${emp.first_name || ''} ${emp.last_name || ''}`.trim();
+
+                return [
+                    name,
+                    emp.role || '',
+                    emp.country || '',
+                    (emp.current_campaigns || []).join(', '),
+                    emp.hourly_wage != null ? `$${emp.hourly_wage}` : '',
+                    r ? r.avg_tph.toFixed(2) : '',
+                    r ? `${r.trend} ${r.trend_pct > 0 ? '+' : ''}${r.trend_pct.toFixed(0)}%` : '',
+                    r ? r.tier : '',
+                    r ? String(r.total_transfers) : '',
+                    r ? r.total_hours.toFixed(0) : '',
+                    r ? `$${(r.est_revenue / 1000).toFixed(1)}K` : '',
+                    r ? `$${((r.true_cost ?? r.est_cost) / 1000).toFixed(1)}K` : '',
+                    r ? `$${(r.pnl / 1000).toFixed(1)}K` : '',
+                    r ? `${r.roi_pct.toFixed(0)}%` : '',
+                    qa ? String(qa.avg_score) : '',
+                    qa ? `${qa.pass_rate}%` : '',
+                    qa ? String(qa.auto_fail_count) : '',
+                    absTotal > 0 ? `${absTotal} (${att!.planned}P/${att!.unplanned}U)` : '0',
+                    writeUps > 0 ? String(writeUps) : '',
+                ];
+            });
+
+            // Auto-table
+            autoTable(doc, {
+                head: [tableHeaders],
+                body: tableData,
+                startY: sy,
+                margin: { left: margin, right: margin },
+                styles: {
+                    fontSize: 6,
+                    cellPadding: 1.5,
+                    textColor: [30, 30, 50],
+                    lineColor: [220, 220, 230],
+                    lineWidth: 0.1,
+                },
+                headStyles: {
+                    fillColor: BRAND,
+                    textColor: [255, 255, 255],
+                    fontStyle: 'bold',
+                    fontSize: 6,
+                },
+                alternateRowStyles: {
+                    fillColor: [245, 243, 255],
+                },
+                columnStyles: {
+                    0: { cellWidth: 28 },   // Name
+                    1: { cellWidth: 12 },   // Role
+                    2: { cellWidth: 12 },   // Country
+                    3: { cellWidth: 22 },   // Campaigns
+                    4: { cellWidth: 10 },   // Wage
+                    5: { cellWidth: 10 },   // TPH
+                    6: { cellWidth: 16 },   // Trend
+                    7: { cellWidth: 8 },    // Tier
+                    8: { cellWidth: 12 },   // Transfers
+                    9: { cellWidth: 10 },   // Hours
+                    10: { cellWidth: 14 },  // Revenue
+                    11: { cellWidth: 14 },  // Cost
+                    12: { cellWidth: 14 },  // P&L
+                    13: { cellWidth: 10 },  // ROI
+                    14: { cellWidth: 12 },  // QA Score
+                    15: { cellWidth: 12 },  // QA Pass
+                    16: { cellWidth: 10 },  // QA AF
+                    17: { cellWidth: 20 },  // Absent
+                    18: { cellWidth: 14 },  // Write-Ups
+                },
+                didParseCell: (data: any) => {
+                    if (data.section !== 'body') return;
+                    const col = data.column.index;
+                    const val = data.cell.raw as string;
+                    // Color P&L column
+                    if (col === 12 && val) {
+                        const neg = val.startsWith('-') || val.startsWith('$-');
+                        data.cell.styles.textColor = neg ? RED : GREEN;
+                        data.cell.styles.fontStyle = 'bold';
+                    }
+                    // Color Tier column
+                    if (col === 7 && val) {
+                        if (val === 'S') data.cell.styles.textColor = [109, 40, 217];
+                        else if (val === 'A') data.cell.styles.textColor = GREEN;
+                        else if (val === 'D') data.cell.styles.textColor = RED;
+                        data.cell.styles.fontStyle = 'bold';
+                    }
+                    // Color QA Auto-Fails
+                    if (col === 16 && val && parseInt(val) > 0) {
+                        data.cell.styles.textColor = RED;
+                        data.cell.styles.fontStyle = 'bold';
+                    }
+                    // Color absences
+                    if (col === 17 && val && !val.startsWith('0')) {
+                        data.cell.styles.textColor = AMBER;
+                    }
+                },
+                didDrawPage: (data: any) => {
+                    // Footer on each page
+                    const pageNum = (doc as any).internal.getNumberOfPages();
+                    doc.setFont('helvetica', 'normal');
+                    doc.setFontSize(7);
+                    doc.setTextColor(...MUTED);
+                    doc.text('Pitch Perfect Solutions - Confidential', margin, pageHeight - 5);
+                    doc.text(`Page ${data.pageNumber} of ${pageNum}`, pageWidth - margin - 25, pageHeight - 5);
+                },
+            });
+
+            doc.save(`employee-directory-report-${new Date().toISOString().split('T')[0]}.pdf`);
+        } catch (err) {
+            console.error('Error exporting PDF:', err);
+            alert('Failed to export PDF. Please try again.');
+        } finally {
+            setPdfExporting(false);
+        }
+    }, [getExportData, scheduleMap]);
 
     // Role tab matching helper (shared by statusCounts + filterEmployees)
     const matchesRoleTab = useCallback((emp: Employee, tab: string): boolean => {
@@ -364,7 +937,7 @@ export default function EmployeeTable() {
         return false;
     }, []);
 
-    // Status counts for filter tabs — contextual to current role/country/employment filters
+    // Status counts — applies ALL non-status filters so pill counts stay accurate
     const statusCounts = useMemo(() => {
         const counts = { active: 0, pending: 0, terminated: 0, total: 0 };
         employees.forEach(emp => {
@@ -381,6 +954,58 @@ export default function EmployeeTable() {
                 if (empType !== employmentFilter) return;
             }
 
+            if (campaignFilter !== 'all') {
+                const campaigns: string[] = emp.current_campaigns || [];
+                if (campaignFilter === 'none') { if (campaigns.length > 0) return; }
+                else {
+                    const fl = campaignFilter.toLowerCase();
+                    if (!campaigns.some(c => c.toLowerCase() === fl)) return;
+                }
+            }
+
+            if (managerFilter !== 'all') {
+                const empManagers = getManagersForEmployee(emp);
+                if (!empManagers.includes(managerFilter)) return;
+            }
+
+            if (hireDateFilter !== 'all') {
+                const hiredAt = emp.hired_at ? new Date(emp.hired_at) : null;
+                if (!hiredAt || isNaN(hiredAt.getTime())) return;
+                const diffDays = (Date.now() - hiredAt.getTime()) / (1000 * 60 * 60 * 24);
+                if (hireDateFilter === 'last-7d' && diffDays > 7) return;
+                if (hireDateFilter === 'last-30d' && diffDays > 30) return;
+                if (hireDateFilter === 'last-90d' && diffDays > 90) return;
+                if (hireDateFilter === 'last-year' && diffDays > 365) return;
+            }
+
+            if (trendFilter !== 'all') {
+                const isAgent = (emp.role || '').toLowerCase() === 'agent';
+                if (isAgent) {
+                    const roster = getRosterData(emp);
+                    if (!roster) return;
+                    const t = roster.trend;
+                    const rTier = roster.tier;
+                    if (trendFilter === 'crushing-it' && !(t === 'up' && (rTier === 'S' || rTier === 'A'))) return;
+                    if (trendFilter === 'uptrend' && t !== 'up') return;
+                    if (trendFilter === 'stable' && t !== 'flat') return;
+                    if (trendFilter === 'downtrend' && t !== 'down') return;
+                    if (trendFilter === 'in-a-rut' && !((t === 'down' || t === 'flat') && (rTier === 'C' || rTier === 'D'))) return;
+                } else {
+                    return; // non-agents have no trend data
+                }
+            }
+
+            if (costSlaFilter !== 'all') {
+                const status = getCostSlaStatus(emp);
+                if (!status) return;
+                if (costSlaFilter === 'negative-pnl') {
+                    const roster = getRosterData(emp);
+                    if (!roster || roster.pnl >= 0) return;
+                } else {
+                    if (status !== costSlaFilter) return;
+                }
+            }
+
             counts.total++;
             const s = (emp.employee_status || '').toLowerCase();
             if (s === 'active') counts.active++;
@@ -388,7 +1013,7 @@ export default function EmployeeTable() {
             else if (s === 'terminated') counts.terminated++;
         });
         return counts;
-    }, [employees, activeTab, countryFilter, employmentFilter, matchesRoleTab]);
+    }, [employees, activeTab, countryFilter, employmentFilter, campaignFilter, managerFilter, hireDateFilter, trendFilter, costSlaFilter, matchesRoleTab, getManagersForEmployee, getRosterData, getCostSlaStatus]);
 
     const handleActivateEmployee = async (employee: Employee) => {
         const { error } = await supabase
@@ -663,21 +1288,63 @@ export default function EmployeeTable() {
                 if (empType !== employmentFilter) return false;
             }
 
-            // Campaign Filter (partial match for pilot verticals like "Home Care MI", "Home Care NY")
+            // Campaign Filter (exact match to prevent "Medicare" matching "Medicare WhatIF")
             if (campaignFilter !== 'all') {
                 const campaigns: string[] = emp.current_campaigns || [];
                 if (campaignFilter === 'none') {
                     if (campaigns.length > 0) return false;
                 } else {
-                    const joined = campaigns.join(' ').toLowerCase();
-                    if (!joined.includes(campaignFilter.toLowerCase())) return false;
+                    const fl = campaignFilter.toLowerCase();
+                    const hasMatch = campaigns.some(c => c.toLowerCase() === fl);
+                    if (!hasMatch) return false;
                 }
             }
 
-            // Performance Tier Filter (agents only)
-            if (performanceFilter !== 'all') {
-                const tier = getEmployeeTier(emp);
-                if (tier !== performanceFilter) return false;
+            // Manager Filter (from campaign → manager mapping)
+            if (managerFilter !== 'all') {
+                const empManagers = getManagersForEmployee(emp);
+                if (!empManagers.includes(managerFilter)) return false;
+            }
+
+            // Hire Date Filter
+            if (hireDateFilter !== 'all') {
+                const hiredAt = emp.hired_at ? new Date(emp.hired_at) : null;
+                if (!hiredAt || isNaN(hiredAt.getTime())) return false;
+                const now = new Date();
+                const diffDays = (now.getTime() - hiredAt.getTime()) / (1000 * 60 * 60 * 24);
+                if (hireDateFilter === 'last-7d' && diffDays > 7) return false;
+                if (hireDateFilter === 'last-30d' && diffDays > 30) return false;
+                if (hireDateFilter === 'last-90d' && diffDays > 90) return false;
+                if (hireDateFilter === 'last-year' && diffDays > 365) return false;
+            }
+
+            // Trend Filter (agent-only metric — skip for non-agents so they aren't silently removed)
+            if (trendFilter !== 'all') {
+                const isAgent = (emp.role || '').toLowerCase() === 'agent';
+                if (!isAgent) return false;
+                const roster = getRosterData(emp);
+                if (!roster) return false; // no roster data = can't classify
+                const t = roster.trend;
+                const rTier = roster.tier;
+                if (trendFilter === 'crushing-it' && !(t === 'up' && (rTier === 'S' || rTier === 'A'))) return false;
+                if (trendFilter === 'uptrend' && t !== 'up') return false;
+                if (trendFilter === 'stable' && t !== 'flat') return false;
+                if (trendFilter === 'downtrend' && t !== 'down') return false;
+                if (trendFilter === 'in-a-rut' && !((t === 'down' || t === 'flat') && (rTier === 'C' || rTier === 'D'))) return false;
+            }
+
+            // Cost/SLA Filter (agent-only metric — skip for non-agents)
+            if (costSlaFilter !== 'all') {
+                const isAgent = (emp.role || '').toLowerCase() === 'agent';
+                if (!isAgent) return false;
+                const status = getCostSlaStatus(emp);
+                if (!status) return false;
+                if (costSlaFilter === 'negative-pnl') {
+                    const roster = getRosterData(emp);
+                    if (!roster || roster.pnl >= 0) return false;
+                } else {
+                    if (status !== costSlaFilter) return false;
+                }
             }
 
             // Tab Filter
@@ -734,6 +1401,24 @@ export default function EmployeeTable() {
                                 </button>
                             ) : (
                                 <>
+                                    <button
+                                        onClick={downloadCSV}
+                                        disabled={csvExporting}
+                                        className="flex items-center gap-2 px-4 py-2 bg-white text-gray-600 border border-gray-200 text-sm font-medium rounded-lg hover:bg-gray-50 transition-colors disabled:opacity-50 disabled:cursor-wait"
+                                        title="Download filtered employees with full performance, QA, attendance & write-up data as CSV"
+                                    >
+                                        {csvExporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                                        {csvExporting ? 'Exporting...' : 'Export CSV'}
+                                    </button>
+                                    <button
+                                        onClick={downloadPDF}
+                                        disabled={pdfExporting}
+                                        className="flex items-center gap-2 px-4 py-2 bg-white text-purple-600 border border-purple-200 text-sm font-medium rounded-lg hover:bg-purple-50 transition-colors disabled:opacity-50 disabled:cursor-wait"
+                                        title="Download filtered employees as a formatted PDF report"
+                                    >
+                                        {pdfExporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
+                                        {pdfExporting ? 'Generating...' : 'Export PDF'}
+                                    </button>
                                     <button
                                         onClick={() => setIsBulkPasteOpen(true)}
                                         className="flex items-center gap-2 px-4 py-2 bg-white text-orange-600 border border-orange-200 text-sm font-medium rounded-lg hover:bg-orange-50 transition-colors"
@@ -829,71 +1514,98 @@ export default function EmployeeTable() {
                     </div>
 
                     {/* Dropdown Filters */}
-                    <div className="flex items-center gap-3 pt-2 border-t border-gray-100">
-                        <Filter className="h-4 w-4 text-gray-400" />
-                        <select
-                            value={countryFilter}
-                            onChange={(e) => { setCountryFilter(e.target.value as any); setCurrentPage(1); }}
-                            className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent cursor-pointer"
-                        >
-                            <option value="all">All Countries</option>
-                            <option value="USA">USA</option>
-                            <option value="Canada">Canada</option>
-                            <option value="unknown">Unknown</option>
-                        </select>
-                        <select
-                            value={employmentFilter}
-                            onChange={(e) => { setEmploymentFilter(e.target.value as any); setCurrentPage(1); }}
-                            disabled={scheduleLoading}
-                            className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent cursor-pointer disabled:opacity-50 disabled:cursor-wait"
-                        >
-                            <option value="all">All Employment</option>
-                            <option value="full-time">Full-Time (30+ hrs)</option>
-                            <option value="part-time">Part-Time (&lt;30 hrs)</option>
-                            <option value="unknown">No Schedule</option>
-                        </select>
-                        <select
-                            value={campaignFilter}
-                            onChange={(e) => { setCampaignFilter(e.target.value as any); setCurrentPage(1); }}
-                            className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent cursor-pointer"
-                        >
-                            <option value="all">All Campaigns</option>
-                            <option value="Medicare">Medicare</option>
-                            <option value="ACA">ACA</option>
-                            <option value="Medicare WhatIF">Medicare WhatIF</option>
-                            <option value="Hospital">Hospital</option>
-                            <option value="Pitch Meals">Pitch Meals</option>
-                            <option value="Home Care Michigan">Home Care Michigan</option>
-                            <option value="Home Care PA">Home Care PA</option>
-                            <option value="none">No Campaign</option>
-                        </select>
-                        <select
-                            value={performanceFilter}
-                            onChange={(e) => { setPerformanceFilter(e.target.value as any); setCurrentPage(1); }}
-                            disabled={perfLoading}
-                            className="px-3 py-1.5 border border-gray-200 rounded-lg text-sm text-gray-700 bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent cursor-pointer disabled:opacity-50 disabled:cursor-wait"
-                        >
-                            <option value="all">All Performance</option>
-                            <option value="green">Green (Top)</option>
-                            <option value="gray">Gray (Neutral)</option>
-                            <option value="amber">Amber (Below Avg)</option>
-                            <option value="red">Red (Critical)</option>
-                        </select>
-                        {(countryFilter !== 'all' || employmentFilter !== 'all' || campaignFilter !== 'all' || performanceFilter !== 'all') && (
-                            <button
-                                onClick={() => { setCountryFilter('all'); setEmploymentFilter('all'); setCampaignFilter('all'); setPerformanceFilter('all'); setCurrentPage(1); }}
-                                className="px-2.5 py-1.5 text-xs font-medium text-gray-500 hover:text-gray-700 hover:bg-gray-100 rounded-lg transition-colors"
-                            >
-                                Clear filters
-                            </button>
-                        )}
-                        {scheduleLoading && (
-                            <span className="text-xs text-gray-400 flex items-center gap-1">
-                                <Loader2 className="h-3 w-3 animate-spin" />
-                                Loading schedules...
-                            </span>
-                        )}
-                    </div>
+                    {(() => {
+                        const activeFilterCount = [countryFilter, employmentFilter, campaignFilter, managerFilter, hireDateFilter, trendFilter, costSlaFilter].filter(f => f !== 'all').length;
+                        const selectBase = "px-3 py-1.5 border rounded-lg text-sm bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent cursor-pointer disabled:opacity-50 disabled:cursor-wait";
+                        const selectActive = `${selectBase} border-blue-400 text-blue-700 font-medium`;
+                        const selectDefault = `${selectBase} border-gray-200 text-gray-700`;
+                        return (
+                            <div className="pt-2 border-t border-gray-100 space-y-2">
+                                {/* Header row: icon + active count + clear button */}
+                                <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-2">
+                                        <Filter className="h-4 w-4 text-gray-400" />
+                                        <span className="text-xs font-medium text-gray-500">Filters</span>
+                                        {activeFilterCount > 0 && (
+                                            <span className="inline-flex items-center justify-center h-5 min-w-[20px] px-1.5 rounded-full bg-blue-100 text-blue-700 text-[11px] font-bold">
+                                                {activeFilterCount}
+                                            </span>
+                                        )}
+                                        {scheduleLoading && (
+                                            <span className="text-xs text-gray-400 flex items-center gap-1 ml-2">
+                                                <Loader2 className="h-3 w-3 animate-spin" />
+                                                Loading...
+                                            </span>
+                                        )}
+                                    </div>
+                                    <button
+                                        onClick={() => { setCountryFilter('all'); setEmploymentFilter('all'); setCampaignFilter('all'); setManagerFilter('all'); setHireDateFilter('all'); setTrendFilter('all'); setCostSlaFilter('all'); setCurrentPage(1); }}
+                                        disabled={activeFilterCount === 0}
+                                        className={`flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg transition-colors ${activeFilterCount > 0 ? 'text-red-600 bg-red-50 hover:bg-red-100 border border-red-200 cursor-pointer' : 'text-gray-400 bg-gray-50 border border-gray-200 cursor-default'}`}
+                                    >
+                                        <X className="h-3 w-3" />
+                                        Clear all filters
+                                    </button>
+                                </div>
+                                {/* Filter dropdowns — wrapping grid */}
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <select value={countryFilter} onChange={(e) => { setCountryFilter(e.target.value as any); setCurrentPage(1); }} className={countryFilter !== 'all' ? selectActive : selectDefault}>
+                                        <option value="all">All Countries</option>
+                                        <option value="USA">USA</option>
+                                        <option value="Canada">Canada</option>
+                                        <option value="unknown">Unknown</option>
+                                    </select>
+                                    <select value={employmentFilter} onChange={(e) => { setEmploymentFilter(e.target.value as any); setCurrentPage(1); }} disabled={scheduleLoading} className={employmentFilter !== 'all' ? selectActive : selectDefault}>
+                                        <option value="all">All Employment</option>
+                                        <option value="full-time">Full-Time (30+ hrs)</option>
+                                        <option value="part-time">Part-Time (&lt;30 hrs)</option>
+                                        <option value="unknown">No Schedule</option>
+                                    </select>
+                                    <select value={campaignFilter} onChange={(e) => { setCampaignFilter(e.target.value as any); setCurrentPage(1); }} className={campaignFilter !== 'all' ? selectActive : selectDefault}>
+                                        <option value="all">All Campaigns</option>
+                                        <option value="Medicare">Medicare</option>
+                                        <option value="ACA">ACA</option>
+                                        <option value="Medicare WhatIF">Medicare WhatIF</option>
+                                        <option value="Hospital">Hospital</option>
+                                        <option value="Pitch Meals">Pitch Meals</option>
+                                        <option value="Home Care Michigan">Home Care Michigan</option>
+                                        <option value="Home Care PA">Home Care PA</option>
+                                        <option value="Home Care NY">Home Care NY</option>
+                                        <option value="none">No Campaign</option>
+                                    </select>
+                                    <select value={managerFilter} onChange={(e) => { setManagerFilter(e.target.value); setCurrentPage(1); }} className={managerFilter !== 'all' ? selectActive : selectDefault}>
+                                        <option value="all">All Managers</option>
+                                        {availableManagers.map((m) => (
+                                            <option key={m} value={m}>{m}</option>
+                                        ))}
+                                    </select>
+                                    <select value={hireDateFilter} onChange={(e) => { setHireDateFilter(e.target.value as any); setCurrentPage(1); }} className={hireDateFilter !== 'all' ? selectActive : selectDefault}>
+                                        <option value="all">All Hire Dates</option>
+                                        <option value="last-7d">Last 7 Days</option>
+                                        <option value="last-30d">Last 30 Days</option>
+                                        <option value="last-90d">Last 90 Days</option>
+                                        <option value="last-year">Last Year</option>
+                                    </select>
+                                    <select value={trendFilter} onChange={(e) => { setTrendFilter(e.target.value as TrendFilter); setCurrentPage(1); }} disabled={rosterLoading} className={trendFilter !== 'all' ? selectActive : selectDefault}>
+                                        <option value="all">All Trends</option>
+                                        <option value="crushing-it">Crushing It (S/A + Up)</option>
+                                        <option value="uptrend">Uptrend</option>
+                                        <option value="stable">Stable</option>
+                                        <option value="downtrend">Downtrend</option>
+                                        <option value="in-a-rut">In a Rut (C/D + Down/Flat)</option>
+                                    </select>
+                                    <select value={costSlaFilter} onChange={(e) => { setCostSlaFilter(e.target.value as CostSlaFilter); setCurrentPage(1); }} disabled={rosterLoading} className={costSlaFilter !== 'all' ? selectActive : selectDefault}>
+                                        <option value="all">All Cost/SLA</option>
+                                        <option value="performing">Above BE + Stable/Up</option>
+                                        <option value="trending-up">Below BE + Trending Up</option>
+                                        <option value="trending-down">Above BE + Trending Down</option>
+                                        <option value="critical">Below BE + Flat/Down</option>
+                                        <option value="negative-pnl">Negative P&L</option>
+                                    </select>
+                                </div>
+                            </div>
+                        );
+                    })()}
                 </div>
 
                 {/* Table */}
@@ -925,19 +1637,20 @@ export default function EmployeeTable() {
                                     <th className="px-6 py-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Contact</th>
                                     <th className="px-6 py-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Country</th>
                                     <th className="px-6 py-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
+                                    <th className="px-3 py-4 text-xs font-semibold text-gray-500 uppercase tracking-wider text-center w-20">Today</th>
                                     <th className="px-6 py-4 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">Action</th>
                                 </tr>
                             </thead>
                             <tbody className="divide-y divide-gray-100">
                                 {loading ? (
                                     <tr>
-                                        <td colSpan={isSelectionMode ? 8 : 7} className="px-6 py-8 text-center text-gray-500">
+                                        <td colSpan={isSelectionMode ? 9 : 8} className="px-6 py-8 text-center text-gray-500">
                                             Loading directory...
                                         </td>
                                     </tr>
                                 ) : paginatedEmployees.length === 0 ? (
                                     <tr>
-                                        <td colSpan={isSelectionMode ? 8 : 7} className="px-6 py-8 text-center text-gray-500">
+                                        <td colSpan={isSelectionMode ? 9 : 8} className="px-6 py-8 text-center text-gray-500">
                                             No employees found.
                                         </td>
                                     </tr>
@@ -966,8 +1679,8 @@ export default function EmployeeTable() {
                                             )}
                                             <td className="px-6 py-4">
                                                 <div className="flex items-center gap-3">
-                                                    <div className="h-10 w-10 rounded-full bg-gray-100 overflow-hidden border border-gray-200 flex-shrink-0 relative">
-                                                        <div className="h-full w-full flex items-center justify-center bg-blue-100 text-blue-600 font-semibold">
+                                                    <div className="h-14 w-14 rounded-full bg-gray-100 overflow-hidden border-2 border-gray-200 flex-shrink-0 relative">
+                                                        <div className="h-full w-full flex items-center justify-center bg-blue-100 text-blue-600 font-semibold text-base">
                                                             {employee.first_name?.[0]}{employee.last_name?.[0]}
                                                         </div>
                                                         {employee.user_image && (
@@ -979,15 +1692,14 @@ export default function EmployeeTable() {
                                                             />
                                                         )}
                                                     </div>
-                                                    <span className="font-medium text-gray-900 flex items-center gap-1.5">
+                                                    <span className="font-medium text-gray-900">
                                                         {employee.first_name} {employee.last_name}
-                                                        {(() => {
-                                                            const tier = getEmployeeTier(employee);
-                                                            if (!tier) return null;
-                                                            const dotColor = tier === 'green' ? 'bg-emerald-500' : tier === 'amber' ? 'bg-amber-500' : tier === 'red' ? 'bg-red-500' : 'bg-gray-400';
-                                                            return <span className={`inline-block h-2 w-2 rounded-full ${dotColor}`} title={`Performance: ${tier}`} />;
-                                                        })()}
                                                     </span>
+                                                    {isNewHire(employee) && (
+                                                        <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-blue-50 text-blue-600 border border-blue-200">
+                                                            NEW HIRE
+                                                        </span>
+                                                    )}
                                                 </div>
                                             </td>
                                             <td className="px-6 py-4">
@@ -1050,6 +1762,22 @@ export default function EmployeeTable() {
                                                     return (
                                                         <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${styles[status] || styles.unknown}`}>
                                                             {employee.employee_status || "Unknown"}
+                                                        </span>
+                                                    );
+                                                })()}
+                                            </td>
+                                            <td className="px-3 py-4 text-center">
+                                                {(() => {
+                                                    if (employee.role?.toLowerCase() !== 'agent') return <span className="text-xs text-gray-300">—</span>;
+                                                    const intra = getIntradayData(employee);
+                                                    if (!intra) return <span className="text-xs text-gray-300">—</span>;
+                                                    const team = intra.team?.toLowerCase() || "";
+                                                    const isMedicare = team.includes("aragon") || team.includes("medicare") || team.includes("whatif") || team.includes("elite") || team.includes("brandon");
+                                                    const be = isMedicare ? intradayBreakEven.medicare : intradayBreakEven.aca;
+                                                    const above = intra.sla_hr >= be;
+                                                    return (
+                                                        <span className={`text-xs font-mono font-semibold tabular-nums ${above ? "text-emerald-600" : "text-red-500"}`} title={`Rank #${intra.rank ?? '—'} | B/E: ${be}`}>
+                                                            {intra.sla_hr.toFixed(2)}
                                                         </span>
                                                     );
                                                 })()}

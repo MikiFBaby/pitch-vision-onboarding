@@ -16,9 +16,9 @@ interface AttendanceEvent {
     reportedAt: string;
 }
 
-const EVENT_CONFIG: Record<string, { icon: typeof CalendarDays; color: string; bgColor: string; label: string }> = {
-    planned: { icon: CalendarDays, color: 'text-blue-400', bgColor: 'bg-blue-500/15', label: 'Planned' },
-    unplanned: { icon: AlertCircle, color: 'text-amber-400', bgColor: 'bg-amber-500/15', label: 'Unplanned' },
+const EVENT_CONFIG: Record<string, { icon: typeof CalendarDays; color: string; bgColor: string; borderColor: string; dotColor: string; label: string }> = {
+    planned: { icon: CalendarDays, color: 'text-sky-300', bgColor: 'bg-sky-500/15', borderColor: 'border-sky-400/20', dotColor: 'bg-sky-400', label: 'Planned' },
+    unplanned: { icon: AlertCircle, color: 'text-rose-300', bgColor: 'bg-rose-500/15', borderColor: 'border-rose-400/20', dotColor: 'bg-rose-400', label: 'Unplanned' },
 };
 
 /** Parse "13 Feb 2026" to ISO */
@@ -110,56 +110,57 @@ export default function HRAttendanceFeed() {
     }
 
     return (
-        <Card className="bg-white/5 border-white/10 text-white overflow-hidden">
+        <Card className="bg-white/5 border-white/10 text-white overflow-hidden rounded-2xl">
             <CardHeader className="pb-2">
                 <CardTitle className="text-lg font-medium flex items-center gap-2">
-                    <Activity className="w-5 h-5 text-cyan-400" />
+                    <div className="p-1.5 rounded-lg bg-violet-500/15">
+                        <Activity className="w-4 h-4 text-violet-400" />
+                    </div>
                     Today&apos;s Unplanned Absences
                     {events.length > 0 && (
-                        <span className="text-xs bg-cyan-500/20 text-cyan-400 px-2 py-0.5 rounded-full ml-2">
-                            {events.length} event{events.length !== 1 ? 's' : ''}
+                        <span className="text-xs bg-rose-500/15 text-rose-400 px-2.5 py-0.5 rounded-full ml-auto font-semibold tabular-nums border border-rose-500/20">
+                            {events.length}
                         </span>
                     )}
                 </CardTitle>
             </CardHeader>
             <CardContent>
                 {events.length === 0 ? (
-                    <div className="h-[200px] flex flex-col items-center justify-center text-white/40">
-                        <Activity className="w-10 h-10 mb-2 text-white/20" />
-                        <span>No attendance events reported today</span>
-                        <span className="text-xs mt-1 text-white/30">Events appear here when reported via the Slack bot</span>
+                    <div className="h-[200px] flex flex-col items-center justify-center">
+                        <div className="p-3 rounded-2xl bg-white/[0.03] border border-white/[0.06] mb-3">
+                            <Activity className="w-8 h-8 text-white/15" />
+                        </div>
+                        <span className="text-sm text-white/35 font-medium">No absences reported today</span>
+                        <span className="text-xs mt-1.5 text-white/20">Events appear here via the Slack bot</span>
                     </div>
                 ) : (
-                    <div className="space-y-2 max-h-[350px] overflow-y-auto pr-1">
+                    <div className="space-y-1.5 max-h-[350px] overflow-y-auto pr-1">
                         {events.map((evt) => {
                             const config = EVENT_CONFIG[evt.eventType] || EVENT_CONFIG.unplanned;
                             const Icon = config.icon;
                             return (
                                 <div
                                     key={evt.id}
-                                    className={`flex items-start gap-3 p-3 rounded-xl ${config.bgColor} border border-white/5 transition-all hover:border-white/10`}
+                                    className={`group flex items-center gap-3 px-3.5 py-2.5 rounded-lg border ${config.borderColor} transition-all duration-200 hover:bg-white/[0.04]`}
                                 >
-                                    <div className={`mt-0.5 p-1.5 rounded-lg bg-black/20 ${config.color}`}>
-                                        <Icon className="w-4 h-4" />
-                                    </div>
+                                    <span className={`w-2 h-2 rounded-full ${config.dotColor} shrink-0`} />
                                     <div className="flex-1 min-w-0">
-                                        <div className="flex items-center justify-between gap-2">
-                                            <span className="text-sm font-semibold text-white truncate">
-                                                {evt.agentName}
-                                            </span>
-                                            <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${config.color} bg-black/20 shrink-0`}>
-                                                {config.label}
-                                            </span>
-                                        </div>
+                                        <span className="text-sm font-medium text-white truncate block">
+                                            {evt.agentName}
+                                        </span>
                                         {evt.reason && (
-                                            <p className="text-xs text-white/60 mt-0.5 truncate">{evt.reason}</p>
+                                            <p className="text-xs text-white/50 mt-0.5 truncate">{evt.reason}</p>
                                         )}
+                                    </div>
+                                    <div className="flex items-center gap-2 shrink-0">
                                         {evt.reportedBy && (
-                                            <p className="text-[11px] text-white/40 mt-1">
-                                                Reported by {evt.reportedBy}
-                                                {evt.reportedAt && ` at ${formatTime(evt.reportedAt)}`}
-                                            </p>
+                                            <span className="text-[11px] text-white/30 hidden group-hover:inline">
+                                                {evt.reportedBy}
+                                            </span>
                                         )}
+                                        <span className={`text-[10px] font-semibold tracking-wider uppercase px-2 py-0.5 rounded-md ${config.color} ${config.bgColor}`}>
+                                            {config.label}
+                                        </span>
                                     </div>
                                 </div>
                             );

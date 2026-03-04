@@ -76,10 +76,11 @@ export default function PnLPage() {
       </div>
 
       {/* Supplementary KPIs */}
-      <div className="grid grid-cols-5 gap-3">
+      <div className="grid grid-cols-6 gap-3">
         <MiniStat label="BILLABLE CALLS" value={loading ? "---" : num(s?.billable_calls ?? 0)} />
         <MiniStat label="SLA TRANSFERS" value={loading ? "---" : num(s?.sla_transfers ?? 0)} />
-        <MiniStat label="HOURS WORKED" value={loading ? "---" : num(Math.round(s?.hours_worked ?? 0))} />
+        <MiniStat label="GROSS HRS" value={loading ? "---" : num(Math.round(s?.hours_worked ?? 0))} />
+        <MiniStat label="PAID HRS" value={loading ? "---" : num(Math.round(s?.paid_hours ?? s?.hours_worked ?? 0))} />
         <MiniStat label="ACTIVE AGENTS" value={loading ? "---" : num(s?.agent_count ?? 0)} />
         <MiniStat label="ROI" value={loading ? "---" : pct(s?.roi_pct ?? 0)} accent={(s?.roi_pct ?? 0) >= 0 ? "emerald" : "red"} />
       </div>

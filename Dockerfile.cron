@@ -1,0 +1,14 @@
+# ─────────────────────────────────────────────────────────────
+# Cron Scheduler Sidecar
+# Lightweight Node.js container that fires HTTP requests
+# to the Next.js app on cron schedules.
+# ─────────────────────────────────────────────────────────────
+
+FROM node:20-alpine
+
+WORKDIR /app
+COPY scripts/cron-scheduler.mjs ./cron-scheduler.mjs
+
+USER node
+
+CMD ["node", "cron-scheduler.mjs"]

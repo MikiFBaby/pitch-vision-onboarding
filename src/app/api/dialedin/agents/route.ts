@@ -1,6 +1,8 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { isExcludedTeam } from '@/utils/dialedin-revenue';
+import { getCadToUsdRate, convertWageToUsd } from '@/utils/fx';
+import { fetchNewHireSet, isNewHireAgent } from '@/utils/dialedin-new-hires';
 
 export const runtime = 'nodejs';
 
@@ -14,23 +16,24 @@ export async function GET(request: NextRequest) {
   const includeWage = searchParams.get('include_wage') === 'true';
 
   try {
-    let query = supabaseAdmin
-      .from('dialedin_agent_performance')
-      .select('*');
-
-    if (date) {
-      query = query.eq('report_date', date);
-    } else {
-      // Default: most recent date
+    // Resolve target date first (needed for both perf query and Retreaver lookup)
+    let targetDate = date;
+    if (!targetDate) {
       const { data: latest } = await supabaseAdmin
         .from('dialedin_daily_kpis')
         .select('report_date')
         .order('report_date', { ascending: false })
         .limit(1)
         .maybeSingle();
-      if (latest) {
-        query = query.eq('report_date', latest.report_date);
-      }
+      if (latest) targetDate = latest.report_date;
+    }
+
+    let query = supabaseAdmin
+      .from('dialedin_agent_performance')
+      .select('*');
+
+    if (targetDate) {
+      query = query.eq('report_date', targetDate);
     }
 
     if (skill) {
@@ -60,22 +63,30 @@ export async function GET(request: NextRequest) {
     // Filter out excluded teams
     let agents = (data || []).filter((a: any) => !isExcludedTeam(a.team));
 
-    // Optionally enrich with hourly_wage from employee_directory
+    // Annotate with new hire status and filter bottom board
+    const newHireSet = await fetchNewHireSet(supabaseAdmin);
+    agents = agents.map((a: any) => ({ ...a, is_new_hire: isNewHireAgent(a.agent_name, newHireSet) }));
+    if (ranking === 'bottom') {
+      agents = agents.filter((a: any) => !a.is_new_hire);
+    }
+
+    // Optionally enrich with hourly_wage from employee_directory (converted to USD)
     let wages: Record<string, number> = {};
     if (includeWage && agents.length > 0) {
       const { data: employees } = await supabaseAdmin
         .from('employee_directory')
-        .select('first_name, last_name, hourly_wage')
+        .select('first_name, last_name, hourly_wage, country')
         .eq('employee_status', 'Active')
         .not('hourly_wage', 'is', null);
 
       if (employees) {
-        // Build a name → wage lookup
+        const cadToUsdRate = await getCadToUsdRate();
+        // Build a name → wage lookup (USD-converted)
         const wageMap = new Map<string, number>();
         for (const emp of employees) {
           const name = `${emp.first_name} ${emp.last_name}`.trim().toLowerCase();
           if (emp.hourly_wage != null) {
-            wageMap.set(name, Number(emp.hourly_wage));
+            wageMap.set(name, convertWageToUsd(Number(emp.hourly_wage), emp.country, cadToUsdRate));
           }
         }
 
@@ -90,7 +101,10 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    return NextResponse.json({ data: agents, wages: includeWage ? wages : undefined });
+    return NextResponse.json({
+      data: agents,
+      wages: includeWage ? wages : undefined,
+    });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : 'Failed to fetch agents' },
