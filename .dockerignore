@@ -13,6 +13,7 @@ node_modules
 docs/
 scripts/
 !scripts/cron-scheduler.mjs
+!scripts/pitch-health-blocklist.json
 *.pdf
 .DS_Store
 coverage
