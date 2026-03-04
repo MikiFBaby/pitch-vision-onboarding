@@ -68,18 +68,15 @@ export async function GET(request: NextRequest) {
     dateParam ||
     `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
 
-  // Fetch ALL snapshots for the target date (for hourly trend)
-  const { data: allSnapshots, error } = await supabaseAdmin
+  // ── Step 1: Find the latest snapshot timestamp for this date ──
+  const { data: latestSnap } = await supabaseAdmin
     .from('dialedin_intraday_snapshots')
-    .select('*')
+    .select('snapshot_at')
     .eq('snapshot_date', targetDate)
-    .order('snapshot_at', { ascending: true });
+    .order('snapshot_at', { ascending: false })
+    .limit(1);
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
-
-  if (!allSnapshots || allSnapshots.length === 0) {
+  if (!latestSnap || latestSnap.length === 0) {
     return NextResponse.json({
       latest_snapshot_at: null,
       stale: true,
@@ -100,17 +97,23 @@ export async function GET(request: NextRequest) {
     });
   }
 
-  // Exclude Pitch Health (separate department) — offshore teams are kept for executive overview
-  const rows = (allSnapshots as SnapshotRow[]).filter(
+  const latestTime = latestSnap[0].snapshot_at;
+
+  // ── Step 2: Fetch ALL agent rows for the latest snapshot only (~634 rows) ──
+  const { data: latestData, error } = await supabaseAdmin
+    .from('dialedin_intraday_snapshots')
+    .select('*')
+    .eq('snapshot_date', targetDate)
+    .eq('snapshot_at', latestTime);
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 });
+  }
+
+  // Exclude Pitch Health (separate department)
+  const latestRows = ((latestData || []) as SnapshotRow[]).filter(
     (r) => !r.team || !r.team.toLowerCase().includes('pitch health'),
   );
-
-  // Find distinct snapshot timestamps
-  const snapshotTimes = [...new Set(rows.map((r) => r.snapshot_at))].sort();
-  const latestTime = snapshotTimes[snapshotTimes.length - 1];
-
-  // Get latest snapshot rows (one per agent) — always compute from ALL agents for totals/rank
-  const latestRows = rows.filter((r) => r.snapshot_at === latestTime);
 
   // Check staleness (>10 min old — scraper runs every 5 min)
   const latestDate = new Date(latestTime);
@@ -231,14 +234,43 @@ export async function GET(request: NextRequest) {
   }
 
   // ── Hourly trend (aggregate) ──
+  // Fetch all snapshots for the day, but only the fields we need for trend + agent hourly
+  // Use pagination to avoid Supabase 1000-row default cap
   let hourlyTrend: { hour: number; sla_total: number; production_hours: number; agent_count: number; snapshot_at: string }[] = [];
+  let agentHourlyTrend: { hour: number; sla_total: number; production_hours: number; agent_count: number; snapshot_at: string }[] | undefined;
 
   if (includeTrend) {
+    const trendCols = 'snapshot_at,agent_name,team,transfers,hours_worked';
+    const allTrendRows: { snapshot_at: string; agent_name: string; team: string | null; transfers: number; hours_worked: number }[] = [];
+    const PAGE_SIZE = 1000;
+    let offset = 0;
+    let hasMore = true;
+
+    while (hasMore) {
+      const { data: page } = await supabaseAdmin
+        .from('dialedin_intraday_snapshots')
+        .select(trendCols)
+        .eq('snapshot_date', targetDate)
+        .order('snapshot_at', { ascending: true })
+        .range(offset, offset + PAGE_SIZE - 1);
+
+      if (!page || page.length === 0) break;
+      allTrendRows.push(...page);
+      hasMore = page.length === PAGE_SIZE;
+      offset += PAGE_SIZE;
+    }
+
+    // Filter Pitch Health from trend data
+    const trendRows = allTrendRows.filter(
+      (r) => !r.team || !r.team.toLowerCase().includes('pitch health'),
+    );
+
+    const snapshotTimes = [...new Set(trendRows.map((r) => r.snapshot_at))].sort();
+
     const hourlyMap = new Map<number, { sla_total: number; production_hours: number; agent_count: number; snapshot_at: string }>();
     for (const time of snapshotTimes) {
-      let snapRows = rows.filter((r) => r.snapshot_at === time);
+      let snapRows = trendRows.filter((r) => r.snapshot_at === time);
 
-      // Apply same team filter to hourly trend when filtering
       if (teamFilter) {
         const teamNeedles = teamFilter.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean);
         snapRows = snapRows.filter((r) =>
@@ -261,34 +293,32 @@ export async function GET(request: NextRequest) {
     hourlyTrend = Array.from(hourlyMap.entries())
       .sort(([a], [b]) => a - b)
       .map(([hour, data]) => ({ hour, ...data }));
-  }
 
-  // ── Per-agent hourly trend (when agent filter is set) ──
-  let agentHourlyTrend: { hour: number; sla_total: number; production_hours: number; agent_count: number; snapshot_at: string }[] | undefined;
+    // Per-agent hourly trend
+    if (agentFilter) {
+      const needle = agentFilter.toLowerCase().trim();
+      const agentHourlyMap = new Map<number, { sla_total: number; production_hours: number; agent_count: number; snapshot_at: string }>();
 
-  if (agentFilter && includeTrend) {
-    const needle = agentFilter.toLowerCase().trim();
-    const agentHourlyMap = new Map<number, { sla_total: number; production_hours: number; agent_count: number; snapshot_at: string }>();
+      for (const time of snapshotTimes) {
+        const agentRow = trendRows.find((r) => r.snapshot_at === time && r.agent_name.toLowerCase().trim() === needle);
+        if (!agentRow) continue;
 
-    for (const time of snapshotTimes) {
-      const agentRow = rows.find((r) => r.snapshot_at === time && r.agent_name.toLowerCase().trim() === needle);
-      if (!agentRow) continue;
+        const etHour = parseInt(
+          new Date(time).toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false }),
+        );
 
-      const etHour = parseInt(
-        new Date(time).toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false }),
-      );
+        agentHourlyMap.set(etHour, {
+          sla_total: agentRow.transfers,
+          production_hours: agentRow.hours_worked,
+          agent_count: 1,
+          snapshot_at: time,
+        });
+      }
 
-      agentHourlyMap.set(etHour, {
-        sla_total: agentRow.transfers,
-        production_hours: agentRow.hours_worked,
-        agent_count: 1,
-        snapshot_at: time,
-      });
+      agentHourlyTrend = Array.from(agentHourlyMap.entries())
+        .sort(([a], [b]) => a - b)
+        .map(([hour, data]) => ({ hour, ...data }));
     }
-
-    agentHourlyTrend = Array.from(agentHourlyMap.entries())
-      .sort(([a], [b]) => a - b)
-      .map(([hour, data]) => ({ hour, ...data }));
   }
 
   // Break-even thresholds
