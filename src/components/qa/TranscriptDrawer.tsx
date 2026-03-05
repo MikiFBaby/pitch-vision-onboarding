@@ -1256,10 +1256,17 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
     };
   }, [fullAuditList]);
 
-  // Sync calculated score to database if it differs from stored score
+  // Sync calculated score to database ONLY when QA reviewer explicitly changes checklist items.
+  // Without local overrides, the pipeline's compliance_score is the source of truth.
   useEffect(() => {
     const syncScoreToDatabase = async () => {
       if (!call || calculatedScore === 0 || totalPossible === 0) return;
+
+      // Only sync when QA has explicitly toggled checklist items in this session.
+      // This prevents the frontend weighting from overwriting the pipeline's AI score
+      // when a call is merely opened/viewed.
+      const hasQAOverrides = Object.keys(localOverrides).length > 0;
+      if (!hasQAOverrides) return;
 
       // NEVER auto-sync scores on active auto-fail calls — QA must explicitly override
       const hasActiveAutoFail = effectiveAutoFailTriggered && !autoFailOverride;
@@ -1269,7 +1276,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
       const storedScore = call.complianceScore || 0;
       if (Math.abs(calculatedScore - storedScore) < 1) return;
 
-      console.log(`Score sync: stored=${storedScore}%, calculated=${calculatedScore}%`);
+      console.log(`Score sync (QA override): stored=${storedScore}%, calculated=${calculatedScore}%`);
 
       try {
         const response = await fetch('/api/qa/update-score', {
@@ -1278,7 +1285,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
           body: JSON.stringify({
             callId: String(call.id),
             newScore: calculatedScore,
-            reason: 'Weighted score recalculation'
+            reason: 'QA checklist override'
           })
         });
 
@@ -1302,7 +1309,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
     // Debounce to avoid multiple updates
     const timer = setTimeout(syncScoreToDatabase, 1000);
     return () => clearTimeout(timer);
-  }, [call?.id, calculatedScore, totalPossible, onScoreUpdate, effectiveAutoFailTriggered, autoFailOverride]);
+  }, [call?.id, calculatedScore, totalPossible, onScoreUpdate, effectiveAutoFailTriggered, autoFailOverride, localOverrides]);
 
   useEffect(() => {
     if (call) {
