@@ -1,0 +1,209 @@
+================================================================================
+PITCH VISION WEB - CODEBASE CONCERNS ANALYSIS SUMMARY
+Generated: March 5, 2026
+================================================================================
+
+DOCUMENT CREATED: .planning/codebase/CONCERNS.md (870 lines)
+
+================================================================================
+CRITICAL ISSUES (REQUIRES IMMEDIATE ATTENTION)
+================================================================================
+
+1. PLACEHOLDER ENVIRONMENT VARIABLES (SECURITY RISK)
+   Location: src/lib/{supabase,firebase}.ts
+   Issue: Fallback values like 'placeholder' and 'mock_key' used when env vars missing
+   Impact: Silent configuration failures, potential security bypass
+
+2. UNHANDLED .single() CALLS (DATABASE ERROR HANDLING)
+   Location: 6+ auth routes and cost calculation routes
+   Issue: Supabase .single() throws 406/409 on 0 rows or 2+ rows (not handled)
+   Impact: Auth flows fail with generic 500 errors instead of proper 404/409
+   Recommendation: Replace with .maybeSingle() and add explicit error handling
+
+3. EMAIL SYSTEM NOT IMPLEMENTED
+   Location: src/app/api/admin/invite-employee/route.ts
+   Issue: All invitation emails are mocked/logged - actually sent to nobody
+   Impact: Employee onboarding blocked - invitations never delivered
+   Recommendation: Implement with Resend (already in package.json)
+
+4. SMS INTEGRATION MOCKED
+   Location: src/app/api/qa/aura-chat/route.ts
+   Issue: SMS notifications are logged but never sent
+   Impact: Users miss critical alerts and updates
+   Recommendation: Integrate Twilio or similar SMS provider
+
+================================================================================
+HIGH-PRIORITY ISSUES
+================================================================================
+
+5. PAGINATION GAPS IN LARGE DATA QUERIES
+   Location: Multiple dialedin routes and slack-attendance.ts
+   Issue: Queries may hit Supabase 1000-row limit, silently truncating results
+   Impact: P&L reports showing only ~9% of actual data (per memory)
+   Recommendation: Audit all queries, implement .range() pagination consistently
+
+6. AWS S3 CREDENTIALS WITH EMPTY FALLBACK
+   Location: src/app/api/retreaver/sync/route.ts
+   Issue: AWS credentials have empty-string fallback (|| '')
+   Impact: Silent failures instead of clear error messages
+   Recommendation: Remove fallbacks, fail fast if credentials missing
+
+7. INPUT VALIDATION MISSING
+   Location: All POST/PUT routes
+   Issue: Request data accepted without schema validation
+   Impact: Invalid data accepted, possible injection attacks
+   Recommendation: Implement zod schemas for all API endpoints
+
+8. UNSAFE JSON PARSING
+   Location: src/hooks/useGeminiLive.ts, src/utils/slack-attendance.ts
+   Issue: JSON.parse() without try-catch can crash on malformed data
+   Impact: Client crashes, unresponsive UI
+   Recommendation: Wrap all JSON.parse in try-catch with validation
+
+================================================================================
+MEDIUM-PRIORITY ISSUES
+================================================================================
+
+9. EXCESSIVE USE OF 'any' TYPE
+   Location: src/lib/hr-utils.ts (8+ functions)
+   Issue: HR utilities use Record<string,any> instead of proper interfaces
+   Impact: Type safety removed, refactoring risk, no IDE support
+   Recommendation: Define proper TypeScript interfaces for HR types
+
+10. HARDCODED MAGIC NUMBERS
+    Location: Scattered across multiple files
+    Issue: Break allowance (69.6), ratios (0.145), limits (2000, 100) hardcoded
+    Impact: Inconsistent business logic, hard to maintain and audit
+    Recommendation: Centralize in src/utils/constants.ts with env overrides
+
+11. UNVALIDATED CSV/XLS PARSING
+    Location: Dialedin report parsing
+    Issue: Parser has workaround for shifted columns, brittle to vendor changes
+    Impact: Format changes break silently, data quality issues
+    Recommendation: Column name mapping instead of positional indices
+
+12. PROMISE.ALL WITHOUT ERROR AGGREGATION
+    Location: src/app/api/retreaver/sync/route.ts
+    Issue: Errors caught but not distinguished (transient vs permanent)
+    Impact: Partial failures go unnoticed, no retry logic
+    Recommendation: Implement proper error classification and exponential backoff
+
+================================================================================
+CODE QUALITY CONCERNS
+================================================================================
+
+13. TIGHTLY COUPLED COMPONENTS
+    Issue: 10+ HR components import same utilities, changes require coordination
+    Impact: Refactoring risky, testing difficult
+    Recommendation: Introduce service layer, use dependency injection
+
+14. MISSING CORRELATION IDs
+    Issue: No way to trace requests end-to-end across services
+    Impact: Debugging production issues very difficult
+    Recommendation: Generate UUID per request, pass through all operations
+
+15. NO CACHING STRATEGY
+    Issue: Most routes fetch fresh data every request
+    Impact: High latency, increased database costs
+    Recommendation: Implement Redis caching (5min dashboard, 1min real-time)
+
+16. TIMEZONE HANDLING FRAGILE
+    Location: src/app/api/dialedin/intraday/route.ts
+    Issue: Using toLocaleString() for timezone conversion instead of date library
+    Impact: Performance issue, locale-dependent behavior, DST problems
+    Recommendation: Use date-fns library (already in package.json)
+
+================================================================================
+DOCUMENTATION GAPS
+================================================================================
+
+17. COMPLEX BUSINESS LOGIC UNDOCUMENTED
+    Issue: Break allowance formula, SLA calculations, AF detection patterns
+    Impact: Future maintainers don't understand "why"
+    Recommendation: Add comments, create business-logic.md
+
+18. KNOWN WORKAROUNDS NOT DOCUMENTED
+    Issue: DialedIn date offset, Pitch Health filtering patterns scattered
+    Impact: Permanent tech debt, fragile to changes
+    Recommendation: Document as critical constants with rationale
+
+================================================================================
+DEPENDENCY RISKS
+================================================================================
+
+19. INCONSISTENT VERSION PINNING
+    Location: package.json
+    Issue: Next.js/React pinned, TypeScript loose (^5)
+    Impact: Manual updates required, transitive vulnerabilities
+    Recommendation: Consistent versioning strategy, use dependabot
+
+================================================================================
+INCOMPLETE FEATURES
+================================================================================
+
+20. PAYWORKS INTEGRATION PENDING
+    Status: Discovery phase (incomplete)
+    Issue: Checklist UI exists but API integration not complete
+    Impact: Data in onboarding portal lost (not synced to Payworks)
+    Recommendation: Complete per phases in memory, add feature flag
+
+================================================================================
+ARCHITECTURAL OBSERVATIONS
+================================================================================
+
+The codebase is MATURE and FUNCTIONAL but shows signs of:
+- Iterative development (40+ n8n snapshots for QA pipeline v1-v2.2)
+- Business logic complexity growing faster than refactoring
+- Performance optimizations done post-hoc rather than designed upfront
+- Error handling patterns inconsistent across modules
+
+QA Pipeline particularly well-documented with full architecture (see memory).
+DialedIn/Retreaver integrations show signs of accumulated workarounds.
+
+================================================================================
+PRIORITY ACTION ITEMS (RECOMMENDED EXECUTION ORDER)
+================================================================================
+
+WEEK 1 (Critical):
+  [ ] Fix placeholder env vars → fail-fast checks
+  [ ] Replace .single() with .maybeSingle() in auth routes
+  [ ] Add input validation to all POST endpoints (zod schemas)
+
+MONTH 1 (High):
+  [ ] Complete email system (Resend integration)
+  [ ] Implement SMS with Twilio
+  [ ] Audit all pagination queries
+  [ ] Add proper error handling (classification + retry logic)
+
+QUARTER 1:
+  [ ] Implement Redis caching layer
+  [ ] Add integration test suite
+  [ ] Reduce 'any' types via TypeScript strictness
+  [ ] Build feature flag system for incomplete features
+
+ONGOING:
+  [ ] Add correlation IDs to all requests
+  [ ] Implement structured logging
+  [ ] Monitor system health (status page)
+  [ ] Regular security audits (npm audit, SAST)
+
+================================================================================
+FILE STATISTICS
+================================================================================
+
+CONCERNS.md:
+  - 870 total lines
+  - 28 distinct issues documented
+  - 4 severity levels (Critical, High, Medium, Low)
+  - Priority matrix provided
+  - Remediation guidance for each issue
+  - Next steps roadmap included
+
+Files analyzed:
+  - 115+ API routes in /src/app/api
+  - 30+ utility files
+  - 25+ React components
+  - 1 package.json (40 dependencies)
+  - Configuration: typescript, next.js, tailwind, supabase, firebase
+
+================================================================================
