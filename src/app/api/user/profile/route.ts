@@ -3,11 +3,14 @@ import { supabaseAdmin } from '@/lib/supabase-admin';
 
 export async function POST(req: Request) {
     try {
-        const { firebaseUid, email, firstName, lastName, nickname, phone, bio, interests, avatarUrl, role } = await req.json();
+        const { firebaseUid, email, firstName, lastName, nickname, phone, bio, interests, avatarUrl } = await req.json();
 
         // Validate required fields
         if (!firebaseUid || !email) {
             return NextResponse.json({ error: 'Missing identifier' }, { status: 400 });
+        }
+        if (!phone || !phone.trim()) {
+            return NextResponse.json({ error: 'Phone number is required' }, { status: 400 });
         }
 
         console.log('Profile Update Payload:', {
@@ -15,8 +18,7 @@ export async function POST(req: Request) {
             email,
             firstName,
             lastName,
-            nickname, // Added nickname to log
-            role,
+            nickname,
             avatarUrlSize: avatarUrl?.length
         });
 
@@ -33,7 +35,7 @@ export async function POST(req: Request) {
         if (bio !== undefined) updateData.bio = bio;
         if (interests !== undefined) updateData.interests = interests;
         if (avatarUrl !== undefined) updateData.avatar_url = avatarUrl;
-        if (role !== undefined) updateData.role = role;
+        // role is NOT accepted from client — it's set by Smart Enrollment during signup
 
         const { data, error } = await supabaseAdmin
             .from('users')
@@ -127,12 +129,11 @@ async function notifyProfileCompletion(user: any) {
         }
     }
 
-    // 3. Check if ALL agents have completed — "Ready for Launch" notification
+    // 3. Check if ALL employees have completed — "Ready for Launch" notification
     try {
         const { data: stats } = await supabaseAdmin
             .from('users')
-            .select('profile_completed')
-            .eq('role', 'agent')
+            .select('profile_completed, role')
             .eq('status', 'active');
 
         const total = stats?.length || 0;
@@ -144,11 +145,11 @@ async function notifyProfileCompletion(user: any) {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     to: 'miki@pitchperfectsolutions.net',
-                    subject: '[Pitch Vision] ALL AGENTS COMPLETED — Ready for Launch!',
+                    subject: '[Pitch Vision] ALL EMPLOYEES COMPLETED — Ready for Launch!',
                     senderName: 'Pitch Vision',
                     html: `<div style="font-family:sans-serif;padding:20px;">
-                        <h2 style="color:#10b981;">All ${total} agents have completed their profiles!</h2>
-                        <p>The platform is ready for launch. Go to <strong>HR &gt; Launch Control</strong> to enable agent portal access.</p>
+                        <h2 style="color:#10b981;">All ${total} employees have completed their profiles!</h2>
+                        <p>The platform is ready for launch. Go to <strong>HR &gt; Launch Control</strong> to enable portal access per role.</p>
                     </div>`
                 })
             });
@@ -156,7 +157,7 @@ async function notifyProfileCompletion(user: any) {
             if (channelId) {
                 const { postSlackMessage } = await import('@/utils/slack-helpers');
                 await postSlackMessage(channelId,
-                    `:rocket: *ALL ${total} AGENTS HAVE COMPLETED THEIR PROFILES!* The platform is ready for launch.`,
+                    `:rocket: *ALL ${total} EMPLOYEES HAVE COMPLETED THEIR PROFILES!* The platform is ready for launch.`,
                     undefined,
                     samToken
                 );
