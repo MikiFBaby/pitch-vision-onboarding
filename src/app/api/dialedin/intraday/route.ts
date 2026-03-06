@@ -1,7 +1,9 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 import { fetchNewHireSet } from '@/utils/dialedin-new-hires';
-import { getBreakEvenTPH } from '@/utils/dialedin-revenue';
+import { getBreakEvenTPH, getRevenuePerTransfer } from '@/utils/dialedin-revenue';
+import { getCadToUsdRate, convertWageToUsd } from '@/utils/fx';
+import { getCached, setCache } from '@/utils/dialedin-cache';
 
 export const runtime = 'nodejs';
 
@@ -39,6 +41,59 @@ function computeAdjustedSlaHr(r: SnapshotRow): number {
   return paidHrs > 0 ? r.transfers / paidHrs : 0;
 }
 
+/** Cache key + TTL for employee_directory lookup (team inference + wages) */
+const EMP_DIRECTORY_CACHE_KEY = 'emp-directory-lookup';
+const EMP_DIRECTORY_TTL = 10 * 60_000; // 10 min
+
+interface EmpLookupEntry {
+  team: string | null;
+  wage: number;
+  country: string | null;
+}
+
+async function getEmpDirectoryLookup(): Promise<Map<string, EmpLookupEntry>> {
+  const cached = getCached<[string, EmpLookupEntry][]>(EMP_DIRECTORY_CACHE_KEY);
+  if (cached) return new Map(cached);
+
+  // Single query for both team inference AND wage data (consolidates 2 queries)
+  const { data: employees } = await supabaseAdmin
+    .from('employee_directory')
+    .select('first_name, last_name, dialedin_name, current_campaigns, hourly_wage, country, role')
+    .eq('employee_status', 'Active');
+
+  const lookup = new Map<string, EmpLookupEntry>();
+  if (employees && employees.length > 0) {
+    for (const emp of employees) {
+      const camps = Array.isArray(emp.current_campaigns)
+        ? emp.current_campaigns.join(',').toLowerCase()
+        : (emp.current_campaigns || '').toLowerCase();
+
+      let inferredTeam: string | null = null;
+      if (camps) {
+        if (camps.includes('aca') || camps.includes('jade')) inferredTeam = 'Jade ACA Team';
+        else if (camps.includes('whatif') || camps.includes('what if')) inferredTeam = 'Team WhatIf';
+        else if (camps.includes('hospital')) inferredTeam = 'Hospital';
+        else if (camps.includes('home care')) inferredTeam = 'Home Care';
+        else if (camps.includes('medicare')) inferredTeam = 'Aragon';
+      }
+
+      const wage = Number(emp.hourly_wage) || 0;
+      const entry: EmpLookupEntry = { team: inferredTeam, wage, country: emp.country };
+
+      if (emp.dialedin_name) {
+        lookup.set(emp.dialedin_name.toLowerCase().trim(), entry);
+      }
+      const full = `${(emp.first_name || '').trim()} ${(emp.last_name || '').trim()}`.trim().toLowerCase();
+      if (full && !lookup.has(full)) {
+        lookup.set(full, entry);
+      }
+    }
+  }
+
+  setCache(EMP_DIRECTORY_CACHE_KEY, Array.from(lookup.entries()), EMP_DIRECTORY_TTL);
+  return lookup;
+}
+
 /**
  * GET /api/dialedin/intraday
  *
@@ -48,6 +103,7 @@ function computeAdjustedSlaHr(r: SnapshotRow): number {
  *   team          - Filter agents by team substring (comma-separated for multi-team)
  *   include_rank  - "true" to add rank field to each agent (by adjusted SLA/hr)
  *   include_trend - "false" to omit hourly_trend (lighter payload)
+ *   include_economics - "true" to enrich with cost/revenue (joins employee_directory wages)
  *
  * Returns intraday Agent Summary snapshots:
  * - Latest snapshot totals (SLA, production hours, agent count)
@@ -55,6 +111,11 @@ function computeAdjustedSlaHr(r: SnapshotRow): number {
  * - Agent-level breakdown from the most recent snapshot
  * - When agent filter is set: agent_hourly_trend (per-agent progression)
  */
+// Cache TTLs
+const TREND_CACHE_TTL = 3 * 60_000;   // 3 min — trend data changes every 5 min (scraper interval)
+const AGENTS_CACHE_TTL = 60_000;       // 1 min — agent snapshot updates more frequently
+const TREND_PAGE_SIZE = 10_000;        // Larger pages = fewer round trips for trend queries
+
 export async function GET(request: NextRequest) {
   const params = request.nextUrl.searchParams;
   const dateParam = params.get('date');
@@ -62,11 +123,19 @@ export async function GET(request: NextRequest) {
   const teamFilter = params.get('team');
   const includeRank = params.get('include_rank') === 'true';
   const includeTrend = params.get('include_trend') !== 'false'; // default true
+  const includeEconomics = params.get('include_economics') === 'true';
 
   const today = new Date();
   const targetDate =
     dateParam ||
     `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+
+  // ── Response cache: avoid re-computing identical requests within TTL ──
+  const responseCacheKey = `intraday:${targetDate}:${teamFilter || 'all'}:${agentFilter || 'all'}:rank=${includeRank}:trend=${includeTrend}:econ=${includeEconomics}`;
+  const cachedResponse = getCached<Record<string, unknown>>(responseCacheKey);
+  if (cachedResponse) {
+    return NextResponse.json(cachedResponse);
+  }
 
   // ── Step 1: Find the latest snapshot timestamp for this date ──
   const { data: latestSnap } = await supabaseAdmin
@@ -99,29 +168,71 @@ export async function GET(request: NextRequest) {
 
   const latestTime = latestSnap[0].snapshot_at;
 
-  // ── Step 2: Fetch ALL agent rows for the latest snapshot only (~634 rows) ──
-  const { data: latestData, error } = await supabaseAdmin
-    .from('dialedin_intraday_snapshots')
-    .select('*')
-    .eq('snapshot_date', targetDate)
-    .eq('snapshot_at', latestTime);
+  // ── Steps 2 + 4 + momentum baseline in parallel ──
+  const momentumPromise = includeRank
+    ? (async () => {
+        const target = new Date(new Date(latestTime).getTime() - 2 * 60 * 60 * 1000).toISOString();
+        const { data: oldSnap } = await supabaseAdmin
+          .from('dialedin_intraday_snapshots')
+          .select('snapshot_at')
+          .eq('snapshot_date', targetDate)
+          .lte('snapshot_at', target)
+          .order('snapshot_at', { ascending: false })
+          .limit(1);
+        if (!oldSnap || oldSnap.length === 0) return new Map<string, number>();
+        const { data: oldRows } = await supabaseAdmin
+          .from('dialedin_intraday_snapshots')
+          .select('agent_name, sla_hr')
+          .eq('snapshot_date', targetDate)
+          .eq('snapshot_at', oldSnap[0].snapshot_at);
+        const map = new Map<string, number>();
+        for (const r of (oldRows || [])) map.set(r.agent_name, Number(r.sla_hr) || 0);
+        return map;
+      })()
+    : Promise.resolve(new Map<string, number>());
 
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
+  const [latestDataResult, newHires, momentumBaseline] = await Promise.all([
+    supabaseAdmin
+      .from('dialedin_intraday_snapshots')
+      .select('*')
+      .eq('snapshot_date', targetDate)
+      .eq('snapshot_at', latestTime),
+    fetchNewHireSet(supabaseAdmin),
+    momentumPromise,
+  ]);
+
+  if (latestDataResult.error) {
+    return NextResponse.json({ error: latestDataResult.error.message }, { status: 500 });
   }
 
-  // Exclude Pitch Health (separate department)
-  const latestRows = ((latestData || []) as SnapshotRow[]).filter(
-    (r) => !r.team || !r.team.toLowerCase().includes('pitch health'),
+  // Exclude Pitch Health (separate department) and QA/HR staff (internal, not agents)
+  const QA_HR_PATTERN = /\b(QA|HR|HR-Assistant)$/i;
+  const latestRows = ((latestDataResult.data || []) as SnapshotRow[]).filter(
+    (r) => {
+      if (r.team && r.team.toLowerCase().includes('pitch health')) return false;
+      if (QA_HR_PATTERN.test(r.agent_name)) return false;
+      return true;
+    },
   );
+
+  // ── Step 3: Team inference for agents with NULL team (cached lookup) ──
+  // Also used later for economics enrichment — single cached query for both
+  const empLookup = await getEmpDirectoryLookup();
+  const nullTeamAgents = latestRows.filter((r) => !r.team);
+  if (nullTeamAgents.length > 0) {
+    for (const row of nullTeamAgents) {
+      const key = row.agent_name.toLowerCase().trim();
+      const emp = empLookup.get(key);
+      if (emp?.team) {
+        (row as { team: string | null }).team = emp.team;
+      }
+    }
+  }
 
   // Check staleness (>10 min old — scraper runs every 5 min)
   const latestDate = new Date(latestTime);
   const minutesAgo = (Date.now() - latestDate.getTime()) / 60_000;
   const stale = minutesAgo > 10;
-
-  // Fetch new hires to exclude from team averages
-  const newHires = await fetchNewHireSet(supabaseAdmin);
 
   // ── Compute totals from latest snapshot (all agents, pre-filter) ──
   const slaTotal = latestRows.reduce((sum, r) => sum + r.transfers, 0);
@@ -174,9 +285,52 @@ export async function GET(request: NextRequest) {
     })
     .sort((a, b) => b.adjusted_sla_hr - a.adjusted_sla_hr);
 
-  // Assign rank if requested (computed across ALL agents before filtering)
+  // Assign rank + momentum if requested (computed across ALL agents before filtering)
   if (includeRank) {
     allAgents.forEach((a, i) => { a.rank = i + 1; });
+
+    // Momentum: compare current sla_hr vs 2h ago
+    if (momentumBaseline.size > 0) {
+      for (const agent of allAgents) {
+        const prev = momentumBaseline.get(agent.name);
+        if (prev !== undefined) {
+          (agent as Record<string, unknown>).sla_hr_2h_ago = Math.round(prev * 100) / 100;
+          const delta = agent.sla_hr - prev;
+          (agent as Record<string, unknown>).momentum = delta > 0.3 ? 'up' : delta < -0.3 ? 'down' : 'steady';
+        }
+      }
+    }
+  }
+
+  // ── Economics enrichment (wage × hours = cost, transfers × rate = revenue) ──
+  // Reuses empLookup (cached, no extra DB query)
+  let hasEconomics = false;
+
+  if (includeEconomics) {
+    hasEconomics = true;
+    const cadToUsd = await getCadToUsdRate();
+
+    // Enrich each agent with economics from cached empLookup
+    for (const agent of allAgents) {
+      const key = agent.name.toLowerCase().trim();
+      const emp = empLookup.get(key);
+      if (emp && emp.wage > 0) {
+        const wageUsd = Math.round(convertWageToUsd(emp.wage, emp.country, cadToUsd) * 100) / 100;
+        const laborCost = wageUsd * agent.hours_worked;
+        const revenueRate = getRevenuePerTransfer(agent.team);
+        const revenueEst = agent.transfers * revenueRate;
+        (agent as Record<string, unknown>).wage_usd = wageUsd;
+        (agent as Record<string, unknown>).labor_cost = Math.round(laborCost * 100) / 100;
+        (agent as Record<string, unknown>).cost_per_sla = agent.transfers > 0
+          ? Math.round((laborCost / agent.transfers) * 100) / 100 : 0;
+        (agent as Record<string, unknown>).revenue_est = Math.round(revenueEst * 100) / 100;
+        (agent as Record<string, unknown>).roi = laborCost > 0
+          ? Math.round((revenueEst / laborCost) * 100) / 100 : 0;
+        (agent as Record<string, unknown>).wage_matched = true;
+      } else {
+        (agent as Record<string, unknown>).wage_matched = false;
+      }
+    }
   }
 
   // ── Apply agent/team filters ──
@@ -233,50 +387,87 @@ export async function GET(request: NextRequest) {
     };
   }
 
+  // ── Aggregate economics into totals ──
+  if (hasEconomics) {
+    const source = (agentFilter || teamFilter) ? filteredAgents : allAgents;
+    const matched = source.filter((a) => (a as Record<string, unknown>).wage_matched === true);
+    const unmatched = source.filter((a) => (a as Record<string, unknown>).wage_matched === false);
+    const totalLaborCost = matched.reduce((s, a) => s + ((a as Record<string, unknown>).labor_cost as number || 0), 0);
+    const totalRevenueEst = matched.reduce((s, a) => s + ((a as Record<string, unknown>).revenue_est as number || 0), 0);
+    const totalSla = source.reduce((s, a) => s + a.transfers, 0);
+
+    Object.assign(responseTotals, {
+      total_labor_cost: Math.round(totalLaborCost * 100) / 100,
+      total_revenue_est: Math.round(totalRevenueEst * 100) / 100,
+      live_profit: Math.round((totalRevenueEst - totalLaborCost) * 100) / 100,
+      avg_cost_per_sla: totalSla > 0 ? Math.round((totalLaborCost / totalSla) * 100) / 100 : 0,
+      wage_match_pct: source.length > 0 ? Math.round((matched.length / source.length) * 1000) / 10 : 100,
+      matched_agents: matched.length,
+      unmatched_agents: unmatched.length,
+    });
+  }
+
   // ── Hourly trend (aggregate) ──
-  // Fetch all snapshots for the day, but only the fields we need for trend + agent hourly
-  // Use pagination to avoid Supabase 1000-row default cap
+  // Apply team filter at DB level to avoid fetching all 634 agents × 108 snapshots
   let hourlyTrend: { hour: number; sla_total: number; production_hours: number; agent_count: number; snapshot_at: string }[] = [];
   let agentHourlyTrend: { hour: number; sla_total: number; production_hours: number; agent_count: number; snapshot_at: string }[] | undefined;
 
   if (includeTrend) {
     const trendCols = 'snapshot_at,agent_name,team,transfers,hours_worked';
-    const allTrendRows: { snapshot_at: string; agent_name: string; team: string | null; transfers: number; hours_worked: number }[] = [];
-    const PAGE_SIZE = 1000;
+    type TrendRow = { snapshot_at: string; agent_name: string; team: string | null; transfers: number; hours_worked: number };
+    const allTrendRows: TrendRow[] = [];
     let offset = 0;
     let hasMore = true;
 
-    while (hasMore) {
-      const { data: page } = await supabaseAdmin
+    // Build trend query with DB-level filters
+    // When team filter is active: push filter to DB — reduces rows by ~90%
+    // (e.g. ~8.6K rows instead of ~68K for a single manager's team)
+    const buildTrendPage = (off: number) => {
+      let q = supabaseAdmin
         .from('dialedin_intraday_snapshots')
         .select(trendCols)
         .eq('snapshot_date', targetDate)
         .order('snapshot_at', { ascending: true })
-        .range(offset, offset + PAGE_SIZE - 1);
+        .range(off, off + TREND_PAGE_SIZE - 1);
+
+      if (teamFilter) {
+        const teamNeedles = teamFilter.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean);
+        if (teamNeedles.length === 1) {
+          q = q.ilike('team', `%${teamNeedles[0]}%`);
+        } else if (teamNeedles.length > 1) {
+          q = q.or(teamNeedles.map((t) => `team.ilike.%${t}%`).join(','));
+        }
+      } else {
+        // No team filter (admin view) — still exclude Pitch Health at DB level
+        q = q.or('team.not.ilike.%pitch health%,team.is.null');
+      }
+
+      if (agentFilter) {
+        q = q.ilike('agent_name', agentFilter);
+      }
+
+      return q;
+    };
+
+    while (hasMore) {
+      const { data: page } = await buildTrendPage(offset);
 
       if (!page || page.length === 0) break;
-      allTrendRows.push(...page);
-      hasMore = page.length === PAGE_SIZE;
-      offset += PAGE_SIZE;
+      allTrendRows.push(...(page as TrendRow[]));
+      hasMore = page.length === TREND_PAGE_SIZE;
+      offset += TREND_PAGE_SIZE;
     }
 
-    // Filter Pitch Health from trend data
+    // Filter QA/HR staff in JS (regex not available in PostgREST)
     const trendRows = allTrendRows.filter(
-      (r) => !r.team || !r.team.toLowerCase().includes('pitch health'),
+      (r) => !QA_HR_PATTERN.test(r.agent_name),
     );
 
     const snapshotTimes = [...new Set(trendRows.map((r) => r.snapshot_at))].sort();
 
     const hourlyMap = new Map<number, { sla_total: number; production_hours: number; agent_count: number; snapshot_at: string }>();
     for (const time of snapshotTimes) {
-      let snapRows = trendRows.filter((r) => r.snapshot_at === time);
-
-      if (teamFilter) {
-        const teamNeedles = teamFilter.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean);
-        snapRows = snapRows.filter((r) =>
-          r.team && teamNeedles.some((t) => r.team!.toLowerCase().includes(t)),
-        );
-      }
+      const snapRows = trendRows.filter((r) => r.snapshot_at === time);
 
       const etHour = parseInt(
         new Date(time).toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false }),
@@ -335,6 +526,7 @@ export async function GET(request: NextRequest) {
     totals: responseTotals,
     agents: filteredAgents,
     break_even: breakEven,
+    economics_enabled: includeEconomics,
   };
 
   if (includeTrend) {
@@ -348,6 +540,10 @@ export async function GET(request: NextRequest) {
   if (includeRank) {
     response.total_agents_ranked = allAgents.length;
   }
+
+  // Cache the response — trend requests cached longer (data only changes every 5 min scraper cycle)
+  const cacheTtl = includeTrend ? TREND_CACHE_TTL : AGENTS_CACHE_TTL;
+  setCache(responseCacheKey, response, cacheTtl);
 
   return NextResponse.json(response);
 }
