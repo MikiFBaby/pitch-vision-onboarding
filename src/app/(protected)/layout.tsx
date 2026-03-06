@@ -38,15 +38,15 @@ function ProtectedLayoutInner({
             const currentSection = pathSegments[1];
 
             // List of protected role roots
-            const protectedRoles = ['agent', 'qa', 'manager', 'hr', 'executive', 'partner'];
+            const protectedRoles = ['agent', 'qa', 'manager', 'hr', 'executive', 'payroll'];
 
             // Admin Access Override for miki@pitchperfectsolutions.net
             if (user.email === 'miki@pitchperfectsolutions.net') {
                 return;
             }
 
-            // Agent portal access gate — redirect to thank-you page if portal is disabled
-            if (profile.role === 'agent' && currentSection === 'agent' && !profile.portal_access) {
+            // Portal access gate — redirect to thank-you page if portal is disabled for this role
+            if (currentSection === profile.role && !profile.portal_access) {
                 router.push('/onboarding/complete');
                 return;
             }

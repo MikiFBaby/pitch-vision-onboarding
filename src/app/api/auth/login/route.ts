@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { mapDirectoryRoleToAppRole } from '@/lib/role-mapping';
 
 export async function POST(req: Request) {
     try {
@@ -66,25 +67,8 @@ export async function POST(req: Request) {
                 console.log(`[Login] Found Directory Match for ${email}`);
                 console.log(`[Login] Found Directory Match for ${email}`);
 
-                const directoryRole = directoryMatch.role ? directoryMatch.role.toLowerCase() : '';
-
-                // Map Directory Role to App Role
-                const normalizedRole = directoryRole.trim().toLowerCase();
-                console.log(`[Login] Mapping Directory Role: "${directoryRole}" -> Normalized: "${normalizedRole}"`);
-
-                if (['owner', 'president', 'cto', 'head of operations', 'founder', 'ceo'].includes(normalizedRole)) {
-                    finalRole = 'executive';
-                } else if (['head of hr', 'hr assistant', 'attendance assistant'].includes(directoryRole)) {
-                    finalRole = 'hr';
-                } else if (['head of qa', 'qa'].includes(directoryRole)) {
-                    finalRole = 'qa';
-                } else if (['manager - coach', 'team leader'].includes(directoryRole)) {
-                    finalRole = 'manager';
-                } else if (['payroll specialist'].includes(directoryRole)) {
-                    finalRole = 'payroll';
-                } else {
-                    finalRole = 'agent';
-                }
+                finalRole = mapDirectoryRoleToAppRole(directoryMatch.role);
+                console.log(`[Login] Mapping Directory Role: "${directoryMatch.role}" -> App Role: "${finalRole}"`);
 
                 finalFirstName = directoryMatch.first_name || '';
                 finalLastName = directoryMatch.last_name || '';
@@ -111,7 +95,7 @@ export async function POST(req: Request) {
                     role: finalRole,
                     avatar_url: finalAvatarUrl,
                     status: 'active',
-                    profile_completed: !!(finalFirstName && finalLastName),
+                    profile_completed: false,
                     employee_id: directoryId
                 })
                 .select('*')
@@ -131,24 +115,24 @@ export async function POST(req: Request) {
             .update({ last_login: new Date().toISOString() })
             .eq('id', user.id);
 
-        // 3. Determine admin status (CTO, executives with specific emails get universal access)
+        // 3. Determine admin status (only specific emails get universal access)
         const adminEmails = ['miki@pitchperfectsolutions.net'];
-        const adminRoles = ['executive']; // CTO, CEO, President all map to 'executive'
-        const isAdmin = adminEmails.includes(user.email?.toLowerCase()) || adminRoles.includes(user.role);
+        const isAdmin = adminEmails.includes(user.email?.toLowerCase());
 
-        // 4. Compute portal access for agents (global toggle + per-agent override)
+        // 4. Compute portal access for ALL roles (global toggle + per-user override)
         let portalAccess = true;
-        if (user.role === 'agent' && !isAdmin) {
+        if (!isAdmin) {
             if (user.portal_access_override === 'granted') {
                 portalAccess = true;
             } else if (user.portal_access_override === 'blocked') {
                 portalAccess = false;
             } else {
-                // Check global config
+                // Check role-specific config
+                const configKey = `${user.role}_portal_access`;
                 const { data: config } = await supabaseAdmin
                     .from('app_config')
                     .select('value')
-                    .eq('key', 'agent_portal_access')
+                    .eq('key', configKey)
                     .maybeSingle();
                 portalAccess = config?.value === 'enabled';
             }
