@@ -13,6 +13,7 @@ const SlackIcon = ({ size = 16 }: { size?: number }) => (
 import { parseShiftDuration, calculateWeeklyHours, normalizeShiftTime, WEEKDAYS } from "@/lib/hr-utils";
 import { isPilotCampaign } from "@/utils/dialedin-heatmap";
 import { getRevenuePerTransfer, getCampaignType, getBreakEvenTPH } from "@/utils/dialedin-revenue";
+import { getTier, computeHotStreak } from "@/utils/agent-tiers";
 import { getManagerForCampaigns, getManagerNamesForCampaigns } from "@/lib/campaign-config";
 import { useEffect, useRef, useState } from "react";
 import { supabase } from "@/lib/supabase-client";
@@ -107,6 +108,7 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
     const [messageStatus, setMessageStatus] = useState<{ type: "success" | "error"; text: string } | null>(null);
     const [includeSnapshot, setIncludeSnapshot] = useState(true);
     const [leadershipContacts, setLeadershipContacts] = useState<{ name: string; role: string; slack_user_id: string }[]>([]);
+    const [portalProfile, setPortalProfile] = useState<{ nickname: string | null; bio: string | null; interests: string[] | null; avatar_url: string | null } | null>(null);
 
     const fetchQAManualStats = async (firstName: string, lastName: string, from?: string, to?: string) => {
         const name = `${firstName} ${lastName}`.trim();
@@ -146,6 +148,16 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
             fetchFreshDocuments(employee.id);
             fetchWriteUps(employee.id);
             fetchNotes(employee.id);
+            // Fetch portal profile (bio, interests, nickname) from users table
+            if (employee.email) {
+                supabase.from('users')
+                    .select('nickname, bio, interests, avatar_url')
+                    .eq('email', employee.email)
+                    .maybeSingle()
+                    .then(({ data }) => setPortalProfile(data || null));
+            } else {
+                setPortalProfile(null);
+            }
             fetchSchedule(employee.first_name, employee.last_name);
             fetchAttendanceEvents(employee.first_name, employee.last_name);
             // Reset QA date filters on new employee
@@ -807,6 +819,45 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                         );
                     })()}
 
+                    {/* Agent Tier Badge */}
+                    {employee.role?.toLowerCase() === 'agent' && !perfLoading && perfStats?.averages && (() => {
+                        const avgTph = perfStats.averages.adjusted_tph ?? perfStats.averages.tph ?? 0;
+                        const tier = getTier(avgTph);
+                        const tierColors: Record<string, string> = {
+                            Rookie:    'bg-amber-500/15 text-amber-400 ring-amber-400/30',
+                            Performer: 'bg-slate-500/15 text-slate-300 ring-slate-400/30',
+                            Pro:       'bg-yellow-500/15 text-yellow-400 ring-yellow-400/30',
+                            Star:      'bg-cyan-500/15 text-cyan-400 ring-cyan-400/30',
+                            Elite:     'bg-violet-500/15 text-violet-400 ring-violet-400/30',
+                        };
+                        return (
+                            <div className="flex justify-center mt-1">
+                                <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-semibold ring-1 ${tierColors[tier.name] || tierColors.Rookie}`}>
+                                    {tier.badge} · {tier.name}
+                                </div>
+                            </div>
+                        );
+                    })()}
+
+                    {/* Hot Streak */}
+                    {employee.role?.toLowerCase() === 'agent' && perfStats?.recentDays?.length > 1 && (() => {
+                        const days = perfStats.recentDays;
+                        const effectiveTeam = perfStats.latest?.team || null;
+                        const be = getBreakEvenTPH(effectiveTeam);
+                        const slaValues = [...days].reverse().map((d: any) =>
+                            d.adjusted_tph != null ? Number(d.adjusted_tph) : Number(d.tph)
+                        );
+                        const streak = computeHotStreak(slaValues, be);
+                        if (streak < 2) return null;
+                        return (
+                            <div className="flex items-center justify-center gap-2 mt-1">
+                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-orange-500/15 text-orange-400 ring-1 ring-orange-400/30">
+                                    {streak}-day hot streak
+                                </span>
+                            </div>
+                        );
+                    })()}
+
                     {/* Status + Contact Icons */}
                     <div className="flex items-center justify-center gap-3">
                         {employee.employee_status && (() => {
@@ -871,6 +922,27 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                                     </span>
                                 );
                             })()}
+                        </div>
+                    )}
+
+                    {/* Portal Profile — Bio & Interests */}
+                    {portalProfile && (portalProfile.bio || (portalProfile.interests && portalProfile.interests.length > 0)) && (
+                        <div className="rounded-2xl bg-white/5 ring-1 ring-white/10 p-4 space-y-3">
+                            {portalProfile.nickname && (
+                                <p className="text-[11px] font-bold uppercase tracking-widest text-white/40 text-center">"{portalProfile.nickname}"</p>
+                            )}
+                            {portalProfile.bio && (
+                                <p className="text-[13px] text-white/70 leading-relaxed">{portalProfile.bio}</p>
+                            )}
+                            {portalProfile.interests && portalProfile.interests.length > 0 && (
+                                <div className="flex flex-wrap gap-1.5">
+                                    {portalProfile.interests.map(tag => (
+                                        <span key={tag} className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-white/10 text-white/60 ring-1 ring-white/10">
+                                            {tag}
+                                        </span>
+                                    ))}
+                                </div>
+                            )}
                         </div>
                     )}
 
