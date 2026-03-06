@@ -51,6 +51,16 @@ function ProtectedLayoutInner({
                 return;
             }
 
+            // HR sub-route restrictions for users with limited permissions
+            if (currentSection === 'hr' && profile.role === 'hr' && profile.hr_permissions?.allowed_pages?.length) {
+                const allowedPages = profile.hr_permissions.allowed_pages as string[];
+                const hrSubPath = pathSegments[2]; // e.g. "onboarding", "directory", "calendar"
+                if (!hrSubPath || !allowedPages.includes(hrSubPath)) {
+                    router.push(`/hr/${allowedPages[0]}`);
+                    return;
+                }
+            }
+
             if (protectedRoles.includes(currentSection)) {
                 // If the current section doesn't match the user's role (and they are not admin/super user), redirect
                 /*

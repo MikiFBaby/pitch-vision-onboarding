@@ -223,7 +223,7 @@ export function SidebarInner() {
         if (role === 'manager') {
             return [
                 ...commonItems.slice(0, 1),
-                { href: "/manager/team", icon: <Users size={20} />, label: "Team Performance" },
+                { href: "/manager/coach", icon: <GraduationCap size={20} />, label: "Coach's Corner" },
                 { href: "/manager/pitch-points", icon: <Coins size={20} />, label: "Pitch Points" },
                 ...commonItems.slice(1)
             ];
@@ -313,7 +313,7 @@ export function SidebarInner() {
         }
 
         if (role === 'hr') {
-            return [
+            const allHrItems = [
                 { href: "/hr", icon: <LayoutDashboard size={20} />, label: "Dashboard" },
                 { href: "/hr/attendance", icon: <ClipboardCheck size={20} />, label: "Attendance" },
                 { href: "/hr/onboarding", icon: <UserPlus size={20} />, label: "Agent Onboarding" },
@@ -325,6 +325,16 @@ export function SidebarInner() {
                 { href: "/hr/launch", icon: <Rocket size={20} />, label: "Launch Control" },
                 { href: "/hr/settings", icon: <Settings size={20} />, label: "Settings" },
             ];
+
+            const allowedPages = profile?.hr_permissions?.allowed_pages as string[] | undefined;
+            if (allowedPages?.length) {
+                return allHrItems.filter(item => {
+                    const segment = item.href.split('/').pop();
+                    return allowedPages.includes(segment!);
+                });
+            }
+
+            return allHrItems;
         }
 
         // Default agent items

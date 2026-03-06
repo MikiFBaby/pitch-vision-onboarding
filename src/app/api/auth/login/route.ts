@@ -143,7 +143,12 @@ export async function POST(req: Request) {
         if (!user.profile_completed) {
             redirectTo = '/onboarding';
         } else if (portalAccess) {
-            redirectTo = `/${user.role}`;
+            // Restricted HR users land on their first allowed page
+            if (user.role === 'hr' && user.hr_permissions?.allowed_pages?.length) {
+                redirectTo = `/hr/${user.hr_permissions.allowed_pages[0]}`;
+            } else {
+                redirectTo = `/${user.role}`;
+            }
         } else {
             redirectTo = '/onboarding/complete';
         }
@@ -161,6 +166,7 @@ export async function POST(req: Request) {
                 avatar_url: user.avatar_url,
                 is_admin: isAdmin,
                 portal_access: portalAccess,
+                hr_permissions: user.hr_permissions || null,
             },
             redirectTo
         });

@@ -1,6 +1,7 @@
 "use client";
 
 import { useRef, useEffect, useState, useCallback, useMemo } from "react";
+import { useSearchParams } from "next/navigation";
 import { supabase } from "@/lib/supabase-client";
 import { Eye, Mail, Search, Trash2, Upload, FileText, UserMinus, Slack, ChevronLeft, ChevronRight, Phone, MapPin, ClipboardPaste, X, AlertTriangle, CheckCircle2, XCircle, Loader2, Filter, Download } from "lucide-react";
 import { motion } from "framer-motion";
@@ -35,7 +36,8 @@ interface Employee {
     current_campaigns?: string[] | null;
 }
 
-export default function EmployeeTable() {
+export default function EmployeeTable({ readOnly = false }: { readOnly?: boolean }) {
+    const searchParams = useSearchParams();
     const [employees, setEmployees] = useState<Employee[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState("");
@@ -68,6 +70,19 @@ export default function EmployeeTable() {
     useEffect(() => {
         fetchEmployees();
     }, []);
+
+    // Deep-link: open employee card from ?employee={id} (e.g. from Slack DM link)
+    useEffect(() => {
+        const employeeId = searchParams.get("employee");
+        if (employeeId && employees.length > 0 && !isDrawerOpen) {
+            const found = employees.find((e) => e.id === employeeId);
+            if (found) {
+                setSelectedEmployee(found);
+                setIsDrawerOpen(true);
+                window.history.replaceState({}, "", "/hr");
+            }
+        }
+    }, [employees, searchParams]);
 
     const fetchEmployees = async () => {
         setLoading(true);
@@ -1390,7 +1405,7 @@ export default function EmployeeTable() {
                         </div>
 
                         <div className="flex items-center gap-2">
-                            {isSelectionMode ? (
+                            {isSelectionMode && !readOnly ? (
                                 <button
                                     onClick={handleBulkAction}
                                     disabled={selectedEmployeeIds.size === 0}
@@ -1419,20 +1434,24 @@ export default function EmployeeTable() {
                                         {pdfExporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}
                                         {pdfExporting ? 'Generating...' : 'Export PDF'}
                                     </button>
-                                    <button
-                                        onClick={() => setIsBulkPasteOpen(true)}
-                                        className="flex items-center gap-2 px-4 py-2 bg-white text-orange-600 border border-orange-200 text-sm font-medium rounded-lg hover:bg-orange-50 transition-colors"
-                                    >
-                                        <ClipboardPaste className="h-4 w-4" />
-                                        Bulk Remove
-                                    </button>
-                                    <button
-                                        onClick={toggleSelectionMode}
-                                        className="flex items-center gap-2 px-4 py-2 bg-white text-red-600 border border-red-200 text-sm font-medium rounded-lg hover:bg-red-50 transition-colors"
-                                    >
-                                        <Trash2 className="h-4 w-4" />
-                                        Remove Employee
-                                    </button>
+                                    {!readOnly && (
+                                        <>
+                                            <button
+                                                onClick={() => setIsBulkPasteOpen(true)}
+                                                className="flex items-center gap-2 px-4 py-2 bg-white text-orange-600 border border-orange-200 text-sm font-medium rounded-lg hover:bg-orange-50 transition-colors"
+                                            >
+                                                <ClipboardPaste className="h-4 w-4" />
+                                                Bulk Remove
+                                            </button>
+                                            <button
+                                                onClick={toggleSelectionMode}
+                                                className="flex items-center gap-2 px-4 py-2 bg-white text-red-600 border border-red-200 text-sm font-medium rounded-lg hover:bg-red-50 transition-colors"
+                                            >
+                                                <Trash2 className="h-4 w-4" />
+                                                Remove Employee
+                                            </button>
+                                        </>
+                                    )}
                                 </>
                             )}
 
@@ -1794,39 +1813,43 @@ export default function EmployeeTable() {
                                                     >
                                                         <Eye className="h-4 w-4" />
                                                     </button>
-                                                    <button
-                                                        onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            handleActionClick(employee, 'upload');
-                                                        }}
-                                                        className="p-2 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-colors group relative"
-                                                        title="Upload Document"
-                                                        disabled={isUploading}
-                                                    >
-                                                        <Upload className="h-4 w-4" />
-                                                    </button>
-                                                    {employee.employee_status?.toLowerCase() === 'pending' && (
-                                                        <button
-                                                            onClick={(e) => {
-                                                                e.stopPropagation();
-                                                                handleActivateEmployee(employee);
-                                                            }}
-                                                            className="p-2 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
-                                                            title="Activate Employee"
-                                                        >
-                                                            <CheckCircle2 className="h-4 w-4" />
-                                                        </button>
+                                                    {!readOnly && (
+                                                        <>
+                                                            <button
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    handleActionClick(employee, 'upload');
+                                                                }}
+                                                                className="p-2 text-gray-400 hover:text-green-600 hover:bg-green-50 rounded-lg transition-colors group relative"
+                                                                title="Upload Document"
+                                                                disabled={isUploading}
+                                                            >
+                                                                <Upload className="h-4 w-4" />
+                                                            </button>
+                                                            {employee.employee_status?.toLowerCase() === 'pending' && (
+                                                                <button
+                                                                    onClick={(e) => {
+                                                                        e.stopPropagation();
+                                                                        handleActivateEmployee(employee);
+                                                                    }}
+                                                                    className="p-2 text-gray-400 hover:text-emerald-600 hover:bg-emerald-50 rounded-lg transition-colors"
+                                                                    title="Activate Employee"
+                                                                >
+                                                                    <CheckCircle2 className="h-4 w-4" />
+                                                                </button>
+                                                            )}
+                                                            <button
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    handleActionClick(employee, 'delete');
+                                                                }}
+                                                                className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
+                                                                title="Delete Member"
+                                                            >
+                                                                <Trash2 className="h-4 w-4" />
+                                                            </button>
+                                                        </>
                                                     )}
-                                                    <button
-                                                        onClick={(e) => {
-                                                            e.stopPropagation();
-                                                            handleActionClick(employee, 'delete');
-                                                        }}
-                                                        className="p-2 text-gray-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition-colors"
-                                                        title="Delete Member"
-                                                    >
-                                                        <Trash2 className="h-4 w-4" />
-                                                    </button>
                                                 </div>
                                             </td>
                                         </tr>
@@ -1894,7 +1917,7 @@ export default function EmployeeTable() {
             />
 
             {/* Bulk Name Paste Modal */}
-            {isBulkPasteOpen && (
+            {!readOnly && isBulkPasteOpen && (
                 <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm p-4 animate-in fade-in duration-200">
                     <div className="w-full max-w-lg bg-white rounded-2xl shadow-2xl overflow-hidden animate-in zoom-in-95 duration-200">
                         <div className="flex items-center justify-between p-5 border-b border-gray-100">

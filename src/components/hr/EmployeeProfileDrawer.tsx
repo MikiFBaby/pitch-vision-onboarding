@@ -51,6 +51,7 @@ interface Employee {
     hourly_wage: number | null;
     training_start_date: string | null;
     current_campaigns?: string[] | null;
+    dialedin_name?: string | null;
 }
 
 interface EmployeeProfileDrawerProps {
@@ -63,6 +64,7 @@ interface EmployeeProfileDrawerProps {
 
 export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: EmployeeProfileDrawerProps) {
     const { profile } = useAuth();
+    const dirReadOnly = !!profile?.hr_permissions?.directory_readonly;
     const drawerRef = useRef<HTMLDivElement>(null);
     const [documents, setDocuments] = useState<Employee['documents']>([]);
     const [uploading, setUploading] = useState(false);
@@ -96,13 +98,15 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
     const [noteText, setNoteText] = useState("");
     const [noteSaving, setNoteSaving] = useState(false);
     const [notesExpanded, setNotesExpanded] = useState(false);
-    const [intradayAgent, setIntradayAgent] = useState<{ sla_hr: number; transfers: number; hours_worked: number; rank?: number; team: string | null } | null>(null);
+    const [intradayAgent, setIntradayAgent] = useState<{ sla_hr: number; transfers: number; hours_worked: number; rank?: number; team: string | null; labor_cost?: number; cost_per_sla?: number; revenue_est?: number; roi?: number; wage_matched?: boolean } | null>(null);
     const [intradayMeta, setIntradayMeta] = useState<{ snapshot_at: string | null; stale: boolean; total_ranked: number; break_even: { aca: number; medicare: number } } | null>(null);
     const [showMessageForm, setShowMessageForm] = useState(false);
     const [messageText, setMessageText] = useState("");
     const [messageRecipient, setMessageRecipient] = useState("employee");
     const [messageSending, setMessageSending] = useState(false);
     const [messageStatus, setMessageStatus] = useState<{ type: "success" | "error"; text: string } | null>(null);
+    const [includeSnapshot, setIncludeSnapshot] = useState(true);
+    const [leadershipContacts, setLeadershipContacts] = useState<{ name: string; role: string; slack_user_id: string }[]>([]);
 
     const fetchQAManualStats = async (firstName: string, lastName: string, from?: string, to?: string) => {
         const name = `${firstName} ${lastName}`.trim();
@@ -150,18 +154,20 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
             setQaExpanded(false);
             setQaRecentExpanded(false);
             if (employee.role?.toLowerCase() === 'agent') {
-                fetchPerformanceStats(employee.first_name, employee.last_name);
-                fetchQAStats(employee.first_name, employee.last_name);
+                // Use dialedin_name (primary key in DialedIn) with fallback to directory name
+                const dialedInLookup = employee.dialedin_name || `${employee.first_name} ${employee.last_name}`.trim();
+                fetchPerformanceStats(dialedInLookup);
+                fetchQAStats(dialedInLookup);
                 fetchQAManualStats(employee.first_name, employee.last_name);
                 // Intraday one-shot fetch
-                const agentName = `${employee.first_name} ${employee.last_name}`.trim();
+                const agentName = dialedInLookup;
                 if (agentName.length >= 2) {
-                    fetch(`/api/dialedin/intraday?agent=${encodeURIComponent(agentName)}&include_rank=true&include_trend=false`)
+                    fetch(`/api/dialedin/intraday?agent=${encodeURIComponent(agentName)}&include_rank=true&include_trend=false&include_economics=true`)
                         .then(r => r.ok ? r.json() : null)
                         .then(data => {
                             if (data?.agents?.length > 0) {
                                 const a = data.agents[0];
-                                setIntradayAgent({ sla_hr: a.sla_hr, transfers: a.transfers, hours_worked: a.hours_worked, rank: a.rank, team: a.team });
+                                setIntradayAgent({ sla_hr: a.sla_hr, transfers: a.transfers, hours_worked: a.hours_worked, rank: a.rank, team: a.team, labor_cost: a.labor_cost, cost_per_sla: a.cost_per_sla, revenue_est: a.revenue_est, roi: a.roi, wage_matched: a.wage_matched });
                                 setIntradayMeta({ snapshot_at: data.latest_snapshot_at, stale: data.stale, total_ranked: data.total_agents_ranked ?? 0, break_even: data.break_even });
                             } else {
                                 setIntradayAgent(null);
@@ -186,6 +192,28 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
             }
         }
     }, [employee, isOpen]);
+
+    // Fetch non-Agent staff for the "HR & Leadership" Slack DM dropdown
+    useEffect(() => {
+        supabase
+            .from('employee_directory')
+            .select('first_name, last_name, role, slack_user_id')
+            .eq('employee_status', 'Active')
+            .neq('role', 'Agent')
+            .not('slack_user_id', 'is', null)
+            .neq('slack_user_id', '')
+            .then(({ data }) => {
+                if (data) {
+                    setLeadershipContacts(
+                        data.map(d => ({
+                            name: `${d.first_name} ${d.last_name}`,
+                            role: d.role || 'Staff',
+                            slack_user_id: d.slack_user_id,
+                        }))
+                    );
+                }
+            });
+    }, []);
 
     // Auto-poll DocuSeal for pending contracts as a failsafe against webhook failures
     useEffect(() => {
@@ -286,10 +314,11 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
         setMessageStatus(null);
 
         try {
-            const payload: Record<string, string> = {
+            const payload: Record<string, string | boolean> = {
                 message: messageText.trim(),
                 employee_id: employee.id,
                 sent_by_email: profile?.email || "",
+                include_snapshot: includeSnapshot,
             };
 
             if (messageRecipient === "employee") {
@@ -318,6 +347,7 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                     setShowMessageForm(false);
                     setMessageStatus(null);
                     setMessageRecipient("employee");
+                    setIncludeSnapshot(true);
                 }, 2000);
                 fetchWriteUps(employee.id);
             } else {
@@ -487,8 +517,8 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
         setAttendanceEvents(events);
     };
 
-    const fetchPerformanceStats = async (firstName: string, lastName: string) => {
-        const name = `${firstName} ${lastName}`.trim();
+    const fetchPerformanceStats = async (agentLookupName: string) => {
+        const name = agentLookupName.trim();
         if (!name || name.length < 2) { setPerfStats(null); return; }
         setPerfLoading(true);
         try {
@@ -506,8 +536,8 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
         }
     };
 
-    const fetchQAStats = async (firstName: string, lastName: string) => {
-        const name = `${firstName} ${lastName}`.trim();
+    const fetchQAStats = async (agentLookupName: string) => {
+        const name = agentLookupName.trim();
         if (!name || name.length < 2) { setQaStats(null); return; }
         try {
             const res = await fetch(`/api/dialedin/qa-stats?days=90&agent=${encodeURIComponent(name)}`);
@@ -931,6 +961,29 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                                         <div className={`h-full rounded-full transition-all ${aboveBE ? "bg-emerald-500" : "bg-red-500"}`} style={{ width: `${Math.min((intradayAgent.sla_hr / be) * 100, 100)}%` }} />
                                     </div>
                                 </div>
+                                {/* Live Economics (cost/revenue per agent) */}
+                                {intradayAgent.wage_matched && intradayAgent.labor_cost != null && (
+                                    <div className="grid grid-cols-3 gap-2">
+                                        <div className="bg-white/5 rounded-lg p-2 text-center">
+                                            <div className="text-[9px] text-white/40 uppercase tracking-wider mb-0.5">Cost</div>
+                                            <div className="text-sm font-bold font-mono tabular-nums text-amber-400">
+                                                ${intradayAgent.labor_cost.toFixed(0)}
+                                            </div>
+                                        </div>
+                                        <div className="bg-white/5 rounded-lg p-2 text-center">
+                                            <div className="text-[9px] text-white/40 uppercase tracking-wider mb-0.5">$/SLA</div>
+                                            <div className="text-sm font-bold font-mono tabular-nums text-white/80">
+                                                ${(intradayAgent.cost_per_sla ?? 0).toFixed(2)}
+                                            </div>
+                                        </div>
+                                        <div className="bg-white/5 rounded-lg p-2 text-center">
+                                            <div className="text-[9px] text-white/40 uppercase tracking-wider mb-0.5">ROI</div>
+                                            <div className={`text-sm font-bold font-mono tabular-nums ${(intradayAgent.roi ?? 0) >= 1 ? "text-emerald-400" : "text-red-400"}`}>
+                                                {((intradayAgent.roi ?? 0) * 100).toFixed(0)}%
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         );
                     })()}
@@ -1744,15 +1797,17 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                     <div className="rounded-2xl bg-gradient-to-br from-slate-800 via-gray-900 to-slate-900 p-5 shadow-lg">
                         <div className="flex items-center justify-between mb-4">
                             <h3 className="text-sm font-bold text-white">Documents</h3>
-                            <label className="cursor-pointer bg-white/10 text-white/70 p-1.5 rounded-lg hover:bg-white/15 hover:text-white transition-colors">
-                                <Upload size={14} />
-                                <input
-                                    type="file"
-                                    className="hidden"
-                                    onChange={handleFileUpload}
-                                    disabled={uploading}
-                                />
-                            </label>
+                            {!dirReadOnly && (
+                                <label className="cursor-pointer bg-white/10 text-white/70 p-1.5 rounded-lg hover:bg-white/15 hover:text-white transition-colors">
+                                    <Upload size={14} />
+                                    <input
+                                        type="file"
+                                        className="hidden"
+                                        onChange={handleFileUpload}
+                                        disabled={uploading}
+                                    />
+                                </label>
+                            )}
                         </div>
 
                         <div className="space-y-2">
@@ -1796,13 +1851,15 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                                                 >
                                                     <Download size={14} />
                                                 </button>
-                                                <button
-                                                    onClick={() => handleDeleteDocument(doc)}
-                                                    className="p-1.5 text-white/40 hover:text-red-400 hover:bg-red-500/10 rounded-md transition-colors"
-                                                    title="Delete"
-                                                >
-                                                    <Trash2 size={14} />
-                                                </button>
+                                                {!dirReadOnly && (
+                                                    <button
+                                                        onClick={() => handleDeleteDocument(doc)}
+                                                        className="p-1.5 text-white/40 hover:text-red-400 hover:bg-red-500/10 rounded-md transition-colors"
+                                                        title="Delete"
+                                                    >
+                                                        <Trash2 size={14} />
+                                                    </button>
+                                                )}
                                             </div>
                                         </div>
                                     ))}
@@ -2005,13 +2062,15 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                                                 </span>
                                                 <div className="flex items-center gap-2">
                                                     <span className="text-[10px] text-violet-300 font-medium">{n.added_by}</span>
-                                                    <button
-                                                        onClick={() => deleteNote(n.id)}
-                                                        className="opacity-0 group-hover/note:opacity-100 text-red-400/70 hover:text-red-400 transition-all"
-                                                        title="Delete note"
-                                                    >
-                                                        <Trash2 size={11} />
-                                                    </button>
+                                                    {!dirReadOnly && (
+                                                        <button
+                                                            onClick={() => deleteNote(n.id)}
+                                                            className="opacity-0 group-hover/note:opacity-100 text-red-400/70 hover:text-red-400 transition-all"
+                                                            title="Delete note"
+                                                        >
+                                                            <Trash2 size={11} />
+                                                        </button>
+                                                    )}
                                                 </div>
                                             </div>
                                             <p className="text-[12px] text-white/90 whitespace-pre-line">{n.note}</p>
@@ -2023,6 +2082,7 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                     )}
 
                     {/* Actions */}
+                    {!dirReadOnly && (
                     <div className="pt-8 flex flex-col gap-3">
                         <div className="flex gap-3">
                             <button
@@ -2046,26 +2106,58 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                                 <select
                                     value={messageRecipient}
                                     onChange={(e) => setMessageRecipient(e.target.value)}
-                                    className="w-full bg-white/10 text-white/90 text-sm rounded-lg px-3 py-2 border border-white/10 focus:border-violet-400/50 focus:outline-none mb-2 [&>option]:bg-zinc-800 [&>option]:text-white"
+                                    className="w-full bg-white/10 text-white/90 text-sm rounded-lg px-3 py-2 border border-white/10 focus:border-violet-400/50 focus:outline-none mb-2 [&>option]:bg-zinc-800 [&>option]:text-white [&>optgroup]:bg-zinc-800 [&>optgroup]:text-white/50 [&>optgroup]:font-semibold [&>optgroup]:text-[11px]"
                                 >
                                     <option value="employee">{employee.first_name} {employee.last_name} (Employee)</option>
-                                    {getManagerNames().map(name => (
-                                        <option key={name} value={name}>{name} (Manager)</option>
-                                    ))}
-                                    <option value="Miki Furman">Miki Furman (Test)</option>
+                                    {getManagerNames().length > 0 && (
+                                        <optgroup label="Campaign Managers">
+                                            {getManagerNames().map(name => (
+                                                <option key={name} value={name}>{name}</option>
+                                            ))}
+                                        </optgroup>
+                                    )}
+                                    {Object.entries(
+                                        leadershipContacts.reduce<Record<string, typeof leadershipContacts>>((acc, c) => {
+                                            (acc[c.role] = acc[c.role] || []).push(c);
+                                            return acc;
+                                        }, {})
+                                    )
+                                        .sort(([a], [b]) => a.localeCompare(b))
+                                        .map(([role, contacts]) => (
+                                            <optgroup key={role} label={role}>
+                                                {contacts.sort((a, b) => a.name.localeCompare(b.name)).map(c => (
+                                                    <option key={c.slack_user_id} value={c.name}>{c.name}</option>
+                                                ))}
+                                            </optgroup>
+                                        ))
+                                    }
                                 </select>
                                 <div className="flex flex-wrap gap-1.5 mb-2">
-                                    {(messageRecipient === "employee" ? [
-                                        { label: "Schedule", text: `Hi ${employee.first_name}, this is ${profile?.first_name || "HR"} from management. I wanted to check in about your schedule — please confirm your availability for this week.` },
-                                        { label: "Performance", text: `Hi ${employee.first_name}, this is ${profile?.first_name || "HR"}. I'd like to discuss your recent performance metrics with you. When would be a good time to chat?` },
-                                        { label: "Attendance", text: `Hi ${employee.first_name}, this is ${profile?.first_name || "HR"}. I noticed some attendance concerns and wanted to touch base. Please reach out when you get a chance.` },
-                                        { label: "Follow-up", text: `Hi ${employee.first_name}, just following up on our last conversation. Let me know if you have any questions or need anything.` },
-                                    ] : [
-                                        { label: "Agent Update", text: `Hi ${messageRecipient.split(" ")[0]}, this is ${profile?.first_name || "HR"}. I wanted to flag something regarding ${employee.first_name} ${employee.last_name} — could you take a look when you get a chance?` },
-                                        { label: "Performance", text: `Hi ${messageRecipient.split(" ")[0]}, this is ${profile?.first_name || "HR"}. Can we discuss ${employee.first_name} ${employee.last_name}'s recent performance? I have some notes I'd like to go over.` },
-                                        { label: "Attendance", text: `Hi ${messageRecipient.split(" ")[0]}, this is ${profile?.first_name || "HR"}. I wanted to bring ${employee.first_name} ${employee.last_name}'s recent attendance to your attention. Let me know how you'd like to handle it.` },
-                                        { label: "Escalation", text: `Hi ${messageRecipient.split(" ")[0]}, this is ${profile?.first_name || "HR"}. I need to escalate a matter regarding ${employee.first_name} ${employee.last_name}. Can we connect today?` },
-                                    ]).map(t => (
+                                    {(() => {
+                                        const recipientFirstName = messageRecipient.split(" ")[0];
+                                        const senderName = profile?.first_name || "HR";
+                                        const empName = `${employee.first_name} ${employee.last_name}`;
+                                        const isEmployee = messageRecipient === "employee";
+                                        const isManager = getManagerNames().includes(messageRecipient);
+                                        // employee → employee templates, campaign manager → manager templates, leadership → leadership templates
+                                        const templates = isEmployee ? [
+                                            { label: "Schedule", text: `Hi ${employee.first_name}, this is ${senderName} from management. I wanted to check in about your schedule — please confirm your availability for this week.` },
+                                            { label: "Performance", text: `Hi ${employee.first_name}, this is ${senderName}. I'd like to discuss your recent performance metrics with you. When would be a good time to chat?` },
+                                            { label: "Attendance", text: `Hi ${employee.first_name}, this is ${senderName}. I noticed some attendance concerns and wanted to touch base. Please reach out when you get a chance.` },
+                                            { label: "Follow-up", text: `Hi ${employee.first_name}, just following up on our last conversation. Let me know if you have any questions or need anything.` },
+                                        ] : isManager ? [
+                                            { label: "Agent Update", text: `Hi ${recipientFirstName}, this is ${senderName}. I wanted to flag something regarding ${empName} — could you take a look when you get a chance?` },
+                                            { label: "Performance", text: `Hi ${recipientFirstName}, this is ${senderName}. Can we discuss ${empName}'s recent performance? I have some notes I'd like to go over.` },
+                                            { label: "Attendance", text: `Hi ${recipientFirstName}, this is ${senderName}. I wanted to bring ${empName}'s recent attendance to your attention. Let me know how you'd like to handle it.` },
+                                            { label: "Escalation", text: `Hi ${recipientFirstName}, this is ${senderName}. I need to escalate a matter regarding ${empName}. Can we connect today?` },
+                                        ] : [
+                                            { label: "Agent Update", text: `Hi ${recipientFirstName}, this is ${senderName}. I wanted to flag something regarding ${empName} — could you take a look when you get a chance?` },
+                                            { label: "Escalation", text: `Hi ${recipientFirstName}, this is ${senderName}. I need to escalate a matter regarding ${empName}. Can we connect today?` },
+                                            { label: "Compliance", text: `Hi ${recipientFirstName}, this is ${senderName}. There's a compliance concern with ${empName} that needs attention. Please review when possible.` },
+                                            { label: "Headcount", text: `Hi ${recipientFirstName}, this is ${senderName}. Quick update on ${empName}'s status — let me know if you need any details.` },
+                                        ];
+                                        return templates;
+                                    })().map(t => (
                                         <button
                                             key={t.label}
                                             onClick={() => setMessageText(t.text)}
@@ -2082,6 +2174,17 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                                     rows={3}
                                     className="w-full bg-white/5 text-white/90 text-sm rounded-lg px-3 py-2 placeholder-white/30 border border-white/10 focus:border-violet-400/50 focus:outline-none resize-none"
                                 />
+                                <label className="flex items-center gap-2 mt-2 cursor-pointer group">
+                                    <input
+                                        type="checkbox"
+                                        checked={includeSnapshot}
+                                        onChange={(e) => setIncludeSnapshot(e.target.checked)}
+                                        className="w-3.5 h-3.5 rounded border-white/20 bg-white/10 text-violet-500 focus:ring-violet-400/50 focus:ring-offset-0 cursor-pointer"
+                                    />
+                                    <span className="text-[11px] text-white/50 group-hover:text-white/70 transition-colors">
+                                        Include Agent Snapshot card
+                                    </span>
+                                </label>
                                 {messageStatus && (
                                     <p className={`text-xs mt-1.5 ${messageStatus.type === "success" ? "text-emerald-400" : "text-red-400"}`}>
                                         {messageStatus.text}
@@ -2089,7 +2192,7 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                                 )}
                                 <div className="flex gap-2 mt-2 justify-end">
                                     <button
-                                        onClick={() => { setShowMessageForm(false); setMessageText(""); setMessageStatus(null); setMessageRecipient("employee"); }}
+                                        onClick={() => { setShowMessageForm(false); setMessageText(""); setMessageStatus(null); setMessageRecipient("employee"); setIncludeSnapshot(true); }}
                                         className="px-3 py-1.5 text-[12px] text-white/60 hover:text-white/80 transition-colors"
                                     >
                                         Cancel
@@ -2193,13 +2296,16 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                                 )}
                             </>
                         )}
-                        {employee.employee_status === 'Terminated' && (
+                    </div>
+                    )}
+                    {employee.employee_status === 'Terminated' && (
+                        <div className="pt-8">
                             <div className="py-2.5 bg-red-500/10 text-red-400 rounded-xl font-medium text-sm text-center flex items-center justify-center gap-2 ring-1 ring-red-400/20">
                                 <Ban size={14} />
                                 Terminated
                             </div>
-                        )}
-                    </div>
+                        </div>
+                    )}
                 </div>
             </div>
 
