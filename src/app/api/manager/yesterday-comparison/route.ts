@@ -94,32 +94,23 @@ export async function GET(req: NextRequest) {
         return rows;
     }
 
-    type SnapRow = { snapshot_at: string; agent_name: string; team: string | null; transfers: number; sla_hr: number; hours_worked: number };
+    type HourlySummaryRow = { hour: number; snapshot_at: string; sla_total: number; production_hours: number; agent_count: number; avg_sla_hr: number };
 
-    async function fetchSnapshotRows(): Promise<SnapRow[]> {
-        const rows: SnapRow[] = [];
-        let offset = 0;
-        while (true) {
-            let q = supabaseAdmin
-                .from("dialedin_intraday_snapshots")
-                .select("snapshot_at, agent_name, team, transfers, sla_hr, hours_worked")
-                .eq("snapshot_date", yesterday)
-                .order("snapshot_at", { ascending: true })
-                .range(offset, offset + PAGE - 1);
-
-            if (teamFilters.length === 1) {
-                q = q.ilike("team", `%${teamFilters[0]}%`);
-            } else if (teamFilters.length > 1) {
-                q = q.or(teamFilters.map((t) => `team.ilike.%${t}%`).join(","));
-            }
-
-            const { data } = await q;
-            if (!data || data.length === 0) break;
-            for (const row of data) rows.push(row as SnapRow);
-            if (data.length < PAGE) break;
-            offset += PAGE;
-        }
-        return rows;
+    async function fetchSnapshotSummary(): Promise<HourlySummaryRow[]> {
+        // RPC aggregates ~65K rows in Postgres, returns ~15 rows (one per hour)
+        const { data } = await supabaseAdmin.rpc('get_snapshot_hourly_summary', {
+            p_date: yesterday,
+            p_team_filter: teamFilters.length > 0 ? teamFilters.join(',') : null,
+        });
+        if (!data) return [];
+        return data.map((r: Record<string, unknown>) => ({
+            hour: Number(r.hour),
+            snapshot_at: String(r.snapshot_at),
+            sla_total: Number(r.sla_total),
+            production_hours: Number(r.production_hours),
+            agent_count: Number(r.agent_count),
+            avg_sla_hr: Number(r.avg_sla_hr),
+        }));
     }
 
     type HistoricPerfRow = { report_date: string; transfers: number; agent_name: string };
@@ -163,12 +154,12 @@ export async function GET(req: NextRequest) {
     }
 
     let perfRows: AgentYesterday[];
-    let snapRows: SnapRow[];
+    let snapSummary: HourlySummaryRow[];
     let historicRows: HistoricPerfRow[];
 
     try {
-        [perfRows, snapRows, historicRows] = await Promise.all([
-            fetchPerfRows(), fetchSnapshotRows(), fetchHistoricPerf(),
+        [perfRows, snapSummary, historicRows] = await Promise.all([
+            fetchPerfRows(), fetchSnapshotSummary(), fetchHistoricPerf(),
         ]);
     } catch (err: unknown) {
         const message = err instanceof Error ? err.message : "Unknown error";
@@ -199,57 +190,37 @@ export async function GET(req: NextRequest) {
         }
     }
 
-    // --- 2. Same-time yesterday from intraday snapshots ---
+    // --- 2. Same-time yesterday from RPC hourly summary ---
     let sameTimeData: { total_transfers: number; avg_sla_hr: number; agent_count: number; snapshot_hour: number } | null = null;
 
-    const byTimestamp = new Map<string, SnapRow[]>();
-    for (const r of snapRows) {
-        const group = byTimestamp.get(r.snapshot_at) || [];
-        group.push(r);
-        byTimestamp.set(r.snapshot_at, group);
-    }
-
-    if (byTimestamp.size > 0) {
-        let bestTimestamp = "";
+    if (snapSummary.length > 0) {
+        // Find the hour closest to current ET hour
+        let bestRow = snapSummary[0];
         let bestDiff = Infinity;
-
-        for (const ts of byTimestamp.keys()) {
-            const diff = Math.abs(parseETHour(ts) - currentHour);
+        for (const row of snapSummary) {
+            const diff = Math.abs(row.hour - currentHour);
             if (diff < bestDiff) {
                 bestDiff = diff;
-                bestTimestamp = ts;
+                bestRow = row;
             }
         }
 
-        if (bestTimestamp) {
-            const snapData = byTimestamp.get(bestTimestamp) || [];
-            const active = snapData.filter((r) => r.hours_worked > 0);
-
-            sameTimeData = {
-                snapshot_hour: parseETHour(bestTimestamp),
-                total_transfers: snapData.reduce((s, r) => s + r.transfers, 0),
-                avg_sla_hr: active.length > 0
-                    ? active.reduce((s, r) => s + r.sla_hr, 0) / active.length
-                    : 0,
-                agent_count: active.length,
-            };
-        }
+        sameTimeData = {
+            snapshot_hour: bestRow.hour,
+            total_transfers: bestRow.sla_total,
+            avg_sla_hr: bestRow.avg_sla_hr,
+            agent_count: bestRow.agent_count,
+        };
     }
 
-    // --- 2b. Hourly completion curve from yesterday's snapshots ---
+    // --- 2b. Hourly completion curve from RPC summary ---
     const completionCurve: { hour: number; pct_of_daily: number }[] = [];
-    if (byTimestamp.size > 0) {
-        const hourlyTotals = new Map<number, number>();
-        for (const [ts, rows] of byTimestamp.entries()) {
-            const hour = parseETHour(ts);
-            const total = rows.reduce((s, r) => s + r.transfers, 0);
-            hourlyTotals.set(hour, Math.max(hourlyTotals.get(hour) || 0, total));
-        }
-        const finalTotal = Math.max(...hourlyTotals.values(), 1);
-        for (const [hour, total] of [...hourlyTotals.entries()].sort(([a], [b]) => a - b)) {
+    if (snapSummary.length > 0) {
+        const finalTotal = Math.max(...snapSummary.map((r) => r.sla_total), 1);
+        for (const row of snapSummary) {
             completionCurve.push({
-                hour,
-                pct_of_daily: Math.round((total / finalTotal) * 1000) / 1000,
+                hour: row.hour,
+                pct_of_daily: Math.round((row.sla_total / finalTotal) * 1000) / 1000,
             });
         }
     }

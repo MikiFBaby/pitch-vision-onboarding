@@ -18,9 +18,12 @@ interface UseIntradayDataReturn {
   data: IntradayData | null;
   loading: boolean;
   stale: boolean;
+  error: string | null;
   lastFetched: Date | null;
   refetch: () => void;
 }
+
+let channelCounter = 0;
 
 export function useIntradayData(options: UseIntradayDataOptions = {}): UseIntradayDataReturn {
   const {
@@ -35,19 +38,19 @@ export function useIntradayData(options: UseIntradayDataOptions = {}): UseIntrad
 
   const [data, setData] = useState<IntradayData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [lastFetched, setLastFetched] = useState<Date | null>(null);
   const initialFetchDone = useRef(false);
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastTrendFetch = useRef<number>(0);
-  const lastTrendData = useRef<IntradayData["hourly_trend"] | null>(null);
-  const TREND_REUSE_MS = 3 * 60_000; // Reuse trend data for 3 min — trend only changes every 5 min (scraper interval)
+  const abortRef = useRef<AbortController | null>(null);
+  const channelName = useRef(`intraday-rt-${++channelCounter}`);
 
-  const buildUrl = useCallback((skipTrend?: boolean) => {
+  const buildUrl = useCallback(() => {
     const params = new URLSearchParams();
     if (agent) params.set("agent", agent);
     if (team) params.set("team", team);
     if (includeRank) params.set("include_rank", "true");
-    if (skipTrend || !includeTrend) params.set("include_trend", "false");
+    if (!includeTrend) params.set("include_trend", "false");
     if (includeEconomics) params.set("include_economics", "true");
     const qs = params.toString();
     return `/api/dialedin/intraday${qs ? `?${qs}` : ""}`;
@@ -57,48 +60,32 @@ export function useIntradayData(options: UseIntradayDataOptions = {}): UseIntrad
     if (!enabled) return;
     if (typeof document !== "undefined" && document.hidden) return;
 
+    // Cancel any in-flight request
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
     try {
-      if (includeTrend) {
-        const trendIsFresh = Date.now() - lastTrendFetch.current < TREND_REUSE_MS;
-
-        // Phase 1: agents without trend (fast — server caches 1 min)
-        const fastRes = await fetch(buildUrl(true));
-        if (fastRes.ok) {
-          const json = await fastRes.json();
-          if (trendIsFresh && lastTrendData.current) {
-            // Merge fresh agent data with existing trend to avoid refetching ~65K rows
-            json.hourly_trend = lastTrendData.current;
-          }
-          setData(json);
-          setLastFetched(new Date());
-          setLoading(false);
-        }
-
-        // Phase 2: full data with trend — only if trend is stale
-        if (!trendIsFresh) {
-          const fullRes = await fetch(buildUrl());
-          if (fullRes.ok) {
-            const json = await fullRes.json();
-            setData(json);
-            setLastFetched(new Date());
-            lastTrendFetch.current = Date.now();
-            lastTrendData.current = json.hourly_trend || null;
-          }
-        }
+      const res = await fetch(buildUrl(), { signal: controller.signal });
+      if (controller.signal.aborted) return;
+      if (res.ok) {
+        const json = await res.json();
+        setData(json);
+        setLastFetched(new Date());
+        setError(null);
       } else {
-        const res = await fetch(buildUrl());
-        if (res.ok) {
-          const json = await res.json();
-          setData(json);
-          setLastFetched(new Date());
-        }
+        setError(`API returned ${res.status}`);
       }
     } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") return;
       console.error("[useIntradayData] fetch error:", err);
+      setError(err instanceof Error ? err.message : "Unknown error");
     } finally {
-      setLoading(false);
+      if (!controller.signal.aborted) {
+        setLoading(false);
+      }
     }
-  }, [buildUrl, enabled, includeTrend]);
+  }, [buildUrl, enabled]);
 
   // Debounced refetch — scraper upserts 600+ rows per snapshot,
   // so we wait 3s after the first INSERT to batch them into one refetch.
@@ -109,15 +96,17 @@ export function useIntradayData(options: UseIntradayDataOptions = {}): UseIntrad
     }, 3000);
   }, [fetchData]);
 
-  // Initial fetch
+  // Initial fetch + reset when enabled transitions false→true
   useEffect(() => {
     if (!enabled) {
       setLoading(false);
+      initialFetchDone.current = false;
       return;
     }
 
     if (!initialFetchDone.current) {
       initialFetchDone.current = true;
+      setLoading(true);
       fetchData();
     }
   }, [enabled, fetchData]);
@@ -127,7 +116,7 @@ export function useIntradayData(options: UseIntradayDataOptions = {}): UseIntrad
     if (!enabled) return;
 
     const channel = supabase
-      .channel("intraday-snapshots-realtime")
+      .channel(channelName.current)
       .on(
         "postgres_changes",
         { event: "INSERT", schema: "public", table: "dialedin_intraday_snapshots" },
@@ -151,20 +140,38 @@ export function useIntradayData(options: UseIntradayDataOptions = {}): UseIntrad
     return () => clearInterval(id);
   }, [enabled, interval, fetchData]);
 
-  // Re-fetch when key params change — reset trend cache since filters changed
+  // Re-fetch when key params change — abort stale request
   useEffect(() => {
     if (initialFetchDone.current) {
-      lastTrendFetch.current = 0;
-      lastTrendData.current = null;
       setLoading(true);
       fetchData();
     }
   }, [agent, team]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Refetch when tab becomes visible (user returns from another tab)
+  useEffect(() => {
+    if (!enabled) return;
+
+    const onVisibilityChange = () => {
+      if (!document.hidden && initialFetchDone.current) {
+        fetchData();
+      }
+    };
+
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
+  }, [enabled, fetchData]);
+
+  // Cleanup abort controller on unmount
+  useEffect(() => {
+    return () => { abortRef.current?.abort(); };
+  }, []);
+
   return {
     data,
     loading,
     stale: data?.stale ?? false,
+    error,
     lastFetched,
     refetch: fetchData,
   };
