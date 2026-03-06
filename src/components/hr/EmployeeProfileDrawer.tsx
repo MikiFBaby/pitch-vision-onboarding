@@ -148,13 +148,12 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
             fetchFreshDocuments(employee.id);
             fetchWriteUps(employee.id);
             fetchNotes(employee.id);
-            // Fetch portal profile (bio, interests, nickname) from users table
+            // Fetch portal profile (bio, interests, nickname) via server route (bypasses RLS)
             if (employee.email) {
-                supabase.from('users')
-                    .select('nickname, bio, interests, avatar_url')
-                    .eq('email', employee.email)
-                    .maybeSingle()
-                    .then(({ data }) => setPortalProfile(data || null));
+                fetch(`/api/user/portal-profile?email=${encodeURIComponent(employee.email)}`)
+                    .then(r => r.ok ? r.json() : null)
+                    .then(data => setPortalProfile(data || null))
+                    .catch(() => setPortalProfile(null));
             } else {
                 setPortalProfile(null);
             }
