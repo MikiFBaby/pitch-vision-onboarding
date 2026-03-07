@@ -30,7 +30,7 @@
     },
     {
       "path": "/api/cron/sync-health",
-      "schedule": "0 13,21 * * 1-5"
+      "schedule": "0 13 * * 1-5"
     },
     {
       "path": "/api/cron/dialedin-ingest",
