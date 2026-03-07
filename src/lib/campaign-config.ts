@@ -84,6 +84,14 @@ export const CAMPAIGN_TO_TEAM_SUBSTRING: Record<string, string> = {
     'Pitch Meals': 'pitch meals',
 };
 
+/** Non-agent roles that appear in the Slack DM "HR & Leadership" dropdown groups */
+export const LEADERSHIP_ROLES = ['HR', 'QA', 'C-Suite', 'Executive', 'Manager'] as const;
+
+/** Check if a role is a leadership/staff role (non-Agent) */
+export function isLeadershipRole(role: string | null | undefined): boolean {
+    return !!role && (LEADERSHIP_ROLES as readonly string[]).includes(role);
+}
+
 /** Get DialedIn team filter string for a manager (comma-separated substrings) */
 export function getTeamFilterForManager(managerName: string): string {
     const campaigns = getCampaignsForManager(managerName);

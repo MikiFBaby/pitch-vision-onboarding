@@ -2,7 +2,10 @@
 // Standalone DialedIn Intraday Scraper — VPS/EC2 version
 //
 // Run via system cron every 5 min during business hours (ET):
-//   */5 13-23 * * 1-5 bash -c 'set -a; source /opt/intraday-scraper/.env; set +a; node /opt/intraday-scraper/intraday-scraper-vps.mjs' >> /var/log/intraday-scraper.log 2>&1
+//   */5 0-2,13-23 * * 1-6 bash -c 'set -a; source /opt/intraday-scraper/.env; set +a; node /opt/intraday-scraper/intraday-scraper-vps.mjs' >> /var/log/intraday-scraper.log 2>&1
+//
+// Schedule: 1 PM–11:55 PM UTC + 12 AM–2:55 AM UTC = 8 AM–9:55 PM ET (EST)
+// Days: Mon–Sat (Sat covers Friday evening past midnight UTC)
 //
 // Requires: playwright, xlsx (npm install playwright xlsx)
 // Env vars: DIALEDIN_PORTAL_USER, DIALEDIN_PORTAL_PASS, SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
@@ -69,6 +72,12 @@ function roundTo5Min(date) {
 
 function isPitchHealth(team) {
   return !!team && team.toLowerCase().includes('pitch health');
+}
+
+// QA/HR staff logged into DialedIn for monitoring — not agents, exclude from snapshots
+const QA_HR_PATTERN = /\b(QA|HR|HR-Assistant)$/i;
+function isQaHrStaff(name) {
+  return QA_HR_PATTERN.test(name);
 }
 
 function toNum(val) {
@@ -263,9 +272,9 @@ async function downloadReports(user, pass) {
       console.warn(`[${ts()}] Agent Analysis scrape failed (non-fatal): ${analysisErr.message || analysisErr}`);
     }
 
-    // ── Merge pause data + filter Pitch Health ───────────
+    // ── Merge pause data + filter Pitch Health + QA/HR staff ───────────
     const filteredRows = allRows
-      .filter((r) => !isPitchHealth(r.team))
+      .filter((r) => !isPitchHealth(r.team) && !isQaHrStaff(r.rep))
       .map((r) => {
         const pauseData = agentPauseMap.get(r.rep);
         return {
@@ -312,7 +321,9 @@ async function supabasePost(table, records, onConflict) {
 }
 
 async function upsertSnapshots(rows, snapshotAt) {
-  const snapshotDate = snapshotAt.toISOString().split('T')[0];
+  // Use ET date (not UTC) — snapshot_date represents the business day in Eastern Time.
+  // After midnight UTC (7 PM ET during EST), UTC date != ET date.
+  const snapshotDate = snapshotAt.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
   const snapshotAtISO = snapshotAt.toISOString();
 
   const CHUNK_SIZE = 200;

@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabase-admin";
 import { getCached, setCache } from "@/utils/dialedin-cache";
 import { getCadToUsdRate, convertWageToUsd } from "@/utils/fx";
 import { fetchNewHireSet, isNewHireAgent } from "@/utils/dialedin-new-hires";
+import { jsonWithCache } from "@/utils/api-cache";
 
 export const runtime = "nodejs";
 
@@ -56,7 +57,7 @@ export async function GET(request: NextRequest) {
 
   const cacheKey = `pnl:${startDate}:${endDate}:${dimension}`;
   const cached = getCached<{ summary: unknown; breakdown: unknown; trend: unknown }>(cacheKey);
-  if (cached) return NextResponse.json(cached);
+  if (cached) return jsonWithCache(cached, 300, 600);
 
   try {
     // Parallel fetches: Retreaver revenue, DialedIn performance, cost config, labor data
@@ -74,7 +75,7 @@ export async function GET(request: NextRequest) {
       // 4. Employee wages (for labor cost)
       supabaseAdmin
         .from("employee_directory")
-        .select("first_name, last_name, hourly_wage, country, employee_status, role")
+        .select("first_name, last_name, hourly_wage, country, employee_status, role, dialedin_name")
         .eq("employee_status", "Active")
         .eq("role", "Agent"),
       // 5. New hire agents (≤5 shifts) — excluded from averages
@@ -101,12 +102,19 @@ export async function GET(request: NextRequest) {
     console.log(`P&L: ${costConfigs.length} configs (${salaryConfigs.length} salary), ${allPerfData.length} total perf rows → ${perfData.length} ours (${pitchHealthFiltered} Pitch Health excluded), period ${startDate}→${endDate}`);
 
     // Build wage lookup with multiple name variants for better matching
+    // Priority: dialedin_name > first+last > last,first > first-only
     // Convert Canadian wages to USD at build time so all downstream math is in USD
     const wageLookup = new Map<string, number>();
     for (const emp of employees) {
       if (!emp.hourly_wage) continue;
       const rawWage = Number(emp.hourly_wage) || 0;
       const wage = convertWageToUsd(rawWage, emp.country, cadToUsdRate);
+
+      // Highest priority: dialedin_name (exact DialedIn match)
+      if (emp.dialedin_name) {
+        wageLookup.set(emp.dialedin_name.toLowerCase().trim(), wage);
+      }
+
       const first = (emp.first_name || "").trim().toLowerCase();
       const last = (emp.last_name || "").trim().toLowerCase();
       const full = `${first} ${last}`.trim();
@@ -351,7 +359,7 @@ export async function GET(request: NextRequest) {
 
     const result = { summary, breakdown, trend };
     setCache(cacheKey, result, CACHE_TTL);
-    return NextResponse.json(result);
+    return jsonWithCache(result, 300, 600);
   } catch (err) {
     console.error("P&L computation error:", err);
     return NextResponse.json(

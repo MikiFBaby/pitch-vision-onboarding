@@ -6,7 +6,7 @@ export const maxDuration = 300;
 
 /**
  * Cron endpoint — scrapes DialedIn portal for intraday Agent Summary.
- * Runs every 30 min during business hours (9 AM – 8 PM ET, weekdays).
+ * Runs during business hours (8 AM – 10 PM ET, weekdays).
  * Also accepts manual triggers via X-API-Key header.
  */
 export async function GET(request: NextRequest) {
@@ -20,25 +20,20 @@ export async function GET(request: NextRequest) {
     }
   }
 
-  // Check if within business hours (9 AM – 8 PM ET)
+  // Check if within business hours (8 AM – 10 PM ET, Mon–Fri)
   const now = new Date();
   const etHour = parseInt(
     now.toLocaleString('en-US', { timeZone: 'America/New_York', hour: 'numeric', hour12: false }),
   );
-  const etDay = parseInt(
-    now.toLocaleString('en-US', { timeZone: 'America/New_York', weekday: 'short' }) === 'Sun'
-      ? '0'
-      : now.toLocaleString('en-US', { timeZone: 'America/New_York', weekday: 'short' }) === 'Sat'
-        ? '6'
-        : '1', // weekday
-  );
+  const etWeekday = now.toLocaleDateString('en-US', { timeZone: 'America/New_York', weekday: 'short' });
+  const isWeekend = etWeekday === 'Sun' || etWeekday === 'Sat';
 
   // Allow manual override with ?force=true
   const force = request.nextUrl.searchParams.get('force') === 'true';
-  if (!force && (etDay === 0 || etDay === 6 || etHour < 9 || etHour >= 20)) {
+  if (!force && (isWeekend || etHour < 8 || etHour >= 22)) {
     return NextResponse.json({
       skipped: true,
-      reason: 'Outside business hours (9 AM – 8 PM ET, Mon–Fri)',
+      reason: 'Outside business hours (8 AM – 10 PM ET, Mon–Fri)',
       etHour,
     });
   }

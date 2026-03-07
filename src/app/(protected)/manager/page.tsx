@@ -2,13 +2,30 @@
 import { useMemo, useState } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { useIntradayData } from "@/hooks/useIntradayData";
+import { useYesterdayComparison } from "@/hooks/useYesterdayComparison";
 import DashboardLayout from "@/components/layout/DashboardLayout";
-import StatsCard from "@/components/dashboard/StatsCard";
-import { Users, Target, Zap, TrendingUp, AlertTriangle } from "lucide-react";
-import { getCampaignsForManager, CAMPAIGN_MANAGERS, CAMPAIGN_TO_TEAM_SUBSTRING } from "@/lib/campaign-config";
+import ManagerKpiStrip from "@/components/manager/ManagerKpiStrip";
+import TeamAgentTable from "@/components/manager/TeamAgentTable";
+import AttentionPanel, { type AttentionFlag, type ActionAgent } from "@/components/manager/AttentionPanel";
+import HourlyChart from "@/components/manager/HourlyChart";
+import SlaVelocity from "@/components/manager/SlaVelocity";
+import YesterdayComparisonBar from "@/components/manager/YesterdayComparisonBar";
+import EodProjection from "@/components/manager/EodProjection";
+import QAComplianceSummary from "@/components/manager/QAComplianceSummary";
+import DeclineAlertPanel from "@/components/manager/DeclineAlertPanel";
+import AgentScoutingCard from "@/components/manager/AgentScoutingCard";
+import { useManagerQAStats } from "@/hooks/useManagerQAStats";
+import { useManagerDeclineAlerts } from "@/hooks/useManagerDeclineAlerts";
+import { AlertTriangle, X, Eye } from "lucide-react";
+import {
+    getCampaignsForManager,
+    getAllManagerNames,
+    getTeamFilterForManager,
+    CAMPAIGN_MANAGERS,
+    CAMPAIGN_TO_TEAM_SUBSTRING,
+} from "@/lib/campaign-config";
 import { getBreakEvenTPH } from "@/utils/dialedin-revenue";
 
-// Admins/executives can view all teams with a campaign selector
 const ADMIN_EMAILS = ["miki@pitchperfectsolutions.net"];
 
 export default function ManagerDashboard() {
@@ -17,21 +34,39 @@ export default function ManagerDashboard() {
     const isAdmin = ADMIN_EMAILS.includes(user?.email?.toLowerCase() || "") || profile?.role === "executive";
 
     const ownCampaigns = useMemo(() => getCampaignsForManager(managerName), [managerName]);
-    const allCampaignNames = useMemo(() => Object.keys(CAMPAIGN_MANAGERS), []);
-    const [selectedCampaign, setSelectedCampaign] = useState<string>("all");
+    const allManagerNames = useMemo(() => getAllManagerNames(), []);
 
-    // Admin sees all teams (or selected campaign); managers see their own
-    const campaigns = isAdmin
-        ? (selectedCampaign === "all" ? allCampaignNames : [selectedCampaign])
-        : ownCampaigns;
+    // Simulation state: admin can pick a manager to "view as"
+    const [simulatedManager, setSimulatedManager] = useState<string>("__all__");
 
-    const teamFilter = useMemo(() => {
-        if (isAdmin && selectedCampaign === "all") return ""; // empty = all teams
-        if (isAdmin && selectedCampaign !== "all") return CAMPAIGN_TO_TEAM_SUBSTRING[selectedCampaign] || "";
-        // For regular managers, build team filter from their campaigns
-        const substrings = ownCampaigns.map(c => CAMPAIGN_TO_TEAM_SUBSTRING[c]).filter(Boolean);
-        return substrings.join(",");
-    }, [isAdmin, selectedCampaign, ownCampaigns]);
+    // Derive effective campaigns and team filter based on simulation
+    const { campaigns, teamFilter, effectiveManagerName } = useMemo(() => {
+        if (!isAdmin) {
+            // Regular manager — use their own campaigns
+            const substrings = ownCampaigns.map((c) => CAMPAIGN_TO_TEAM_SUBSTRING[c]).filter(Boolean);
+            return {
+                campaigns: ownCampaigns,
+                teamFilter: substrings.join(","),
+                effectiveManagerName: managerName,
+            };
+        }
+        if (simulatedManager === "__all__") {
+            // Admin viewing all campaigns
+            return {
+                campaigns: Object.keys(CAMPAIGN_MANAGERS),
+                teamFilter: "",
+                effectiveManagerName: null,
+            };
+        }
+        // Admin simulating a specific manager
+        const simCampaigns = getCampaignsForManager(simulatedManager);
+        const simTeam = getTeamFilterForManager(simulatedManager);
+        return {
+            campaigns: simCampaigns,
+            teamFilter: simTeam,
+            effectiveManagerName: simulatedManager,
+        };
+    }, [isAdmin, simulatedManager, ownCampaigns, managerName]);
 
     const isManager = isAdmin || ownCampaigns.length > 0;
 
@@ -43,7 +78,23 @@ export default function ManagerDashboard() {
         enabled: isManager,
     });
 
-    // Break-even for the manager's primary campaign type
+    const { data: yesterdayData, loading: yesterdayLoading } = useYesterdayComparison({
+        team: teamFilter || undefined,
+        enabled: isManager,
+    });
+
+    // Fire QA + decline hooks immediately with team filter — no waterfall
+    const { data: qaData, loading: qaLoading } = useManagerQAStats({
+        team: teamFilter || undefined,
+        enabled: isManager,
+    });
+
+    const { alerts: declineAlerts, loading: declineLoading } = useManagerDeclineAlerts({
+        team: teamFilter || undefined,
+        enabled: isManager,
+    });
+
+    // Break-even for the primary campaign type
     const primaryBE = useMemo(() => {
         if (!campaigns.length) return 2.5;
         const first = campaigns[0];
@@ -68,6 +119,64 @@ export default function ManagerDashboard() {
         [agents],
     );
 
+    const aboveBECount = useMemo(() => agents.filter((a) => a.aboveBE && a.hours_worked > 0).length, [agents]);
+
+    // Scouting card state
+    const [selectedAgent, setSelectedAgent] = useState<string | null>(null);
+
+    // Team averages for "vs team" comparisons in scouting card
+    const teamStats = useMemo(() => {
+        const working = agents.filter((a) => a.hours_worked > 0);
+        if (!working.length) return { avgConvRate: 0, avgDialsPerHour: 0, avgSlaHr: 0, totalAgents: 0 };
+        return {
+            avgConvRate: working.reduce((s, a) => s + a.conversion_rate_pct, 0) / working.length,
+            avgDialsPerHour: working.reduce((s, a) => s + (a.dialed / Math.max(a.hours_worked, 0.01)), 0) / working.length,
+            avgSlaHr: working.reduce((s, a) => s + a.sla_hr, 0) / working.length,
+            totalAgents: working.length,
+        };
+    }, [agents]);
+
+    // Hidden Gems: below B/E but above-avg conversion (Moneyball undervalued closers)
+    const hiddenGems = useMemo(() => {
+        const gems = new Set<string>();
+        if (teamStats.avgConvRate <= 0) return gems;
+        for (const a of agents) {
+            if (!a.aboveBE && a.conversion_rate_pct > teamStats.avgConvRate && a.hours_worked >= 1) {
+                gems.add(a.name);
+            }
+        }
+        return gems;
+    }, [agents, teamStats]);
+
+    // Action Center: multi-signal flagging for agents needing attention
+    const actionAgents = useMemo((): ActionAgent[] => {
+        const SEVERITY_WEIGHT = { critical: 3, warning: 2, info: 1 } as const;
+        return attentionNeeded.map((a) => {
+            const flags: AttentionFlag[] = [];
+            const beDelta = a.sla_hr - a.be;
+            flags.push({ type: "below_be", label: `${beDelta.toFixed(1)} B/E`, severity: beDelta < -1.5 ? "critical" : "warning" });
+            if (a.momentum === "down") {
+                flags.push({ type: "declining", label: "Declining", severity: "warning" });
+            }
+            const qaAgent = qaData?.per_agent?.[a.name];
+            if (qaAgent && qaAgent.auto_fail_count > 0) {
+                flags.push({ type: "qa_issue", label: `AF: ${qaAgent.auto_fail_count}`, severity: qaAgent.auto_fail_count >= 3 ? "critical" : "warning" });
+            }
+            const decline = declineAlerts?.find((d) => d.agent_name === a.name);
+            if (decline) {
+                flags.push({ type: "decline_streak", label: `${decline.consecutive_decline_days}d streak`, severity: decline.severity });
+            }
+            if (a.is_new_hire && a.sla_hr < a.be * 0.5) {
+                flags.push({ type: "new_hire_struggling", label: "New hire", severity: "info" });
+            }
+            return {
+                name: a.name, sla_hr: a.sla_hr, transfers: a.transfers,
+                hours_worked: a.hours_worked, be: a.be, flags,
+                priority: flags.reduce((s, f) => s + SEVERITY_WEIGHT[f.severity], 0),
+            };
+        }).sort((a, b) => b.priority - a.priority);
+    }, [attentionNeeded, qaData, declineAlerts]);
+
     // Hourly deltas for chart
     const hourlyDeltas = useMemo(() => {
         const trend = data?.hourly_trend;
@@ -80,29 +189,40 @@ export default function ManagerDashboard() {
         }));
     }, [data]);
 
-    const userName = profile?.first_name || user?.displayName?.split(" ")[0] || "Manager";
+    // SLA Velocity: compare avg SLA/hr of last 2 hours vs prior 2 hours
+    const velocity = useMemo(() => {
+        if (hourlyDeltas.length < 3) return null;
+        const recent = hourlyDeltas.slice(-2);
+        const prior = hourlyDeltas.slice(-4, -2);
+        const recentAvg = recent.reduce((s, d) => s + d.sla_delta, 0) / recent.length;
+        const priorAvg = prior.length > 0 ? prior.reduce((s, d) => s + d.sla_delta, 0) / prior.length : recentAvg;
+        return recentAvg - priorAvg;
+    }, [hourlyDeltas]);
+
+    // Yesterday delta: today's SLA total vs yesterday at the same time
+    const yesterdayDelta = useMemo(() => {
+        if (!yesterdayData?.same_time_yesterday || !data?.totals) return null;
+        return (data.totals.sla_total ?? 0) - yesterdayData.same_time_yesterday.total_transfers;
+    }, [yesterdayData, data]);
+
+    const userName = profile?.first_name || "Manager";
     const totals = data?.totals;
+    const isSimulating = isAdmin && simulatedManager !== "__all__";
 
     if (!isManager) {
         return (
             <DashboardLayout>
                 <div className="space-y-8">
                     <div className="flex flex-col gap-1">
-                        <h2 className="text-3xl font-bold tracking-tight text-white">
-                            Manager Overview
-                        </h2>
+                        <h2 className="text-3xl font-bold tracking-tight text-white">Team Hub</h2>
                         <p className="text-white/50 text-sm font-medium">
                             Welcome, <span className="text-white font-bold">{userName}</span>.
                         </p>
                     </div>
                     <div className="glass-card p-8 rounded-2xl border-white/5 text-center">
                         <AlertTriangle className="mx-auto mb-3 text-amber-400" size={32} />
-                        <p className="text-white/70 text-sm">
-                            You are not currently assigned as a campaign manager.
-                        </p>
-                        <p className="text-white/40 text-xs mt-1">
-                            If this is an error, contact HR to update your campaign assignment.
-                        </p>
+                        <p className="text-white/70 text-sm">You are not currently assigned as a campaign manager.</p>
+                        <p className="text-white/40 text-xs mt-1">If this is an error, contact HR to update your campaign assignment.</p>
                     </div>
                 </div>
             </DashboardLayout>
@@ -112,24 +232,43 @@ export default function ManagerDashboard() {
     return (
         <DashboardLayout>
             <div className="space-y-8">
+                {/* Simulation Banner */}
+                {isSimulating && (
+                    <div className="flex items-center gap-3 px-4 py-2.5 rounded-xl bg-indigo-500/10 border border-indigo-500/20">
+                        <Eye size={14} className="text-indigo-400 shrink-0" />
+                        <span className="text-xs text-indigo-300 font-medium">
+                            Viewing as: <span className="text-white font-bold">{simulatedManager}</span>
+                            <span className="text-indigo-400/60 ml-1">({campaigns.join(", ")})</span>
+                        </span>
+                        <button
+                            onClick={() => setSimulatedManager("__all__")}
+                            className="ml-auto p-1 rounded hover:bg-white/10 transition-colors"
+                            title="Clear simulation"
+                        >
+                            <X size={12} className="text-indigo-400" />
+                        </button>
+                    </div>
+                )}
+
                 {/* Header */}
                 <div className="flex flex-col gap-1">
                     <div className="flex items-center justify-between">
                         <h2 className="text-3xl font-bold tracking-tight text-white group cursor-default">
-                            Manager Overview
+                            Team Hub
                             {!loading && data && (
                                 <span className={`inline-block ml-2 w-2 h-2 rounded-full ${stale ? "bg-amber-500" : "bg-emerald-500 animate-pulse"}`} />
                             )}
                         </h2>
                         {isAdmin && (
                             <select
-                                value={selectedCampaign}
-                                onChange={(e) => setSelectedCampaign(e.target.value)}
+                                value={simulatedManager}
+                                onChange={(e) => setSimulatedManager(e.target.value)}
                                 className="bg-white/5 border border-white/10 text-white text-xs rounded-lg px-3 py-1.5 focus:outline-none focus:border-indigo-500/50"
                             >
-                                <option value="all" className="bg-[#0d1117]">All Campaigns</option>
-                                {allCampaignNames.map((c) => (
-                                    <option key={c} value={c} className="bg-[#0d1117]">{c}</option>
+                                <option value="__all__" className="bg-[#0d1117]">All Campaigns (Admin)</option>
+                                <option disabled className="bg-[#0d1117]">── Simulate Manager ──</option>
+                                {allManagerNames.map((m) => (
+                                    <option key={m} value={m} className="bg-[#0d1117]">{m}</option>
                                 ))}
                             </select>
                         )}
@@ -137,7 +276,7 @@ export default function ManagerDashboard() {
                     <p className="text-white/50 text-sm font-medium">
                         Welcome, <span className="text-white font-bold">{userName}</span>.{" "}
                         <span className="text-white/40">
-                            {isAdmin && selectedCampaign === "all" ? "Viewing all campaigns" : campaigns.join(", ")}
+                            {isAdmin && !isSimulating ? "Viewing all campaigns" : campaigns.join(", ")}
                         </span>
                         {data?.latest_snapshot_at && (
                             <span className="text-white/30 ml-2 text-xs font-mono">
@@ -153,162 +292,71 @@ export default function ManagerDashboard() {
                 </div>
 
                 {/* KPI Cards */}
-                <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
-                    <StatsCard
-                        index={0}
-                        title="Team SLA Today"
-                        value={loading ? "—" : String(totals?.sla_total ?? 0)}
-                        trend="neutral"
-                        trendValue={totals ? `${totals.production_hours.toFixed(1)}h` : ""}
-                        icon={<Zap size={18} />}
+                <ManagerKpiStrip
+                    loading={loading}
+                    totals={totals}
+                    primaryBE={primaryBE}
+                    attentionCount={attentionNeeded.length}
+                    campaignLabel={campaigns[0] || ""}
+                    velocity={velocity}
+                    yesterdayDelta={yesterdayDelta}
+                    yesterdaySameTimeSla={yesterdayData?.same_time_yesterday?.total_transfers ?? null}
+                    aboveBECount={aboveBECount}
+                    totalAgentCount={agents.filter((a) => a.hours_worked > 0).length}
+                />
+
+                {/* Velocity + Yesterday + EOD Row */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                    <SlaVelocity deltas={hourlyDeltas} />
+                    <YesterdayComparisonBar
+                        todaySla={totals?.sla_total ?? 0}
+                        yesterdaySameTimeSla={yesterdayData?.same_time_yesterday?.total_transfers ?? null}
+                        yesterdayFinalSla={yesterdayData?.yesterday?.total_transfers ?? 0}
+                        loading={loading || yesterdayLoading}
                     />
-                    <StatsCard
-                        index={1}
-                        title="Active Agents"
-                        value={loading ? "—" : String(totals?.active_agents ?? 0)}
-                        trend="neutral"
-                        trendValue={attentionNeeded.length > 0 ? `${attentionNeeded.length} need attention` : "all ok"}
-                        icon={<Users size={18} />}
-                    />
-                    <StatsCard
-                        index={2}
-                        title="Team Avg SLA/hr"
-                        value={loading ? "—" : (totals?.avg_sla_hr?.toFixed(2) ?? "—")}
-                        trend={totals ? (totals.avg_sla_hr >= primaryBE ? "up" : "down") : "neutral"}
-                        trendValue={`B/E: ${primaryBE}`}
-                        icon={<Target size={18} />}
-                    />
-                    <StatsCard
-                        index={3}
-                        title="vs Break-Even"
-                        value={loading ? "—" : `${((totals?.avg_sla_hr ?? 0) - primaryBE >= 0 ? "+" : "")}${((totals?.avg_sla_hr ?? 0) - primaryBE).toFixed(2)}`}
-                        trend={totals ? ((totals.avg_sla_hr ?? 0) >= primaryBE ? "up" : "down") : "neutral"}
-                        trendValue={campaigns[0] || ""}
-                        icon={<TrendingUp size={18} />}
+                    <EodProjection
+                        currentSla={totals?.sla_total ?? 0}
+                        hoursElapsed={yesterdayData?.eod_projection?.hours_elapsed ?? 0}
+                        hoursRemaining={yesterdayData?.eod_projection?.hours_remaining ?? 0}
+                        totalBusinessHours={yesterdayData?.eod_projection?.total_business_hours ?? 9}
+                        confidence={yesterdayData?.eod_projection?.confidence ?? "low"}
+                        breakEvenTarget={primaryBE}
+                        activeAgents={totals?.active_agents ?? 0}
+                        historicContext={yesterdayData?.eod_projection?.historic_context}
                     />
                 </div>
 
+                {/* Agent Table + Attention Panel */}
                 <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                    {/* Team Agent Table */}
-                    <div className="lg:col-span-2 glass-card p-6 rounded-2xl border-white/5">
-                        <div className="flex items-center justify-between mb-4">
-                            <h3 className="text-sm font-bold text-white uppercase tracking-widest">Team Agents</h3>
-                            <span className="text-[10px] text-white/40 font-mono">{agents.length} agents</span>
-                        </div>
-                        {loading ? (
-                            <div className="space-y-2">
-                                {[1, 2, 3, 4].map((i) => (
-                                    <div key={i} className="h-10 bg-white/5 rounded animate-pulse" />
-                                ))}
-                            </div>
-                        ) : agents.length === 0 ? (
-                            <p className="text-white/40 text-sm italic">No agents found for your team today.</p>
-                        ) : (
-                            <div className="overflow-y-auto max-h-[400px]">
-                                <table className="w-full text-xs">
-                                    <thead className="sticky top-0 bg-[#0d1117]">
-                                        <tr className="text-white/50 uppercase tracking-wider">
-                                            <th className="text-left py-2 pr-3">#</th>
-                                            <th className="text-left py-2 pr-3">Agent</th>
-                                            <th className="text-right py-2 pr-3">SLA/hr</th>
-                                            <th className="text-right py-2 pr-3">SLAs</th>
-                                            <th className="text-right py-2 pr-3">Hours</th>
-                                            <th className="text-right py-2">Status</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody className="divide-y divide-white/5">
-                                        {agents.map((a) => (
-                                            <tr key={a.name} className="hover:bg-white/5 transition-colors">
-                                                <td className="py-2 pr-3 text-white/40 tabular-nums">{a.rank ?? "—"}</td>
-                                                <td className="py-2 pr-3 text-white/90 font-medium">
-                                                    {a.name}
-                                                    {a.is_new_hire && (
-                                                        <span className="ml-1.5 text-[9px] font-bold bg-blue-500/20 text-blue-400 px-1 py-0.5 rounded">NEW</span>
-                                                    )}
-                                                </td>
-                                                <td className={`py-2 pr-3 text-right font-mono font-bold tabular-nums ${a.aboveBE ? "text-emerald-400" : "text-red-400"}`}>
-                                                    {a.sla_hr.toFixed(2)}
-                                                </td>
-                                                <td className="py-2 pr-3 text-right text-white/70 tabular-nums">{a.transfers}</td>
-                                                <td className="py-2 pr-3 text-right text-white/50 tabular-nums">{a.hours_worked.toFixed(1)}</td>
-                                                <td className="py-2 text-right">
-                                                    <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-bold ${a.aboveBE ? "bg-emerald-500/15 text-emerald-400" : "bg-red-500/15 text-red-400"}`}>
-                                                        {a.aboveBE ? "OK" : "BELOW"}
-                                                    </span>
-                                                </td>
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
-                            </div>
-                        )}
-                    </div>
-
-                    {/* Attention Needed Panel */}
-                    <div className="glass-card p-6 rounded-2xl border-white/5">
-                        <div className="flex items-center gap-2 mb-4">
-                            <AlertTriangle size={14} className="text-amber-400" />
-                            <h3 className="text-sm font-bold text-white uppercase tracking-widest">Attention Needed</h3>
-                        </div>
-                        {loading ? (
-                            <div className="space-y-2">
-                                {[1, 2, 3].map((i) => (
-                                    <div key={i} className="h-14 bg-white/5 rounded animate-pulse" />
-                                ))}
-                            </div>
-                        ) : attentionNeeded.length === 0 ? (
-                            <div className="text-center py-8">
-                                <span className="text-emerald-400 text-2xl">&#10003;</span>
-                                <p className="text-white/50 text-sm mt-2">All agents performing above break-even.</p>
-                            </div>
-                        ) : (
-                            <div className="space-y-2 overflow-y-auto max-h-[360px]">
-                                {attentionNeeded.map((a) => (
-                                    <div key={a.name} className="bg-red-500/5 border border-red-500/10 rounded-lg p-3">
-                                        <div className="flex items-center justify-between">
-                                            <span className="text-white/90 text-xs font-medium truncate">{a.name}</span>
-                                            <span className="text-red-400 text-xs font-mono font-bold tabular-nums">{a.sla_hr.toFixed(2)}</span>
-                                        </div>
-                                        <div className="flex items-center justify-between mt-1">
-                                            <span className="text-white/40 text-[10px]">{a.transfers} SLAs in {a.hours_worked.toFixed(1)}h</span>
-                                            <span className="text-red-400/70 text-[10px] font-mono">{(a.sla_hr - a.be).toFixed(2)} vs B/E</span>
-                                        </div>
-                                    </div>
-                                ))}
-                            </div>
-                        )}
-                    </div>
+                    <TeamAgentTable agents={agents} loading={loading} agentYesterday={yesterdayData?.agent_yesterday} onAgentClick={setSelectedAgent} hiddenGems={hiddenGems} />
+                    <AttentionPanel agents={actionAgents} loading={loading} onAgentClick={setSelectedAgent} />
                 </div>
 
-                {/* Hourly SLA Bar Chart */}
-                {!loading && hourlyDeltas.length > 1 && (
-                    <div className="glass-card p-6 rounded-2xl border-white/5">
-                        <div className="flex items-center justify-between mb-4">
-                            <h3 className="text-sm font-bold text-white uppercase tracking-widest">Hourly SLA Production</h3>
-                            <span className="text-[10px] text-white/40 font-mono">{hourlyDeltas.length} hours</span>
-                        </div>
-                        <div className="flex items-end gap-1 h-[120px]">
-                            {hourlyDeltas.map((h) => {
-                                const maxDelta = Math.max(...hourlyDeltas.map((d) => d.sla_delta), 1);
-                                const label = `${h.hour > 12 ? h.hour - 12 : h.hour}${h.hour >= 12 ? "PM" : "AM"}`;
-                                return (
-                                    <div key={h.hour} className="flex-1 flex flex-col items-center justify-end h-full group">
-                                        <div className="text-[9px] text-white/0 group-hover:text-white/60 transition-colors mb-1 tabular-nums">
-                                            +{h.sla_delta}
-                                        </div>
-                                        <div
-                                            className="w-full max-w-[28px] bg-indigo-500/50 hover:bg-indigo-400/70 rounded-t transition-colors"
-                                            style={{ height: `${Math.max((h.sla_delta / maxDelta) * 100, 5)}%` }}
-                                            title={`${label}: +${h.sla_delta} SLA (${h.sla_total} total, ${h.agent_count} agents)`}
-                                        />
-                                        <span className="text-[9px] text-white/30 mt-1">{label}</span>
-                                    </div>
-                                );
-                            })}
-                        </div>
-                    </div>
-                )}
+                {/* Hourly Chart */}
+                <HourlyChart deltas={hourlyDeltas} loading={loading} />
+
+                {/* QA Compliance + Decline Alerts */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                    <QAComplianceSummary data={qaData} loading={qaLoading} onAgentClick={setSelectedAgent} />
+                    <DeclineAlertPanel alerts={declineAlerts} loading={declineLoading} onAgentClick={setSelectedAgent} />
+                </div>
             </div>
+
+            {/* Agent Scouting Card Drawer */}
+            <AgentScoutingCard
+                isOpen={!!selectedAgent}
+                onClose={() => setSelectedAgent(null)}
+                agentName={selectedAgent}
+                intradayAgent={agents.find((a) => a.name === selectedAgent) ?? null}
+                yesterdayData={selectedAgent ? yesterdayData?.agent_yesterday?.[selectedAgent] ?? null : null}
+                qaPerAgent={selectedAgent ? qaData?.per_agent?.[selectedAgent] ?? null : null}
+                declineAlert={selectedAgent ? declineAlerts?.find((d) => d.agent_name === selectedAgent) ?? null : null}
+                attentionFlags={selectedAgent ? actionAgents.find((a) => a.name === selectedAgent)?.flags ?? null : null}
+                breakEven={agents.find((a) => a.name === selectedAgent)?.be ?? primaryBE}
+                teamStats={teamStats}
+                agentNames={agents.map((a) => a.name)}
+                onNavigate={setSelectedAgent}
+            />
         </DashboardLayout>
     );
 }

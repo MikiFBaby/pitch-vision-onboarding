@@ -1112,6 +1112,14 @@ export interface IntradayTotals {
   adjusted_sla_hr: number;
   total_dialed: number;
   total_connects: number;
+  // Economics (present when include_economics=true)
+  total_labor_cost?: number;
+  total_revenue_est?: number;
+  live_profit?: number;
+  avg_cost_per_sla?: number;
+  wage_match_pct?: number;
+  matched_agents?: number;
+  unmatched_agents?: number;
 }
 
 export interface IntradayHourlyTrend {
@@ -1129,6 +1137,7 @@ export interface IntradayAgentRow {
   adjusted_sla_hr: number;
   transfers: number;
   hours_worked: number;
+  paid_hours: number;
   dialed: number;
   connects: number;
   connects_per_hour: number;
@@ -1137,6 +1146,19 @@ export interface IntradayAgentRow {
   pause_time_min: number;
   is_new_hire: boolean;
   rank?: number;
+  campaign_rank?: number;
+  campaign_agents_ranked?: number;
+  campaign_family?: string;
+  // Momentum (present when include_rank=true)
+  momentum?: 'up' | 'down' | 'steady';
+  sla_hr_2h_ago?: number;
+  // Economics (present when include_economics=true)
+  wage_usd?: number;
+  labor_cost?: number;
+  cost_per_sla?: number;
+  revenue_est?: number;
+  roi?: number;
+  wage_matched?: boolean;
 }
 
 export interface IntradayData {
@@ -1148,7 +1170,9 @@ export interface IntradayData {
   agents: IntradayAgentRow[];
   break_even: { aca: number; medicare: number };
   total_agents_ranked?: number;
+  campaign_family_labels?: Record<string, string>;
   agent_hourly_trend?: IntradayHourlyTrend[];
+  economics_enabled?: boolean;
 }
 
 export interface IntradayAlert {

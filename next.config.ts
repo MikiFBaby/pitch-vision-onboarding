@@ -25,6 +25,18 @@ const nextConfig: NextConfig = {
     // your project has type errors.
     ignoreBuildErrors: true,
   },
+  async headers() {
+    return [
+      {
+        // Default: block CDN caching on all API routes (safety net).
+        // Individual routes override this with public s-maxage via jsonWithCache().
+        source: '/api/:path*',
+        headers: [
+          { key: 'Cache-Control', value: 'private, no-store' },
+        ],
+      },
+    ];
+  },
 
 };
 

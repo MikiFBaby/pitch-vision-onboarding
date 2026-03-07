@@ -340,6 +340,7 @@ export function SidebarInner() {
         // Default agent items
         return [
             ...commonItems.slice(0, 1),
+            { href: "/agent?tab=coaching", icon: <BrainCircuit size={20} />, label: "Aura Coach" },
             { href: "/agent/education", icon: <GraduationCap size={20} />, label: "Education" },
             { href: "/agent/calls", icon: <FileText size={20} />, label: "My Calls" },
             { href: "/agent/resources", icon: <FolderOpen size={20} />, label: "Resource Hub" },
@@ -355,6 +356,18 @@ export function SidebarInner() {
         // If item.active is explicitly set (like for QA view-based items), use it
         if (itemActive !== undefined) {
             return itemActive;
+        }
+        // Handle query-param-based items (e.g. /agent?tab=coaching)
+        if (href.includes('?')) {
+            const [hrefPath, hrefQuery] = href.split('?');
+            if (pathname !== hrefPath) return false;
+            const params = new URLSearchParams(hrefQuery);
+            const tabParam = params.get('tab');
+            return tabParam ? searchParams.get('tab') === tabParam : false;
+        }
+        // For base path items (e.g. /agent), only active when no tab param is set
+        if (role === 'agent' && pathname === href && href === `/${role}`) {
+            return !searchParams.get('tab');
         }
         // Otherwise, compare href with pathname
         return pathname === href;

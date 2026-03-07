@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { getCached, setCache } from "@/utils/dialedin-cache";
+import { jsonWithCache } from "@/utils/api-cache";
 
 export const runtime = "nodejs";
 
@@ -44,7 +45,7 @@ export async function GET(request: NextRequest) {
 
   const cacheKey = `retreaver-rev:${startDate}:${endDate}`;
   const cached = getCached<unknown>(cacheKey);
-  if (cached) return NextResponse.json(cached);
+  if (cached) return jsonWithCache(cached, 60, 120);
 
   try {
     // Query retreaver_events directly (bypasses broken aggregate table)
@@ -192,7 +193,7 @@ export async function GET(request: NextRequest) {
       },
     };
     setCache(cacheKey, result, CACHE_TTL);
-    return NextResponse.json(result);
+    return jsonWithCache(result, 60, 120);
   } catch (err) {
     console.error("Retreaver revenue error:", err);
     const message = err instanceof Error ? err.message : "Failed to compute revenue";

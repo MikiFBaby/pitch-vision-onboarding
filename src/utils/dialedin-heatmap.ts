@@ -37,10 +37,17 @@ const PILOT_CAMPAIGNS = ['hospital', 'meals', 'home care'];
 /** Check if an agent is on a pilot campaign (no performance tiers).
  *  Checks both directory campaigns and DialedIn skill name. */
 export function isPilotCampaign(campaigns: string[] | null | undefined, skill?: string | null): boolean {
+  // If agent has directory campaigns, only flag as pilot if ALL campaigns are pilot
   if (campaigns && campaigns.length > 0) {
-    const joined = campaigns.join(' ').toLowerCase();
-    if (PILOT_CAMPAIGNS.some(p => joined.includes(p))) return true;
+    const allPilot = campaigns.every(c => {
+      const cl = c.toLowerCase();
+      return PILOT_CAMPAIGNS.some(p => cl.includes(p));
+    });
+    if (allPilot) return true;
+    // Mixed campaigns (pilot + revenue) — not a pilot agent
+    return false;
   }
+  // Fallback: check DialedIn skill name (no directory campaigns available)
   if (skill) {
     const s = skill.toLowerCase();
     if (PILOT_CAMPAIGNS.some(p => s.includes(p))) return true;

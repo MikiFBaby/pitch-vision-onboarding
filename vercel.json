@@ -2,7 +2,7 @@
   "crons": [
     {
       "path": "/api/dialedin/alerts/check",
-      "schedule": "0 17 * * 1-5"
+      "schedule": "0 15 * * 1-5"
     },
     {
       "path": "/api/dialedin/slack-summary",
@@ -30,7 +30,7 @@
     },
     {
       "path": "/api/cron/sync-health",
-      "schedule": "0 17 * * 1-5"
+      "schedule": "0 13,21 * * 1-5"
     },
     {
       "path": "/api/cron/dialedin-ingest",
@@ -42,7 +42,7 @@
     },
     {
       "path": "/api/cron/directory-audit",
-      "schedule": "0 14 * * 1"
+      "schedule": "0 14 * * 1-5"
     }
   ]
 }

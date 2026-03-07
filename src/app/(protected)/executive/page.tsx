@@ -10,6 +10,7 @@ import {
   Activity,
   Radio,
   BarChart2,
+  DollarSign,
 } from "lucide-react";
 import { PeriodLabel } from "./layout";
 import { fmt, num } from "@/utils/format";
@@ -166,9 +167,10 @@ export default function CommandCenterPage() {
     return () => clearInterval(id);
   }, []);
 
-  // Intraday scraper data (5-min cumulative snapshots)
+  // Intraday scraper data (5-min cumulative snapshots) + live economics
   const { data: intradayData, loading: intradayLoading } = useIntradayData({
     includeTrend: true,
+    includeEconomics: true,
     interval: 120_000,
   });
 
@@ -215,7 +217,7 @@ export default function CommandCenterPage() {
 
   return (
     <div className="font-mono">
-      <PeriodLabel title="COMMAND CENTER" />
+      <PeriodLabel title="EXECUTIVE DASHBOARD" />
       <div className="p-4 space-y-4">
       {/* Revenue Hero */}
       <div className="bg-[#0f1923] border border-[#243044] rounded-lg p-6">
@@ -359,6 +361,30 @@ export default function CommandCenterPage() {
               <span className="text-red-400/80 tabular-nums">{intradayStats.belowBE}</span>
               <span className="text-white/40"> below</span>
             </div>
+            {intradayData?.totals?.total_labor_cost != null && (
+              <>
+                <div className="w-px h-4 bg-white/10" />
+                <div className="flex items-center gap-1">
+                  <DollarSign size={10} className="text-amber-400/70" />
+                  <span className="text-white/50">Cost: </span>
+                  <span className="text-amber-400 font-bold tabular-nums">{fmt(intradayData.totals.total_labor_cost)}</span>
+                </div>
+                <div>
+                  <span className="text-white/50">Rev: </span>
+                  <span className="text-cyan-400 font-bold tabular-nums">{fmt(intradayData.totals.total_revenue_est ?? 0)}</span>
+                </div>
+                <div>
+                  <span className="text-white/50">P&L: </span>
+                  <span className={`font-bold tabular-nums ${(intradayData.totals.live_profit ?? 0) >= 0 ? "text-emerald-400" : "text-red-400"}`}>
+                    {fmt(intradayData.totals.live_profit ?? 0)}
+                  </span>
+                </div>
+                <div>
+                  <span className="text-white/50">$/SLA: </span>
+                  <span className="text-white/80 tabular-nums">${(intradayData.totals.avg_cost_per_sla ?? 0).toFixed(2)}</span>
+                </div>
+              </>
+            )}
           </div>
 
           {/* Freshness */}

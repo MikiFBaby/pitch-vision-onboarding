@@ -3,6 +3,8 @@ import React, { useEffect, useState, Suspense } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { useRouter, useSearchParams } from "next/navigation";
 import { SignInPage } from "@/components/ui/sign-in";
+import { sendPasswordResetEmail } from "firebase/auth";
+import { auth } from "@/lib/firebase";
 
 // Role-specific content mapping
 const ROLE_CONTENT: Record<string, { title: string; description: string; heroImage: string }> = {
@@ -29,6 +31,11 @@ const ROLE_CONTENT: Record<string, { title: string; description: string; heroIma
     executive: {
         title: "Visionary Nexus",
         description: "Strategic oversight and global performance analytics. Access the high-level intelligence dashboard.",
+        heroImage: "/images/login-hero-ai.png"
+    },
+    payroll: {
+        title: "Payroll Hub",
+        description: "Streamlined payroll operations. Access compensation tools and manage payroll processing.",
         heroImage: "/images/login-hero-ai.png"
     },
     partner: {
@@ -160,8 +167,25 @@ function LoginForm() {
         setError(null);
     };
 
-    const handleResetPassword = () => {
-        alert("Password reset instructions will be sent to your email.");
+    const handleResetPassword = async () => {
+        const emailInput = document.querySelector<HTMLInputElement>('input[name="email"]');
+        const resetEmail = emailInput?.value || emailParam;
+        if (!resetEmail) {
+            setError("Please enter your email address first, then click reset.");
+            return;
+        }
+        try {
+            setError(null);
+            await sendPasswordResetEmail(auth, resetEmail);
+            setError(null);
+            alert(`Password reset email sent to ${resetEmail}. Check your inbox.`);
+        } catch (err: any) {
+            if (err.code === 'auth/user-not-found') {
+                setError("No account found with that email address.");
+            } else {
+                setError(err.message || "Failed to send password reset email.");
+            }
+        }
     };
 
     return (

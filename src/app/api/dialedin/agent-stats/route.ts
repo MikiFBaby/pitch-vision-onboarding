@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
+import { jsonWithCache } from "@/utils/api-cache";
 
 export const runtime = "nodejs";
 
@@ -12,13 +13,13 @@ export async function GET(req: NextRequest) {
 
   const agentName = name.trim();
 
-  // Fetch recent performance records for this agent (up to 30 days)
+  // Fetch recent performance records for this agent (14 days)
   const { data: records, error } = await supabaseAdmin
     .from("dialedin_agent_performance")
-    .select("*")
+    .select("report_date, agent_name, tph, adjusted_tph, sla_hr, transfers, conversion_rate, connect_rate, hours_worked, dials, connects, contacts, talk_time_min, wait_time_min, wrap_time_min, logged_in_time_min, pause_time_min, skill, team")
     .ilike("agent_name", agentName)
     .order("report_date", { ascending: false })
-    .limit(30);
+    .limit(14);
 
   if (error) {
     console.error("Agent stats query error:", error);
@@ -26,15 +27,15 @@ export async function GET(req: NextRequest) {
   }
 
   if (!records || records.length === 0) {
-    return NextResponse.json({ latest: null, recentDays: [], averages: null, totals: null });
+    return jsonWithCache({ latest: null, recentDays: [], averages: null, totals: null }, 300, 600);
   }
 
   const latest = records[0];
-  const recentDays = records.slice(0, 14);
+  const recentDays = records;
 
   // Compute averages over the recent days
   const len = recentDays.length;
-  const sum = (key: string) => recentDays.reduce((s, r) => s + (Number(r[key]) || 0), 0);
+  const sum = (key: string) => recentDays.reduce((s, r) => s + (Number((r as Record<string, unknown>)[key]) || 0), 0);
 
   const avgTph = sum("tph") / len;
   // Adjusted TPH: average only over days where adjusted_tph is non-null
@@ -57,9 +58,12 @@ export async function GET(req: NextRequest) {
     return s + (active / logged) * 100;
   }, 0) / len;
 
+  const avgSlaHr = sum("sla_hr") / len;
+
   const averages = {
     tph: Number(avgTph.toFixed(2)),
     adjusted_tph: avgAdjustedTph != null ? Number(avgAdjustedTph.toFixed(2)) : null,
+    sla_hr: Number(avgSlaHr.toFixed(2)),
     transfers: Number(avgTransfers.toFixed(1)),
     conversion_rate: Number(avgConvRate.toFixed(1)),
     connect_rate: Number(avgConnRate.toFixed(1)),
@@ -77,5 +81,5 @@ export async function GET(req: NextRequest) {
     days_worked: len,
   };
 
-  return NextResponse.json({ latest, recentDays, averages, totals });
+  return jsonWithCache({ latest, recentDays, averages, totals }, 300, 600);
 }

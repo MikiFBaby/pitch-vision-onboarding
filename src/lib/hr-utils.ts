@@ -268,15 +268,26 @@ function collapseLetters(s: string): string {
 }
 
 /**
+ * Strip common suffixes (Jr, Sr, II, III, etc.) from a name string.
+ */
+function stripSuffix(s: string): string {
+    return s.replace(/\b(jr\.?|sr\.?|ii|iii|iv)\s*$/i, '').trim();
+}
+
+/**
  * Generate all plausible lookup keys for a person's name.
  * Used to cross-reference schedule/break data against employee directory.
  * Keys are pipe-separated "first|last" format, all lowercase.
  *
  * Handles:
  * - Multi-part first names / middle names ("Tanisha Elizabeth Ania"|"King" → "tanisha|king")
+ * - Middle names stored in last_name ("Amanda"|"Rose Hoang" → "amanda|hoang")
  * - Hyphenated last names ("Brian"|"Johnson-Lennord" → "brian|lennord")
  * - Apostrophes/punctuation ("Jurnee'"|"Cason" → "jurnee|cason")
  * - Full name in first column ("Portia Washington"|"" → "portia|washington")
+ * - Suffixes ("Luis"|"A Nieves Jr" → "luis|nieves")
+ * - Name swap ("Davidson"|"Elie" → "elie|davidson")
+ * - Short first name matching ("Alex"|"Rodney" also checks "alexander|rodney")
  */
 export function scheduleNameKeys(firstName: string | null, lastName: string | null): string[] {
     const f = (firstName || '').trim().toLowerCase();
@@ -296,7 +307,7 @@ export function scheduleNameKeys(firstName: string | null, lastName: string | nu
 
     const fParts = f.split(/\s+/).filter(Boolean);
 
-    // First word of first name + last name (skips middle names)
+    // First word of first name + last name (skips middle names in first_name)
     if (fParts.length > 1) {
         keys.add(`${fParts[0]}|${l}`);
         keys.add(`${stripPunct(fParts[0])}|${stripPunct(l)}`);
@@ -311,11 +322,79 @@ export function scheduleNameKeys(firstName: string | null, lastName: string | nu
 
     // Hyphenated/compound last name → each part as separate key
     const lParts = l.split(/[\s-]+/).filter(p => p.length > 1);
+    // Also keep ALL parts (including single-letter initials) for initial detection
+    const lPartsAll = l.split(/[\s-]+/).filter(Boolean);
     if (lParts.length > 1) {
         const fKey = fParts[0] || f;
         for (const part of lParts) {
             keys.add(`${fKey}|${part}`);
             keys.add(`${stripPunct(fKey)}|${stripPunct(part)}`);
+        }
+    }
+
+    // Middle names stored in last_name field ("Rose Hoang" → try just "Hoang")
+    // Strip single-letter initials too ("A Nieves Jr" → "Nieves")
+    if (lParts.length > 1) {
+        const fKey = fParts[0] || f;
+        const lastWord = lParts[lParts.length - 1];
+        // Last word of last name (skip middle names and initials)
+        const stripped = stripSuffix(lastWord);
+        if (stripped.length > 1) {
+            keys.add(`${fKey}|${stripped}`);
+            keys.add(`${stripPunct(fKey)}|${stripPunct(stripped)}`);
+        }
+        // Also try second-to-last word if last word is a suffix
+        if (lParts.length > 2) {
+            const secondToLast = stripSuffix(lParts[lParts.length - 2]);
+            if (secondToLast.length > 1) {
+                keys.add(`${fKey}|${secondToLast}`);
+            }
+        }
+    }
+
+    // Suffix removal from last name ("Nieves Jr" → "Nieves")
+    const lStripped = stripSuffix(l);
+    if (lStripped !== l && lStripped.length > 1) {
+        const fKey = fParts[0] || f;
+        keys.add(`${fKey}|${lStripped}`);
+        keys.add(`${stripPunct(fKey)}|${stripPunct(lStripped)}`);
+        // Also strip middle initials from the suffix-stripped version
+        const lStrippedParts = lStripped.split(/\s+/).filter(p => p.length > 1);
+        if (lStrippedParts.length > 1) {
+            const lastSignificant = lStrippedParts[lStrippedParts.length - 1];
+            keys.add(`${fKey}|${lastSignificant}`);
+        }
+    }
+
+    // Single-letter initial removal from last name ("C Whitney" → "Whitney", "A Nieves" → "Nieves")
+    // Uses lPartsAll which preserves single-letter parts
+    if (lPartsAll.length >= 2 && lPartsAll[0].length === 1) {
+        const fKey = fParts[0] || f;
+        const withoutInitial = lPartsAll.slice(1).join(' ');
+        keys.add(`${fKey}|${withoutInitial}`);
+        keys.add(`${fKey}|${stripSuffix(withoutInitial)}`);
+    }
+
+    // First name + first word of last name combined as compound first name
+    // Handles: dir "Mir"|"Zariful Karim" matching sched "Mir-Zariful"|"Karim"
+    if (lPartsAll.length >= 2) {
+        const fKey = fParts[0] || f;
+        const combinedFirst = `${fKey} ${lPartsAll[0]}`;
+        const remainingLast = lPartsAll.slice(1).join(' ');
+        const strippedLast = stripSuffix(remainingLast);
+        // Space, hyphen, and collapsed variants
+        keys.add(`${combinedFirst}|${strippedLast}`);
+        keys.add(`${combinedFirst.replace(/\s+/g, '-')}|${strippedLast}`);
+        keys.add(`${combinedFirst.replace(/\s+/g, '')}|${strippedLast}`);
+    }
+
+    // Name swap: first ↔ last (handles "Davidson Elie" in directory = "Elie Davidson" in schedule)
+    if (f && l) {
+        keys.add(`${l}|${f}`);
+        keys.add(`${stripPunct(l)}|${stripPunct(f)}`);
+        // Swap with first word only
+        if (fParts.length > 1) {
+            keys.add(`${l}|${fParts[0]}`);
         }
     }
 
@@ -325,6 +404,34 @@ export function scheduleNameKeys(firstName: string | null, lastName: string | nu
         keys.add(`${fKey}|${l.slice(0, -1)}`);
     } else if (l.length > 2) {
         keys.add(`${fKey}|${l}s`);
+    }
+
+    // Short first name → try with common longer variants
+    // Also: generate "first 3+ letters" prefix key for nickname tolerance
+    if (f.length >= 3 && f.length <= 5) {
+        // Add prefix-based key: match any schedule name starting with these letters
+        // This is handled at lookup time, but we add the collapsed prefix key
+        keys.add(`${collapseLetters(f)}|${collapseLetters(l)}`);
+    }
+
+    // Hyphen-space equivalence in first name ("Lisa-Ann" = "Lisa- ann" = "Lisa Ann")
+    if (f.includes('-') || f.includes(' ')) {
+        const normalized = f.replace(/[-\s]+/g, '-');
+        const spaced = f.replace(/[-\s]+/g, ' ');
+        const collapsed = f.replace(/[-\s]+/g, '');
+        keys.add(`${normalized}|${l}`);
+        keys.add(`${spaced}|${l}`);
+        keys.add(`${collapsed}|${l}`);
+        // Also try with stripped punctuation on both sides
+        keys.add(`${stripPunct(normalized)}|${stripPunct(l)}`);
+        keys.add(`${stripPunct(spaced)}|${stripPunct(l)}`);
+    }
+
+    // Period/dot in last name ("St.Louis" = "St Louis")
+    if (l.includes('.')) {
+        const dotless = l.replace(/\./g, ' ').replace(/\s+/g, ' ').trim();
+        keys.add(`${fKey}|${dotless}`);
+        keys.add(`${fKey}|${dotless.replace(/\s+/g, '')}`);
     }
 
     return [...keys].filter(k => k !== '|');

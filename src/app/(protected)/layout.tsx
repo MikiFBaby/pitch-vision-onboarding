@@ -2,6 +2,7 @@
 import React, { useEffect, Suspense } from "react";
 import { useAuth } from "@/context/AuthContext";
 import { QAProvider } from "@/context/QAContext";
+import SWRProvider from "@/components/providers/SWRProvider";
 import { useRouter, usePathname, useSearchParams } from "next/navigation";
 
 function ProtectedLayoutInner({
@@ -77,9 +78,11 @@ function ProtectedLayoutInner({
     if (!user && !isQaLocked) return null;
 
     return (
-        <QAProvider>
-            {children}
-        </QAProvider>
+        <SWRProvider>
+            <QAProvider>
+                {children}
+            </QAProvider>
+        </SWRProvider>
     );
 }
 

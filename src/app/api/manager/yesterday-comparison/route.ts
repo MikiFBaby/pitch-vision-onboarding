@@ -1,12 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import { getCached, setCache } from "@/utils/dialedin-cache";
+import { jsonWithCache } from "@/utils/api-cache";
 
 /**
  * GET /api/manager/yesterday-comparison?team=jade%20aca,aragon
  *
  * Returns yesterday's final results + same-time-yesterday comparison + EOD projection.
- * Used by the Manager GM Cockpit for trend context.
+ * Used by the Manager Team Hub for trend context.
  */
 
 interface AgentYesterday {
@@ -54,7 +55,7 @@ export async function GET(req: NextRequest) {
     // Cache keyed by team + hour — yesterday's perf is static, same-time changes hourly
     const cacheKey = `yesterday-comparison:${teamParam}:${currentHour}`;
     const cached = getCached<Record<string, unknown>>(cacheKey);
-    if (cached) return NextResponse.json(cached);
+    if (cached) return jsonWithCache(cached, 900, 1800);
 
     // --- Fetch perf + snapshots in PARALLEL (both independent, both DB-team-filtered) ---
     const PAGE = 5000;
@@ -297,5 +298,5 @@ export async function GET(req: NextRequest) {
 
     // Cache for 15 min — hour-keyed so same-time comparison updates when hour changes
     setCache(cacheKey, result, 15 * 60_000);
-    return NextResponse.json(result);
+    return jsonWithCache(result, 900, 1800);
 }

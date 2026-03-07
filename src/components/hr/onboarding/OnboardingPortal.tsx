@@ -51,6 +51,7 @@ import {
     maskSSN, maskSIN
 } from "@/utils/ssn-sin-validation";
 import { DocusealForm } from "@docuseal/react";
+import { US_STATES, US_STATE_NAMES, getWorkCompCode } from "@/lib/decisionhr-config";
 
 interface ChecklistItem {
     id: string;
@@ -93,6 +94,7 @@ const SIN_ITEM_ID = "2efe0756-a759-4527-8b63-8ce9e2713b44";
 const PAYROLL_USA_ITEM_ID = "c0a80121-0002-4000-8000-000000000005";
 const PAYROLL_CANADA_ITEM_ID = "c0a80121-0002-4000-8000-000000000006";
 const SCHEDULE_ITEM_ID = "c0a80121-0004-4000-8000-000000000001";
+const PHOTO_ID_ITEM_ID = "2c3161b2-81a9-467c-bc01-2f0ac5838175";
 
 const DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"] as const;
 const DAY_LABELS = { monday: "Mon", tuesday: "Tue", wednesday: "Wed", thursday: "Thu", friday: "Fri", saturday: "Sat" } as const;
@@ -454,6 +456,17 @@ export default function OnboardingPortal({ onAddNewHire }: OnboardingPortalProps
     const [scheduleInputs, setScheduleInputs] = useState<Record<string, ScheduleInputs>>({});
     const [savingSchedule, setSavingSchedule] = useState<string | null>(null);
 
+    // DecisionHR push + OCR address state
+    const [addressData, setAddressData] = useState<Record<string, { street: string; city: string; state: string; zip: string }>>({});
+    const [addressInputs, setAddressInputs] = useState<Record<string, { street: string; city: string; state: string; zip: string }>>({});
+    const [ocrLoading, setOcrLoading] = useState<string | null>(null);
+    const [ocrResult, setOcrResult] = useState<Record<string, { confidence: number; rawText: string } | null>>({});
+    const [savingAddress, setSavingAddress] = useState<string | null>(null);
+    const [pushConfirm, setPushConfirm] = useState<{ hireId: string; hire: NewHire } | null>(null);
+    const [pushLoading, setPushLoading] = useState(false);
+    const [pushResult, setPushResult] = useState<{ success: boolean; fileUrl?: string; submissionId?: string; sharepointStatus?: string; error?: string } | null>(null);
+    const [pushReportsTo, setPushReportsTo] = useState("");
+
     const handleSaveSlackId = async (hire: NewHire) => {
         if (!hire.employeeId) return;
         const slackId = slackIdInputs[hire.id]?.trim();
@@ -728,10 +741,102 @@ export default function OnboardingPortal({ onAddNewHire }: OnboardingPortalProps
             }
 
             await updateNewHireStatus(newHireId);
+
+            // Trigger OCR for Photo ID uploads (USA hires only)
+            if (item.id === PHOTO_ID_ITEM_ID) {
+                const hireMatch = newHires.find(h => h.id === newHireId);
+                if (hireMatch?.country === "USA" && hireMatch.employeeId) {
+                    setOcrLoading(newHireId);
+                    try {
+                        const ocrRes = await fetch("/api/hr/ocr/extract-id", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ imageUrl: publicUrl, employeeId: hireMatch.employeeId, newHireId }),
+                        });
+                        const ocrData = await ocrRes.json();
+                        if (ocrData.extractedAddress) {
+                            const addr = ocrData.extractedAddress;
+                            setAddressData(prev => ({ ...prev, [newHireId]: { street: addr.street || "", city: addr.city || "", state: addr.state || "", zip: addr.zip || "" } }));
+                            setAddressInputs(prev => ({ ...prev, [newHireId]: { street: addr.street || "", city: addr.city || "", state: addr.state || "", zip: addr.zip || "" } }));
+                            setOcrResult(prev => ({ ...prev, [newHireId]: { confidence: ocrData.confidence, rawText: ocrData.rawText } }));
+                        } else {
+                            setAddressInputs(prev => ({ ...prev, [newHireId]: { street: "", city: "", state: "", zip: "" } }));
+                            setOcrResult(prev => ({ ...prev, [newHireId]: null }));
+                        }
+                    } catch {
+                        setAddressInputs(prev => ({ ...prev, [newHireId]: { street: "", city: "", state: "", zip: "" } }));
+                        setOcrResult(prev => ({ ...prev, [newHireId]: null }));
+                    } finally {
+                        setOcrLoading(null);
+                    }
+                }
+            }
         } catch (error) {
             console.error("Error uploading document:", error);
         } finally {
             setUploadingItemId(null);
+        }
+    };
+
+    const handleSaveAddress = async (hire: NewHire) => {
+        if (!hire.employeeId) return;
+        const addr = addressInputs[hire.id];
+        if (!addr) return;
+
+        setSavingAddress(hire.id);
+        try {
+            await supabase
+                .from("employee_directory")
+                .update({
+                    street_address: addr.street.trim() || null,
+                    city: addr.city.trim() || null,
+                    state: addr.state.trim() || null,
+                    zip_code: addr.zip.trim() || null,
+                })
+                .eq("id", hire.employeeId);
+
+            setAddressData(prev => ({ ...prev, [hire.id]: { ...addr } }));
+        } catch (error) {
+            console.error("Error saving address:", error);
+        } finally {
+            setSavingAddress(null);
+        }
+    };
+
+    const handlePushToDecisionHR = async () => {
+        if (!pushConfirm) return;
+        const { hire } = pushConfirm;
+
+        setPushLoading(true);
+        setPushResult(null);
+        try {
+            const res = await fetch("/api/hr/decisionhr/push", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    newHireId: hire.id,
+                    employeeId: hire.employeeId,
+                    reportsTo: pushReportsTo.trim(),
+                    submittedBy: "hr-portal",
+                }),
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                setPushResult({ success: false, error: data.error || "Push failed" });
+            } else {
+                setPushResult({
+                    success: true,
+                    fileUrl: data.fileUrl,
+                    submissionId: data.submissionId,
+                    sharepointStatus: data.sharepointStatus,
+                });
+                fetchNewHires();
+            }
+        } catch (error) {
+            console.error("Error pushing to DecisionHR:", error);
+            setPushResult({ success: false, error: "Network error" });
+        } finally {
+            setPushLoading(false);
         }
     };
 
@@ -1427,6 +1532,7 @@ export default function OnboardingPortal({ onAddNewHire }: OnboardingPortalProps
                                                                         const isSsnSinItem = item.id === SSN_ITEM_ID || item.id === SIN_ITEM_ID;
                                                                         const isPayrollItem = item.id === PAYROLL_USA_ITEM_ID || item.id === PAYROLL_CANADA_ITEM_ID;
                                                                         const isScheduleItem = item.id === SCHEDULE_ITEM_ID;
+                                                                        const isPhotoIdItem = item.id === PHOTO_ID_ITEM_ID;
                                                                         const isAutoManaged = isContractItem || isMaterialsSent || isPayrollItem || isSsnSinItem;
                                                                         const payrollProvider = item.id === PAYROLL_USA_ITEM_ID ? "DecisionHR" : "Payworks";
 
@@ -1630,7 +1736,23 @@ export default function OnboardingPortal({ onAddNewHire }: OnboardingPortalProps
                                                                                             <button
                                                                                                 onClick={(e) => {
                                                                                                     e.stopPropagation();
-                                                                                                    alert(`Push to ${payrollProvider} — API integration coming soon`);
+                                                                                                    if (payrollProvider === "DecisionHR") {
+                                                                                                        const ssnItem = hire.checklist.find(c => c.id === SSN_ITEM_ID);
+                                                                                                        const addr = addressData[hire.id] || addressInputs[hire.id];
+                                                                                                        if (!ssnItem?.notes) {
+                                                                                                            alert("SSN is required before pushing to DecisionHR");
+                                                                                                            return;
+                                                                                                        }
+                                                                                                        if (!addr?.state) {
+                                                                                                            alert("State is required for Work Comp Code. Please enter it in the Photo ID address section.");
+                                                                                                            return;
+                                                                                                        }
+                                                                                                        setPushConfirm({ hireId: hire.id, hire });
+                                                                                                        setPushReportsTo("");
+                                                                                                        setPushResult(null);
+                                                                                                    } else {
+                                                                                                        alert(`Push to ${payrollProvider} — API integration coming soon`);
+                                                                                                    }
                                                                                                 }}
                                                                                                 className="flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-emerald-500/10 text-emerald-300 text-xs font-semibold hover:bg-emerald-500/20 border border-emerald-500/20 hover:border-emerald-500/30 transition-all duration-200"
                                                                                             >
@@ -1964,6 +2086,120 @@ export default function OnboardingPortal({ onAddNewHire }: OnboardingPortalProps
                                                                                     </span>
                                                                                 </div>
                                                                             )}
+                                                                            {/* Address review section after Photo ID upload (USA only) */}
+                                                                            {isPhotoIdItem && hire.country === "USA" && (addressInputs[hire.id] || addressData[hire.id]) && (
+                                                                                <div className="mt-3 pl-8 space-y-2" onClick={(e) => e.stopPropagation()}>
+                                                                                    {ocrLoading === hire.id ? (
+                                                                                        <div className="flex items-center gap-2 text-xs text-zinc-400">
+                                                                                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                                                                            Extracting address from Photo ID...
+                                                                                        </div>
+                                                                                    ) : (
+                                                                                        <>
+                                                                                            <div className="flex items-center gap-2 mb-1.5">
+                                                                                                <MapPin className="w-3.5 h-3.5 text-zinc-400" />
+                                                                                                <span className="text-[10px] font-semibold text-zinc-300 uppercase tracking-wider">Address</span>
+                                                                                                {ocrResult[hire.id] ? (
+                                                                                                    <span className="text-[10px] text-emerald-400/70">
+                                                                                                        Extracted from Photo ID ({Math.round((ocrResult[hire.id]?.confidence || 0) * 100)}% confidence)
+                                                                                                    </span>
+                                                                                                ) : ocrResult[hire.id] === null ? (
+                                                                                                    <span className="text-[10px] text-amber-400/70">
+                                                                                                        Could not extract — please enter manually
+                                                                                                    </span>
+                                                                                                ) : null}
+                                                                                            </div>
+                                                                                            <div className="grid grid-cols-2 gap-2">
+                                                                                                <div className="col-span-2">
+                                                                                                    <label className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider">Street</label>
+                                                                                                    <input
+                                                                                                        type="text"
+                                                                                                        placeholder="123 Main St"
+                                                                                                        value={addressInputs[hire.id]?.street || ""}
+                                                                                                        onChange={(e) => setAddressInputs(prev => ({
+                                                                                                            ...prev,
+                                                                                                            [hire.id]: { ...(prev[hire.id] || { street: "", city: "", state: "", zip: "" }), street: e.target.value }
+                                                                                                        }))}
+                                                                                                        className="w-full mt-0.5 px-2.5 py-1.5 rounded-md bg-white/[0.05] border border-white/[0.08] text-white text-xs placeholder-zinc-500 focus:outline-none focus:border-emerald-500/30 focus:bg-white/[0.07] transition-all"
+                                                                                                    />
+                                                                                                </div>
+                                                                                                <div>
+                                                                                                    <label className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider">City</label>
+                                                                                                    <input
+                                                                                                        type="text"
+                                                                                                        placeholder="City"
+                                                                                                        value={addressInputs[hire.id]?.city || ""}
+                                                                                                        onChange={(e) => setAddressInputs(prev => ({
+                                                                                                            ...prev,
+                                                                                                            [hire.id]: { ...(prev[hire.id] || { street: "", city: "", state: "", zip: "" }), city: e.target.value }
+                                                                                                        }))}
+                                                                                                        className="w-full mt-0.5 px-2.5 py-1.5 rounded-md bg-white/[0.05] border border-white/[0.08] text-white text-xs placeholder-zinc-500 focus:outline-none focus:border-emerald-500/30 focus:bg-white/[0.07] transition-all"
+                                                                                                    />
+                                                                                                </div>
+                                                                                                <div className="grid grid-cols-2 gap-2">
+                                                                                                    <div>
+                                                                                                        <label className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider">State</label>
+                                                                                                        <select
+                                                                                                            value={addressInputs[hire.id]?.state || ""}
+                                                                                                            onChange={(e) => setAddressInputs(prev => ({
+                                                                                                                ...prev,
+                                                                                                                [hire.id]: { ...(prev[hire.id] || { street: "", city: "", state: "", zip: "" }), state: e.target.value }
+                                                                                                            }))}
+                                                                                                            className="w-full mt-0.5 px-2 py-1.5 rounded-md bg-white/[0.05] border border-white/[0.08] text-white text-xs focus:outline-none focus:border-emerald-500/30 focus:bg-white/[0.07] transition-all"
+                                                                                                        >
+                                                                                                            <option value="" className="bg-zinc-800">Select</option>
+                                                                                                            {US_STATES.map(s => (
+                                                                                                                <option key={s} value={s} className="bg-zinc-800">{s} — {US_STATE_NAMES[s]}</option>
+                                                                                                            ))}
+                                                                                                        </select>
+                                                                                                    </div>
+                                                                                                    <div>
+                                                                                                        <label className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider">ZIP</label>
+                                                                                                        <input
+                                                                                                            type="text"
+                                                                                                            placeholder="12345"
+                                                                                                            value={addressInputs[hire.id]?.zip || ""}
+                                                                                                            onChange={(e) => setAddressInputs(prev => ({
+                                                                                                                ...prev,
+                                                                                                                [hire.id]: { ...(prev[hire.id] || { street: "", city: "", state: "", zip: "" }), zip: e.target.value }
+                                                                                                            }))}
+                                                                                                            maxLength={10}
+                                                                                                            className="w-full mt-0.5 px-2.5 py-1.5 rounded-md bg-white/[0.05] border border-white/[0.08] text-white text-xs placeholder-zinc-500 focus:outline-none focus:border-emerald-500/30 focus:bg-white/[0.07] transition-all"
+                                                                                                        />
+                                                                                                    </div>
+                                                                                                </div>
+                                                                                            </div>
+                                                                                            {addressInputs[hire.id]?.state && getWorkCompCode(addressInputs[hire.id]?.state) && (
+                                                                                                <p className="text-[10px] text-zinc-400">
+                                                                                                    Work Comp: <span className="text-zinc-300">{getWorkCompCode(addressInputs[hire.id]?.state)}</span>
+                                                                                                </p>
+                                                                                            )}
+                                                                                            {addressInputs[hire.id]?.state && !getWorkCompCode(addressInputs[hire.id]?.state) && (
+                                                                                                <p className="text-[10px] text-amber-400/70">
+                                                                                                    No Work Comp Code mapped for {addressInputs[hire.id]?.state} — contact DecisionHR
+                                                                                                </p>
+                                                                                            )}
+                                                                                            <div className="flex items-center gap-2">
+                                                                                                <button
+                                                                                                    onClick={() => handleSaveAddress(hire)}
+                                                                                                    disabled={savingAddress === hire.id}
+                                                                                                    className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-emerald-500/10 text-emerald-300 text-xs font-medium hover:bg-emerald-500/20 border border-emerald-500/20 transition-all duration-200 disabled:opacity-40 disabled:cursor-not-allowed"
+                                                                                                >
+                                                                                                    {savingAddress === hire.id ? (
+                                                                                                        <Loader2 className="w-3 h-3 animate-spin" />
+                                                                                                    ) : (
+                                                                                                        <CheckCircle2 className="w-3 h-3" />
+                                                                                                    )}
+                                                                                                    Save Address
+                                                                                                </button>
+                                                                                                {addressData[hire.id]?.state && (
+                                                                                                    <span className="text-[10px] text-emerald-400/60">Saved</span>
+                                                                                                )}
+                                                                                            </div>
+                                                                                        </>
+                                                                                    )}
+                                                                                </div>
+                                                                            )}
                                                                         </div>
                                                                         );
                                                                     })}
@@ -2115,6 +2351,204 @@ export default function OnboardingPortal({ onAddNewHire }: OnboardingPortalProps
                                     withTitle={false}
                                     withSendCopyButton={false}
                                 />
+                            </div>
+                        </motion.div>
+                    </motion.div>
+                )}
+            </AnimatePresence>
+
+            {/* ── DecisionHR Push Confirmation Modal ──────────────── */}
+            <AnimatePresence>
+                {pushConfirm && (
+                    <motion.div
+                        className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 backdrop-blur-sm"
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        onClick={() => !pushLoading && (setPushConfirm(null), setPushResult(null))}
+                    >
+                        <motion.div
+                            initial={{ scale: 0.95, opacity: 0 }}
+                            animate={{ scale: 1, opacity: 1 }}
+                            exit={{ scale: 0.95, opacity: 0 }}
+                            transition={{ duration: 0.2, ease: [0.25, 0.1, 0.25, 1] }}
+                            onClick={(e) => e.stopPropagation()}
+                            className="w-full max-w-md mx-4 bg-zinc-900 rounded-2xl border border-white/[0.08] shadow-2xl overflow-hidden"
+                        >
+                            <div className="p-6 space-y-4">
+                                <div className="flex items-center gap-3">
+                                    <div className="p-2.5 rounded-xl bg-emerald-500/10 border border-emerald-500/15">
+                                        <Building2 className="w-5 h-5 text-emerald-400" />
+                                    </div>
+                                    <div>
+                                        <h3 className="text-base font-bold text-white">Push to DecisionHR</h3>
+                                        <p className="text-xs text-zinc-500 mt-0.5">Generate payroll template and upload</p>
+                                    </div>
+                                </div>
+
+                                {!pushResult ? (
+                                    <>
+                                        <div className="space-y-2 text-sm">
+                                            <div className="flex justify-between py-1.5 border-b border-white/[0.04]">
+                                                <span className="text-zinc-400">Employee</span>
+                                                <span className="text-white font-medium">{pushConfirm.hire.firstName} {pushConfirm.hire.lastName}</span>
+                                            </div>
+                                            <div className="flex justify-between py-1.5 border-b border-white/[0.04]">
+                                                <span className="text-zinc-400">SSN</span>
+                                                <span className="text-white font-mono text-xs">
+                                                    {(() => {
+                                                        const ssnItem = pushConfirm.hire.checklist.find(c => c.id === SSN_ITEM_ID);
+                                                        return ssnItem?.notes ? `***-**-${ssnItem.notes.replace(/\D/g, "").slice(-4)}` : "—";
+                                                    })()}
+                                                </span>
+                                            </div>
+                                            <div className="flex justify-between py-1.5 border-b border-white/[0.04]">
+                                                <span className="text-zinc-400">Wage</span>
+                                                <span className="text-white">${pushConfirm.hire.hourlyWage?.toFixed(2) || "—"}/hr</span>
+                                            </div>
+                                            {(() => {
+                                                const addr = addressData[pushConfirm.hire.id] || addressInputs[pushConfirm.hire.id];
+                                                return addr ? (
+                                                    <>
+                                                        <div className="flex justify-between py-1.5 border-b border-white/[0.04]">
+                                                            <span className="text-zinc-400">State</span>
+                                                            <span className="text-white">{addr.state} — {US_STATE_NAMES[addr.state] || ""}</span>
+                                                        </div>
+                                                        <div className="flex justify-between py-1.5 border-b border-white/[0.04]">
+                                                            <span className="text-zinc-400">Work Comp</span>
+                                                            <span className="text-white text-xs">{getWorkCompCode(addr.state) || "Not mapped"}</span>
+                                                        </div>
+                                                        {addr.street && (
+                                                            <div className="flex justify-between py-1.5 border-b border-white/[0.04]">
+                                                                <span className="text-zinc-400">Address</span>
+                                                                <span className="text-white text-xs text-right max-w-[220px]">{addr.street}, {addr.city}, {addr.state} {addr.zip}</span>
+                                                            </div>
+                                                        )}
+                                                    </>
+                                                ) : null;
+                                            })()}
+                                        </div>
+
+                                        <div>
+                                            <label className="text-[10px] font-semibold text-zinc-400 uppercase tracking-wider">Reports To (optional)</label>
+                                            <input
+                                                type="text"
+                                                placeholder="Supervisor name..."
+                                                value={pushReportsTo}
+                                                onChange={(e) => setPushReportsTo(e.target.value)}
+                                                className="w-full mt-1 px-3 py-2 rounded-lg bg-white/[0.05] border border-white/[0.08] text-white text-sm placeholder-zinc-500 focus:outline-none focus:border-emerald-500/30 focus:bg-white/[0.07] transition-all"
+                                            />
+                                        </div>
+
+                                        <div className="flex gap-3 pt-1">
+                                            <button
+                                                onClick={() => { setPushConfirm(null); setPushResult(null); }}
+                                                disabled={pushLoading}
+                                                className="flex-1 py-2.5 rounded-xl bg-white/[0.06] text-zinc-300 text-sm font-medium hover:bg-white/[0.1] border border-white/[0.06] transition-all duration-200 disabled:opacity-50"
+                                            >
+                                                Cancel
+                                            </button>
+                                            <button
+                                                onClick={handlePushToDecisionHR}
+                                                disabled={pushLoading}
+                                                className="flex-1 py-2.5 rounded-xl bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-500 transition-all duration-200 disabled:opacity-50 flex items-center justify-center gap-2"
+                                            >
+                                                {pushLoading ? (
+                                                    <>
+                                                        <Loader2 className="w-4 h-4 animate-spin" />
+                                                        Pushing...
+                                                    </>
+                                                ) : (
+                                                    <>
+                                                        <ArrowUpRight className="w-4 h-4" />
+                                                        Push to DecisionHR
+                                                    </>
+                                                )}
+                                            </button>
+                                        </div>
+                                    </>
+                                ) : pushResult.success ? (
+                                    <div className="space-y-3">
+                                        <div className="flex items-center gap-2 p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/15">
+                                            <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0" />
+                                            <div>
+                                                <p className="text-sm font-medium text-emerald-300">
+                                                    {pushResult.sharepointStatus === "uploaded" ? "Uploaded to DecisionHR drive" : "Template generated"}
+                                                </p>
+                                                {pushResult.sharepointStatus !== "uploaded" && (
+                                                    <p className="text-xs text-zinc-400 mt-0.5">OneDrive upload not configured — download file manually</p>
+                                                )}
+                                            </div>
+                                        </div>
+                                        {pushResult.fileUrl && (
+                                            <a
+                                                href={pushResult.fileUrl}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="flex items-center justify-center gap-2 w-full py-2 rounded-lg bg-white/[0.06] text-zinc-300 text-sm font-medium hover:bg-white/[0.1] border border-white/[0.06] transition-all"
+                                            >
+                                                <Download className="w-4 h-4" />
+                                                Download Template
+                                            </a>
+                                        )}
+                                        {pushResult.sharepointStatus === "failed" && pushResult.submissionId && (
+                                            <button
+                                                onClick={async () => {
+                                                    setPushLoading(true);
+                                                    try {
+                                                        const res = await fetch("/api/hr/decisionhr/retry-upload", {
+                                                            method: "POST",
+                                                            headers: { "Content-Type": "application/json" },
+                                                            body: JSON.stringify({ submissionId: pushResult.submissionId }),
+                                                        });
+                                                        const data = await res.json();
+                                                        if (res.ok) {
+                                                            setPushResult(prev => prev ? { ...prev, sharepointStatus: "uploaded" } : null);
+                                                        } else {
+                                                            alert(`Retry failed: ${data.error || "Unknown error"}`);
+                                                        }
+                                                    } catch {
+                                                        alert("Retry failed: Network error");
+                                                    } finally {
+                                                        setPushLoading(false);
+                                                    }
+                                                }}
+                                                disabled={pushLoading}
+                                                className="flex items-center justify-center gap-2 w-full py-2 rounded-lg bg-amber-500/10 text-amber-300 text-sm font-medium hover:bg-amber-500/20 border border-amber-500/20 transition-all disabled:opacity-50"
+                                            >
+                                                {pushLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                                                Retry Upload
+                                            </button>
+                                        )}
+                                        <button
+                                            onClick={() => { setPushConfirm(null); setPushResult(null); }}
+                                            className="w-full py-2.5 rounded-xl bg-white/[0.06] text-zinc-300 text-sm font-medium hover:bg-white/[0.1] border border-white/[0.06] transition-all duration-200"
+                                        >
+                                            Close
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <div className="space-y-3">
+                                        <div className="flex items-center gap-2 p-3 rounded-lg bg-red-500/10 border border-red-500/15">
+                                            <AlertCircle className="w-5 h-5 text-red-400 shrink-0" />
+                                            <p className="text-sm text-red-300">{pushResult.error || "Push failed"}</p>
+                                        </div>
+                                        <div className="flex gap-3">
+                                            <button
+                                                onClick={() => { setPushConfirm(null); setPushResult(null); }}
+                                                className="flex-1 py-2.5 rounded-xl bg-white/[0.06] text-zinc-300 text-sm font-medium hover:bg-white/[0.1] border border-white/[0.06] transition-all duration-200"
+                                            >
+                                                Close
+                                            </button>
+                                            <button
+                                                onClick={() => setPushResult(null)}
+                                                className="flex-1 py-2.5 rounded-xl bg-amber-500/10 text-amber-300 text-sm font-medium hover:bg-amber-500/20 border border-amber-500/20 transition-all duration-200"
+                                            >
+                                                Try Again
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         </motion.div>
                     </motion.div>

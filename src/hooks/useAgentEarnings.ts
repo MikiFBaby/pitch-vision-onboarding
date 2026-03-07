@@ -1,14 +1,16 @@
-"use client";
-
-import { useState, useEffect, useCallback } from "react";
+import useSWR from "swr";
 
 export interface EarningsData {
-  hourly_wage_usd: number;
+  hourly_wage: number;
+  currency: string;
   country: string | null;
   pay_period: { start: string; end: string };
   period_hours: number;
-  period_earnings_usd: number;
+  period_paid_hours: number;
+  period_earnings: number;
+  period_transfers: number;
   period_days_worked: number;
+  period_avg_sla_hr: number;
 }
 
 interface UseAgentEarningsReturn {
@@ -19,31 +21,16 @@ interface UseAgentEarningsReturn {
 }
 
 export function useAgentEarnings(agentName: string | undefined): UseAgentEarningsReturn {
-  const [data, setData] = useState<EarningsData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const key = agentName
+    ? `/api/agent/earnings?agent=${encodeURIComponent(agentName)}`
+    : null;
 
-  const fetchData = useCallback(async () => {
-    if (!agentName) { setLoading(false); return; }
-    try {
-      const res = await fetch(`/api/agent/earnings?agent=${encodeURIComponent(agentName)}`);
-      if (res.ok) {
-        setData(await res.json());
-        setError(null);
-      } else {
-        setError(`API returned ${res.status}`);
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unknown error");
-    } finally {
-      setLoading(false);
-    }
-  }, [agentName]);
+  const { data, isLoading, error, mutate } = useSWR<EarningsData>(key);
 
-  useEffect(() => {
-    setLoading(true);
-    fetchData();
-  }, [fetchData]);
-
-  return { data, loading, error, refetch: fetchData };
+  return {
+    data: data ?? null,
+    loading: isLoading,
+    error: error ? (error instanceof Error ? error.message : "Unknown error") : null,
+    refetch: mutate,
+  };
 }

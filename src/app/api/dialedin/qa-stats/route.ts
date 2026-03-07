@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
 import type { AgentQAStats } from "@/types/dialedin-types";
+import { jsonWithCache } from "@/utils/api-cache";
 
 export const runtime = "nodejs";
 
@@ -24,8 +25,8 @@ export async function GET(request: NextRequest) {
       .not("agent_name", "is", null);
 
     if (agent) {
-      // Use wildcard for fuzzy matching (handles trailing spaces, slight variations)
-      query = query.ilike("agent_name", `%${agent.trim()}%`);
+      // Trailing wildcard only — handles trailing spaces while allowing index usage
+      query = query.ilike("agent_name", `${agent.trim()}%`);
     }
 
     const { data, error } = await query;
@@ -117,7 +118,7 @@ export async function GET(request: NextRequest) {
       }
     }
 
-    return NextResponse.json({ data: result });
+    return jsonWithCache({ data: result }, 300, 600);
   } catch (err) {
     return NextResponse.json(
       {

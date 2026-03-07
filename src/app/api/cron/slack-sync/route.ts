@@ -25,6 +25,7 @@ const EXCLUDED_SLACK_IDS = new Set([
     'U032D1HHH2M', // Mohamed Roumieh (Moe) — not in our department
     'U0A2F5D9HKQ', // Maz — duplicate/alt of Maaz Khan (U06GRC03A5R)
     'U0A2H6GBGCA', // Maaz/Can — duplicate/alt of Maaz Khan (U06GRC03A5R)
+    'U064LJNKTSR', // Michael Matewe — fired, not our department
 ]);
 
 // Slack display names / real names that should be skipped (lowercased)
@@ -92,12 +93,12 @@ export async function GET(request: NextRequest) {
     }
 
     const results: {
-        reconcile: { matched: number; added: number; reactivated: number; backfilled: number; terminated: number; duplicateSkipped: number };
+        reconcile: { matched: number; added: number; reactivated: number; backfilled: number; duplicateSkipped: number };
         campaigns: { updated: number; cleared: number };
         photos: { backfilled: number; refreshed: number };
         errors: string[];
     } = {
-        reconcile: { matched: 0, added: 0, reactivated: 0, backfilled: 0, terminated: 0, duplicateSkipped: 0 },
+        reconcile: { matched: 0, added: 0, reactivated: 0, backfilled: 0, duplicateSkipped: 0 },
         campaigns: { updated: 0, cleared: 0 },
         photos: { backfilled: 0, refreshed: 0 },
         errors: [],
@@ -141,7 +142,7 @@ export async function GET(request: NextRequest) {
 // Phase 1: Reconcile main hires channel with employee_directory
 // ---------------------------------------------------------------------------
 async function reconcileMainChannel(
-    results: { reconcile: { matched: number; added: number; reactivated: number; backfilled: number; terminated: number; duplicateSkipped: number }; errors: string[] }
+    results: { reconcile: { matched: number; added: number; reactivated: number; backfilled: number; duplicateSkipped: number }; errors: string[] }
 ) {
     const memberIds = await getChannelMembers(MAIN_CHANNEL);
     console.log(`[SlackSync] Main channel: ${memberIds.length} members`);
@@ -325,19 +326,17 @@ async function reconcileMainChannel(
         }
     }
 
-    // Mark terminations: Active employees with slack_user_id NOT in channel
-    const potentialTerminations = employees.filter(
+    // Log employees missing from Slack channel (informational only).
+    // Terminations are handled by HR Sheets sync (HR Fired → post-sync hook),
+    // NOT by Slack channel membership which is unreliable.
+    const missingFromChannel = employees.filter(
         e => e.employee_status === 'Active' && e.slack_user_id && !channelSlackIds.has(e.slack_user_id)
     );
-    for (const emp of potentialTerminations) {
-        const { error } = await supabaseAdmin
-            .from('employee_directory')
-            .update({
-                employee_status: 'Terminated',
-                terminated_at: new Date().toISOString(),
-            })
-            .eq('id', emp.id);
-        if (!error) results.reconcile.terminated++;
+    if (missingFromChannel.length > 0) {
+        console.log(`[SlackSync] ${missingFromChannel.length} Active employees missing from main Slack channel (not auto-terminating — HR Sheets is source of truth)`);
+        for (const emp of missingFromChannel) {
+            console.log(`[SlackSync]   Missing: ${emp.first_name} ${emp.last_name} (${emp.slack_user_id})`);
+        }
     }
 }
 
@@ -379,6 +378,55 @@ async function syncCampaignAssignments(
             }
         } catch (err: any) {
             results.errors.push(`Campaign ${campaignName} (${channelId}): ${err.message}`);
+        }
+    }
+
+    // ── DialedIn team fallback for agents not in any campaign channel ──
+    // Some agents are intentionally excluded from Slack campaign channels
+    // but still work on a campaign. Use their DialedIn team as fallback.
+    const agentsWithNoCampaign = agents.filter(a => !agentCampaigns.has(a.id));
+    if (agentsWithNoCampaign.length > 0) {
+        const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString().slice(0, 10);
+        const agentIds = agentsWithNoCampaign.map(a => a.id);
+        const { data: dialedInRows } = await supabaseAdmin
+            .from('dialedin_agent_performance')
+            .select('employee_id, team')
+            .in('employee_id', agentIds)
+            .gte('report_date', weekAgo)
+            .not('team', 'is', null);
+
+        if (dialedInRows && dialedInRows.length > 0) {
+            const TEAM_TO_CAMPAIGN: Record<string, string> = {
+                'aragon': 'Medicare',
+                'jade': 'ACA',
+                'whatif': 'Medicare WhatIF',
+                'hospital': 'Hospital',
+                'home care': 'Home Care',
+                'pitch meals': 'Pitch Meals',
+            };
+
+            const inferredCampaigns = new Map<string, Set<string>>();
+            for (const row of dialedInRows) {
+                if (!row.employee_id || !row.team) continue;
+                const teamLower = row.team.toLowerCase();
+                for (const [key, campaign] of Object.entries(TEAM_TO_CAMPAIGN)) {
+                    if (teamLower.includes(key)) {
+                        if (!inferredCampaigns.has(row.employee_id)) {
+                            inferredCampaigns.set(row.employee_id, new Set());
+                        }
+                        inferredCampaigns.get(row.employee_id)!.add(campaign);
+                        break;
+                    }
+                }
+            }
+
+            for (const [empId, campaigns] of inferredCampaigns) {
+                if (!agentCampaigns.has(empId)) {
+                    agentCampaigns.set(empId, campaigns);
+                }
+            }
+
+            console.log(`[SlackSync] Phase 2: DialedIn fallback inferred campaigns for ${inferredCampaigns.size} agents`);
         }
     }
 

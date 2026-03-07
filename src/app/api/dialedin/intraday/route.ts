@@ -4,6 +4,7 @@ import { fetchNewHireSet } from '@/utils/dialedin-new-hires';
 import { getBreakEvenTPH, getRevenuePerTransfer } from '@/utils/dialedin-revenue';
 import { getCadToUsdRate, convertWageToUsd } from '@/utils/fx';
 import { getCached, setCache } from '@/utils/dialedin-cache';
+import { jsonWithCache } from '@/utils/api-cache';
 
 export const runtime = 'nodejs';
 
@@ -32,6 +33,27 @@ const BREAK_ALLOWANCE_RATIO = 0.145;
 function getBreakAllowanceMin(loggedInMin: number): number {
   return Math.min(FULL_BREAK_ALLOWANCE_MIN, loggedInMin * BREAK_ALLOWANCE_RATIO);
 }
+
+/** Map team name to a campaign family for campaign-scoped leaderboard ranking */
+function getCampaignFamily(team: string | null): string {
+  if (!team) return 'other';
+  const t = team.toLowerCase();
+  if (t.includes('aragon') || t.includes('whatif') || t.includes('what if') || t.includes('elite') || t.includes('brandon') || t.includes('fym') || (t.includes('pitch') && !t.includes('meal'))) return 'medicare';
+  if (t.includes('jade') || t.includes('aca')) return 'aca';
+  if (t.includes('hospital')) return 'hospital';
+  if (t.includes('home care')) return 'home_care';
+  if (t.includes('meal')) return 'pitch_meals';
+  return 'other';
+}
+
+const CAMPAIGN_FAMILY_LABELS: Record<string, string> = {
+  medicare: 'Medicare',
+  aca: 'ACA',
+  hospital: 'Hospital',
+  home_care: 'Home Care',
+  pitch_meals: 'Pitch Meals',
+  other: 'All',
+};
 
 /** Compute adjusted SLA/hr: transfers / ((logged_in - wrap - pause + break_allowance) / 60) */
 function computeAdjustedSlaHr(r: SnapshotRow): number {
@@ -133,7 +155,7 @@ export async function GET(request: NextRequest) {
   const responseCacheKey = `intraday:${targetDate}:${teamFilter || 'all'}:${agentFilter || 'all'}:rank=${includeRank}:trend=${includeTrend}:econ=${includeEconomics}`;
   const cachedResponse = getCached<Record<string, unknown>>(responseCacheKey);
   if (cachedResponse) {
-    return NextResponse.json(cachedResponse);
+    return jsonWithCache(cachedResponse, 60, 120);
   }
 
   // ── Step 1: Find the latest snapshot timestamp for this date ──
@@ -193,7 +215,7 @@ export async function GET(request: NextRequest) {
   const [latestDataResult, newHires, momentumBaseline] = await Promise.all([
     supabaseAdmin
       .from('dialedin_intraday_snapshots')
-      .select('*')
+      .select('snapshot_at, agent_name, team, dialed, connects, contacts, hours_worked, transfers, connects_per_hour, sla_hr, conversion_rate_pct, talk_time_min, wrap_time_min, logged_in_time_min, pause_time_min, time_avail_min')
       .eq('snapshot_date', targetDate)
       .eq('snapshot_at', latestTime),
     fetchNewHireSet(supabaseAdmin),
@@ -265,6 +287,8 @@ export async function GET(request: NextRequest) {
     .filter((r) => r.hours_worked > 0 || r.transfers > 0)
     .map((r) => {
       const adj = computeAdjustedSlaHr(r);
+      const pauseMin = r.pause_time_min || 0;
+      const paidMin = r.logged_in_time_min - r.wrap_time_min - pauseMin + getBreakAllowanceMin(r.logged_in_time_min);
       return {
         name: r.agent_name,
         team: r.team,
@@ -272,14 +296,18 @@ export async function GET(request: NextRequest) {
         adjusted_sla_hr: Math.round(adj * 100) / 100,
         transfers: r.transfers,
         hours_worked: r.hours_worked,
+        paid_hours: Math.round(Math.max(paidMin, 0) / 60 * 100) / 100,
         dialed: r.dialed,
         connects: r.connects,
         connects_per_hour: r.connects_per_hour,
         conversion_rate_pct: r.conversion_rate_pct,
         logged_in_time_min: r.logged_in_time_min,
-        pause_time_min: r.pause_time_min || 0,
+        pause_time_min: pauseMin,
         is_new_hire: newHires.has(r.agent_name.toLowerCase().trim()),
         rank: undefined as number | undefined,
+        campaign_rank: undefined as number | undefined,
+        campaign_agents_ranked: undefined as number | undefined,
+        campaign_family: undefined as string | undefined,
       };
     })
     .sort((a, b) => b.adjusted_sla_hr - a.adjusted_sla_hr);
@@ -287,6 +315,22 @@ export async function GET(request: NextRequest) {
   // Assign rank + momentum if requested (computed across ALL agents before filtering)
   if (includeRank) {
     allAgents.forEach((a, i) => { a.rank = i + 1; });
+
+    // Campaign-scoped ranking: group by campaign family, rank within each group
+    const familyGroups = new Map<string, typeof allAgents>();
+    for (const agent of allAgents) {
+      const family = getCampaignFamily(agent.team);
+      agent.campaign_family = family;
+      if (!familyGroups.has(family)) familyGroups.set(family, []);
+      familyGroups.get(family)!.push(agent);
+    }
+    for (const [, group] of familyGroups) {
+      // Already sorted by adjusted_sla_hr desc — just assign sequential rank
+      group.forEach((a, i) => {
+        a.campaign_rank = i + 1;
+        a.campaign_agents_ranked = group.length;
+      });
+    }
 
     // Momentum: compare current sla_hr vs 2h ago
     if (momentumBaseline.size > 0) {
@@ -485,11 +529,12 @@ export async function GET(request: NextRequest) {
 
   if (includeRank) {
     response.total_agents_ranked = allAgents.length;
+    response.campaign_family_labels = CAMPAIGN_FAMILY_LABELS;
   }
 
   // Cache the response — trend requests cached longer (data only changes every 5 min scraper cycle)
   const cacheTtl = includeTrend ? TREND_CACHE_TTL : AGENTS_CACHE_TTL;
   setCache(responseCacheKey, response, cacheTtl);
 
-  return NextResponse.json(response);
+  return jsonWithCache(response, 60, 120);
 }

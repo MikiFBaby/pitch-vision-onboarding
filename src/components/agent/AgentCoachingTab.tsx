@@ -1,37 +1,107 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useMemo } from "react";
 import { motion } from "framer-motion";
-import { Star, TrendingUp, Target, RefreshCw } from "lucide-react";
-import type { CoachingCard } from "@/hooks/useAgentCoaching";
+import { MessageCircle, Phone } from "lucide-react";
+import type { AgentPerformance } from "@/types/dialedin-types";
+import { computeInsights, type PatternInsight } from "@/utils/coaching-insights";
+import AuraHeroSection from "./coaching/AuraHeroSection";
+import AuraCoachChat from "./coaching/AuraCoachChat";
+import RecentCallsList from "./coaching/RecentCallsList";
+import AgentCallDetailDrawer from "./AgentCallDetailDrawer";
+import AuraCoachOverlay from "./AuraCoachOverlay";
+
+interface RecentViolation {
+    code: string;
+    violation: string;
+    date: string;
+}
+
+interface RecentCall {
+    id: number;
+    call_date: string;
+    phone_number: string;
+    compliance_score: number | null;
+    auto_fail_triggered: boolean;
+    auto_fail_reasons?: unknown[] | null;
+    risk_level: string;
+    call_duration: string | null;
+    product_type: string | null;
+    recording_url?: string | null;
+    compliance_checklist?: unknown[] | null;
+}
 
 interface AgentCoachingTabProps {
     agentName: string;
-    cards: CoachingCard[];
+    agentEmail: string;
     loading: boolean;
-    onRefresh?: () => void;
+    recentViolations?: RecentViolation[];
+    recentDays: AgentPerformance[];
+    qaStats: { avg_score: number; total_calls: number; auto_fail_count: number; pass_rate: number } | null;
+    agentBreakEven: number;
+    productType: string;
+    recentCalls: RecentCall[];
 }
 
-const CARD_CONFIG: Record<string, { icon: typeof Star; color: string; bgColor: string; borderColor: string }> = {
-    strength: { icon: Star, color: "text-emerald-400", bgColor: "bg-emerald-500/10", borderColor: "border-emerald-500/20" },
-    growth: { icon: TrendingUp, color: "text-amber-400", bgColor: "bg-amber-500/10", borderColor: "border-amber-500/20" },
-    challenge: { icon: Target, color: "text-indigo-400", bgColor: "bg-indigo-500/10", borderColor: "border-indigo-500/20" },
-};
+type SubTab = "chat" | "calls";
 
-export default function AgentCoachingTab({ agentName, cards, loading, onRefresh }: AgentCoachingTabProps) {
-    const todayKey = `coaching-challenge-${agentName}-${new Date().toISOString().slice(0, 10)}`;
-    const [challengeAccepted, setChallengeAccepted] = useState(false);
+export default function AgentCoachingTab({
+    agentName, agentEmail, loading,
+    recentViolations, recentDays, qaStats,
+    agentBreakEven, productType, recentCalls,
+}: AgentCoachingTabProps) {
+    const [voiceOpen, setVoiceOpen] = useState(false);
+    const [subTab, setSubTab] = useState<SubTab>("chat");
+    const [selectedCall, setSelectedCall] = useState<RecentCall | null>(null);
 
-    useEffect(() => {
-        setChallengeAccepted(localStorage.getItem(todayKey) === "accepted");
-    }, [todayKey]);
+    // Compute pattern insights from existing data
+    const insights: PatternInsight[] = useMemo(() => {
+        return computeInsights({
+            recentDays,
+            recentViolations: recentViolations || [],
+            qaStats: qaStats ? { avg_score: qaStats.avg_score, pass_rate: qaStats.pass_rate } : null,
+            breakEven: agentBreakEven,
+        });
+    }, [recentDays, recentViolations, qaStats, agentBreakEven]);
 
-    const acceptChallenge = () => {
-        localStorage.setItem(todayKey, "accepted");
-        setChallengeAccepted(true);
-    };
+    // Extract top violation code for quick chips
+    const topViolationCode = useMemo(() => {
+        const topInsight = insights.find((i) => i.id === "top-violation");
+        return topInsight?.value || null;
+    }, [insights]);
 
-    if (loading) {
+    // Build performance profile for Aura context
+    const performanceProfile = useMemo(() => {
+        const avgSlaHr = recentDays.length > 0
+            ? recentDays.reduce((s, d) => s + Number(d.sla_hr), 0) / recentDays.length
+            : null;
+        const trendInsight = insights.find((i) => i.id === "trend");
+        const trend = trendInsight?.value.startsWith("+") ? "improving" as const
+            : trendInsight?.value.startsWith("-") ? "declining" as const
+            : "stable" as const;
+        return {
+            avgSlaHr: avgSlaHr ? Math.round(avgSlaHr * 10) / 10 : null,
+            breakEven: agentBreakEven,
+            breakEvenGap: avgSlaHr != null ? Math.round((avgSlaHr - agentBreakEven) * 10) / 10 : null,
+            tierName: null as string | null,
+            trend,
+            conversionRate: recentDays.length > 0
+                ? Math.round(recentDays.reduce((s, d) => s + d.conversion_rate, 0) / recentDays.length * 10) / 10
+                : null,
+            qaScore: qaStats?.avg_score ?? null,
+        };
+    }, [recentDays, insights, agentBreakEven, qaStats]);
+
+    const afCodes = useMemo(() => {
+        const codes = (recentViolations || []).map((v) => v.code);
+        return [...new Set(codes)];
+    }, [recentViolations]);
+
+    const manualViolationTexts = useMemo(() => {
+        return (recentViolations || []).map((v) => `${v.code}: ${v.violation}`);
+    }, [recentViolations]);
+
+    if (loading && recentDays.length === 0) {
         return (
             <div className="space-y-4">
                 {[1, 2, 3].map((i) => (
@@ -41,82 +111,92 @@ export default function AgentCoachingTab({ agentName, cards, loading, onRefresh 
         );
     }
 
-    if (cards.length === 0) {
-        return (
-            <div className="glass-card rounded-xl border-white/5 p-8 text-center">
-                <Target size={32} className="mx-auto text-white/20 mb-3" />
-                <p className="text-white/40 text-sm">No coaching data available yet.</p>
-                <p className="text-white/20 text-xs mt-1">Work a few shifts to generate personalized coaching tips.</p>
-            </div>
-        );
-    }
+    const SUB_TABS: { id: SubTab; label: string; icon: typeof MessageCircle }[] = [
+        { id: "chat", label: "Aura Chat", icon: MessageCircle },
+        { id: "calls", label: "Recent Calls", icon: Phone },
+    ];
 
     return (
-        <div className="space-y-4">
-            <div className="flex items-center justify-between">
-                <div className="text-[10px] text-white/40 uppercase tracking-widest">
-                    AI Coaching — refreshes daily
+        <div className="space-y-6">
+            {/* Section 1: Aura Hero + Key Stats */}
+            <AuraHeroSection
+                agentName={agentName}
+                insights={insights}
+                onChat={() => setSubTab("chat")}
+                onVoice={() => setVoiceOpen(true)}
+            />
+
+            {/* Section 2: Chat + Calls tabbed area */}
+            <div>
+                {/* Mini tab strip */}
+                <div className="flex gap-1 bg-white/5 rounded-xl p-1 mb-4">
+                    {SUB_TABS.map((tab) => {
+                        const Icon = tab.icon;
+                        const isActive = subTab === tab.id;
+                        return (
+                            <button
+                                key={tab.id}
+                                onClick={() => setSubTab(tab.id)}
+                                className={`relative flex items-center gap-2 px-4 py-2 rounded-lg text-xs font-bold transition-all flex-1 justify-center ${
+                                    isActive ? "text-white" : "text-white/40 hover:text-white/60"
+                                }`}
+                            >
+                                {isActive && (
+                                    <motion.div
+                                        layoutId="coachingSubTab"
+                                        className="absolute inset-0 bg-white/10 rounded-lg"
+                                        transition={{ type: "spring", bounce: 0.2, duration: 0.4 }}
+                                    />
+                                )}
+                                <Icon size={14} className="relative z-10" />
+                                <span className="relative z-10">{tab.label}</span>
+                            </button>
+                        );
+                    })}
                 </div>
-                {onRefresh && (
-                    <button
-                        onClick={onRefresh}
-                        className="text-white/30 hover:text-white/60 transition-colors"
-                    >
-                        <RefreshCw size={14} />
-                    </button>
+
+                {/* Sub-tab content */}
+                {subTab === "chat" && (
+                    <AuraCoachChat
+                        agentName={agentName}
+                        agentEmail={agentEmail}
+                        context={{
+                            productType,
+                            afCodes,
+                            manualViolations: manualViolationTexts,
+                            performanceProfile,
+                        }}
+                        onStartVoice={() => setVoiceOpen(true)}
+                        topViolationCode={topViolationCode}
+                    />
+                )}
+
+                {subTab === "calls" && (
+                    <RecentCallsList
+                        calls={recentCalls}
+                        onSelect={setSelectedCall}
+                    />
                 )}
             </div>
 
-            {cards.map((card, i) => {
-                const config = CARD_CONFIG[card.type] || CARD_CONFIG.strength;
-                const Icon = config.icon;
-                const isChallenge = card.type === "challenge";
+            {/* Call detail drawer */}
+            <AgentCallDetailDrawer
+                call={selectedCall}
+                onClose={() => setSelectedCall(null)}
+            />
 
-                return (
-                    <motion.div
-                        key={card.type}
-                        initial={{ opacity: 0, y: 15, rotateX: -10 }}
-                        animate={{ opacity: 1, y: 0, rotateX: 0 }}
-                        transition={{ delay: i * 0.15, duration: 0.5 }}
-                        className={`glass-card rounded-xl border p-5 ${config.borderColor}`}
-                    >
-                        <div className="flex items-start gap-3">
-                            <div className={`p-2 rounded-lg ${config.bgColor} shrink-0`}>
-                                <Icon size={16} className={config.color} />
-                            </div>
-                            <div className="flex-1 min-w-0">
-                                <div className="flex items-center gap-2 mb-1">
-                                    <span className={`text-[10px] font-bold uppercase tracking-widest ${config.color}`}>
-                                        {card.type === "strength" ? "Strength" : card.type === "growth" ? "Growth Area" : "Daily Challenge"}
-                                    </span>
-                                    {card.metric && (
-                                        <span className="text-[10px] text-white/30 font-mono">{card.metric}</span>
-                                    )}
-                                </div>
-                                <div className="text-sm font-bold text-white mb-1">{card.title}</div>
-                                <div className="text-xs text-white/60 leading-relaxed">{card.body}</div>
-
-                                {isChallenge && (
-                                    <div className="mt-3">
-                                        {challengeAccepted ? (
-                                            <span className="text-[10px] font-bold text-emerald-400 bg-emerald-500/10 px-3 py-1 rounded-full">
-                                                Challenge Accepted
-                                            </span>
-                                        ) : (
-                                            <button
-                                                onClick={acceptChallenge}
-                                                className="text-[10px] font-bold text-indigo-400 bg-indigo-500/10 hover:bg-indigo-500/20 px-3 py-1 rounded-full transition-colors"
-                                            >
-                                                Accept Challenge
-                                            </button>
-                                        )}
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-                    </motion.div>
-                );
-            })}
+            {/* AuraCoachOverlay (voice mode) */}
+            {voiceOpen && (
+                <AuraCoachOverlay
+                    agentName={agentName}
+                    agentEmail={agentEmail}
+                    productType={productType}
+                    afCodes={afCodes}
+                    manualViolations={manualViolationTexts}
+                    performanceProfile={performanceProfile}
+                    onClose={() => setVoiceOpen(false)}
+                />
+            )}
         </div>
     );
 }

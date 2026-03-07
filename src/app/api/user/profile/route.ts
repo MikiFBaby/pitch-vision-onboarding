@@ -61,9 +61,10 @@ export async function POST(req: Request) {
                 .eq('id', data.employee_id);
         }
 
-        // Fire profile completion notifications asynchronously
+        // Fire profile completion notifications — await to prevent Vercel from killing
+        // the function before notifications are sent
         if (data.profile_completed) {
-            notifyProfileCompletion(data).catch(err =>
+            await notifyProfileCompletion(data).catch(err =>
                 console.error('[Profile] Notification error:', err)
             );
         }
@@ -83,33 +84,13 @@ export async function POST(req: Request) {
 async function notifyProfileCompletion(user: any) {
     const fullName = `${user.first_name || ''} ${user.last_name || ''}`.trim() || 'Unknown';
     const appUrl = process.env.NEXT_PUBLIC_APP_URL || 'https://app.pitchvision.io';
-
-    // 1. Email notification to admin
-    try {
-        await fetch(`${appUrl}/api/email/send`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                to: 'miki@pitchperfectsolutions.net',
-                subject: `[Pitch Vision] ${fullName} completed their profile`,
-                senderName: 'Pitch Vision',
-                html: `<div style="font-family:sans-serif;padding:20px;">
-                    <h2 style="margin:0 0 12px;">Profile Completed</h2>
-                    <p><strong>${fullName}</strong> (${user.email}) has completed their onboarding profile.</p>
-                    <p>Role: <strong>${user.role}</strong></p>
-                    ${user.phone ? `<p>Phone: ${user.phone}</p>` : ''}
-                </div>`
-            })
-        });
-    } catch (err) {
-        console.error('[Profile] Email notification failed:', err);
-    }
-
-    // 2. Slack notification (uses Sam bot)
     const channelId = process.env.SLACK_ONBOARDING_CHANNEL_ID;
     const samToken = process.env.SLACK_ONBOARDING_BOT_TOKEN;
-    if (channelId) {
-        try {
+
+    // Run Slack + email in parallel (Slack is fast ~200ms, email is slow ~2-5s)
+    await Promise.allSettled([
+        // Slack notification (priority — fast)
+        channelId ? (async () => {
             const { postSlackMessage } = await import('@/utils/slack-helpers');
             await postSlackMessage(channelId,
                 `Profile completed: *${fullName}* (${user.email}) — ${user.role}`,
@@ -124,12 +105,27 @@ async function notifyProfileCompletion(user: any) {
                 ],
                 samToken
             );
-        } catch (err) {
-            console.error('[Profile] Slack notification failed:', err);
-        }
-    }
+        })() : Promise.resolve(),
 
-    // 3. Check if ALL employees have completed — "Ready for Launch" notification
+        // Email notification to admin
+        fetch(`${appUrl}/api/email/send`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                to: 'miki@pitchperfectsolutions.net',
+                subject: `[Pitch Vision] ${fullName} completed their profile`,
+                senderName: 'Pitch Vision',
+                html: `<div style="font-family:sans-serif;padding:20px;">
+                    <h2 style="margin:0 0 12px;">Profile Completed</h2>
+                    <p><strong>${fullName}</strong> (${user.email}) has completed their onboarding profile.</p>
+                    <p>Role: <strong>${user.role}</strong></p>
+                    ${user.phone ? `<p>Phone: ${user.phone}</p>` : ''}
+                </div>`
+            })
+        }).catch(err => console.error('[Profile] Email notification failed:', err)),
+    ]);
+
+    // Check if ALL employees have completed — "Ready for Launch" notification
     try {
         const { data: stats } = await supabaseAdmin
             .from('users')
@@ -140,28 +136,30 @@ async function notifyProfileCompletion(user: any) {
         const completed = stats?.filter((u: any) => u.profile_completed).length || 0;
 
         if (total > 0 && completed === total) {
-            await fetch(`${appUrl}/api/email/send`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    to: 'miki@pitchperfectsolutions.net',
-                    subject: '[Pitch Vision] ALL EMPLOYEES COMPLETED — Ready for Launch!',
-                    senderName: 'Pitch Vision',
-                    html: `<div style="font-family:sans-serif;padding:20px;">
-                        <h2 style="color:#10b981;">All ${total} employees have completed their profiles!</h2>
-                        <p>The platform is ready for launch. Go to <strong>HR &gt; Launch Control</strong> to enable portal access per role.</p>
-                    </div>`
-                })
-            });
+            await Promise.allSettled([
+                channelId ? (async () => {
+                    const { postSlackMessage } = await import('@/utils/slack-helpers');
+                    await postSlackMessage(channelId,
+                        `:rocket: *ALL ${total} EMPLOYEES HAVE COMPLETED THEIR PROFILES!* The platform is ready for launch.`,
+                        undefined,
+                        samToken
+                    );
+                })() : Promise.resolve(),
 
-            if (channelId) {
-                const { postSlackMessage } = await import('@/utils/slack-helpers');
-                await postSlackMessage(channelId,
-                    `:rocket: *ALL ${total} EMPLOYEES HAVE COMPLETED THEIR PROFILES!* The platform is ready for launch.`,
-                    undefined,
-                    samToken
-                );
-            }
+                fetch(`${appUrl}/api/email/send`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        to: 'miki@pitchperfectsolutions.net',
+                        subject: '[Pitch Vision] ALL EMPLOYEES COMPLETED — Ready for Launch!',
+                        senderName: 'Pitch Vision',
+                        html: `<div style="font-family:sans-serif;padding:20px;">
+                            <h2 style="color:#10b981;">All ${total} employees have completed their profiles!</h2>
+                            <p>The platform is ready for launch. Go to <strong>HR &gt; Launch Control</strong> to enable portal access per role.</p>
+                        </div>`
+                    })
+                }).catch(err => console.error('[Profile] Launch email failed:', err)),
+            ]);
         }
     } catch (err) {
         console.error('[Profile] All-complete check failed:', err);

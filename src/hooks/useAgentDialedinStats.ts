@@ -1,10 +1,10 @@
-"use client";
-
-import { useState, useEffect, useCallback, useRef } from "react";
+import useSWR from "swr";
 import type { AgentPerformance, LiveAgentStatus } from "@/types/dialedin-types";
 
 interface AgentAverages {
   tph: number;
+  adjusted_tph: number | null;
+  sla_hr: number;
   transfers: number;
   conversion_rate: number;
   connect_rate: number;
@@ -33,87 +33,49 @@ interface UseAgentDialedinStatsReturn {
   error: string | null;
 }
 
+interface StatsResponse {
+  latest: AgentPerformance | null;
+  recentDays: AgentPerformance[];
+  averages: AgentAverages | null;
+  totals: AgentTotals | null;
+}
+
+interface LiveResponse {
+  live_status: LiveAgentStatus | null;
+  has_live_data: boolean;
+}
+
 export function useAgentDialedinStats(
   agentName: string,
 ): UseAgentDialedinStatsReturn {
-  const [latest, setLatest] = useState<AgentPerformance | null>(null);
-  const [recentDays, setRecentDays] = useState<AgentPerformance[]>([]);
-  const [averages, setAverages] = useState<AgentAverages | null>(null);
-  const [totals, setTotals] = useState<AgentTotals | null>(null);
-  const [liveStatus, setLiveStatus] = useState<LiveAgentStatus | null>(null);
-  const [hasLiveData, setHasLiveData] = useState(false);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const initialFetchDone = useRef(false);
+  const validName = agentName && agentName.trim().length >= 2;
 
-  // Fetch historical stats (one-time on mount)
-  useEffect(() => {
-    if (!agentName || agentName.trim().length < 2) {
-      setLoading(false);
-      return;
-    }
+  const statsKey = validName
+    ? `/api/dialedin/agent-stats?name=${encodeURIComponent(agentName)}`
+    : null;
+  const liveKey = validName
+    ? `/api/dialedin/agent-live?name=${encodeURIComponent(agentName)}`
+    : null;
 
-    const fetchStats = async () => {
-      try {
-        const res = await fetch(
-          `/api/dialedin/agent-stats?name=${encodeURIComponent(agentName)}`,
-        );
-        if (!res.ok) throw new Error("Failed to fetch agent stats");
+  const { data: statsData, isLoading, error: statsError } = useSWR<StatsResponse>(statsKey);
 
-        const data = await res.json();
-        setLatest(data.latest || null);
-        setRecentDays(data.recentDays || []);
-        setAverages(data.averages || null);
-        setTotals(data.totals || null);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Unknown error");
-      } finally {
-        setLoading(false);
-      }
-    };
+  const { data: liveData, error: liveError } = useSWR<LiveResponse>(liveKey, {
+    refreshInterval: 60_000,
+    revalidateOnFocus: false,
+  });
 
-    fetchStats();
-  }, [agentName]);
-
-  // Poll live status (every 60s)
-  const fetchLive = useCallback(async () => {
-    if (!agentName || agentName.trim().length < 2) return;
-    if (typeof document !== "undefined" && document.hidden) return;
-
-    try {
-      const res = await fetch(
-        `/api/dialedin/agent-live?name=${encodeURIComponent(agentName)}`,
-      );
-      if (!res.ok) return;
-
-      const data = await res.json();
-      setLiveStatus(data.live_status || null);
-      setHasLiveData(data.has_live_data || false);
-    } catch {
-      // Silently fail — live data is supplementary
-    }
-  }, [agentName]);
-
-  useEffect(() => {
-    if (!agentName || agentName.trim().length < 2) return;
-
-    if (!initialFetchDone.current) {
-      initialFetchDone.current = true;
-      fetchLive();
-    }
-
-    const id = setInterval(fetchLive, 60000);
-    return () => clearInterval(id);
-  }, [agentName, fetchLive]);
+  if (liveError) {
+    console.warn("[useAgentDialedinStats] Live status fetch failed:", liveError);
+  }
 
   return {
-    latest,
-    recentDays,
-    averages,
-    totals,
-    liveStatus,
-    hasLiveData,
-    loading,
-    error,
+    latest: statsData?.latest ?? null,
+    recentDays: statsData?.recentDays ?? [],
+    averages: statsData?.averages ?? null,
+    totals: statsData?.totals ?? null,
+    liveStatus: liveData?.live_status ?? null,
+    hasLiveData: liveData?.has_live_data ?? false,
+    loading: isLoading,
+    error: statsError ? (statsError instanceof Error ? statsError.message : "Unknown error") : null,
   };
 }

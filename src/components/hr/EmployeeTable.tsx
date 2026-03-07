@@ -1656,7 +1656,7 @@ export default function EmployeeTable({ readOnly = false }: { readOnly?: boolean
                                     <th className="px-6 py-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Contact</th>
                                     <th className="px-6 py-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Country</th>
                                     <th className="px-6 py-4 text-xs font-semibold text-gray-500 uppercase tracking-wider">Status</th>
-                                    <th className="px-3 py-4 text-xs font-semibold text-gray-500 uppercase tracking-wider text-center w-20">Today</th>
+                                    <th className="px-3 py-4 text-xs font-semibold text-gray-500 uppercase tracking-wider text-left">Performance</th>
                                     <th className="px-6 py-4 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">Action</th>
                                 </tr>
                             </thead>
@@ -1785,19 +1785,72 @@ export default function EmployeeTable({ readOnly = false }: { readOnly?: boolean
                                                     );
                                                 })()}
                                             </td>
-                                            <td className="px-3 py-4 text-center">
+                                            <td className="px-3 py-3">
                                                 {(() => {
                                                     if (employee.role?.toLowerCase() !== 'agent') return <span className="text-xs text-gray-300">—</span>;
+
+                                                    const roster = getRosterData(employee);
                                                     const intra = getIntradayData(employee);
-                                                    if (!intra) return <span className="text-xs text-gray-300">—</span>;
-                                                    const team = intra.team?.toLowerCase() || "";
+                                                    const tier = getEmployeeTier(employee);
+
+                                                    if (!roster && !intra) return <span className="text-xs text-gray-300">No data</span>;
+
+                                                    // Tier letter + color from roster
+                                                    const tierLetter = roster?.tier || null;
+                                                    const tierColors: Record<string, string> = {
+                                                        S: 'bg-violet-100 text-violet-700 border-violet-200',
+                                                        A: 'bg-emerald-100 text-emerald-700 border-emerald-200',
+                                                        B: 'bg-gray-100 text-gray-600 border-gray-200',
+                                                        C: 'bg-amber-100 text-amber-700 border-amber-200',
+                                                        D: 'bg-red-100 text-red-700 border-red-200',
+                                                    };
+
+                                                    // Today SLA/hr with break-even check
+                                                    const team = intra?.team?.toLowerCase() || roster?.team?.toLowerCase() || "";
                                                     const isMedicare = team.includes("aragon") || team.includes("medicare") || team.includes("whatif") || team.includes("elite") || team.includes("brandon");
                                                     const be = isMedicare ? intradayBreakEven.medicare : intradayBreakEven.aca;
-                                                    const above = intra.sla_hr >= be;
+
                                                     return (
-                                                        <span className={`text-xs font-mono font-semibold tabular-nums ${above ? "text-emerald-600" : "text-red-500"}`} title={`Rank #${intra.rank ?? '—'} | B/E: ${be}`}>
-                                                            {intra.sla_hr.toFixed(2)}
-                                                        </span>
+                                                        <div className="flex items-center gap-1.5 min-w-[200px]">
+                                                            {/* 30d Avg SLA/hr */}
+                                                            {roster && (
+                                                                <div className="text-center px-1">
+                                                                    <div className="text-xs font-mono font-bold tabular-nums text-gray-900">{roster.avg_tph.toFixed(2)}</div>
+                                                                    <div className="text-[9px] text-gray-400 leading-tight">14d avg</div>
+                                                                </div>
+                                                            )}
+
+                                                            {/* Today (live) */}
+                                                            {intra && (
+                                                                <div className="text-center px-1 border-l border-gray-100">
+                                                                    <div className={`text-xs font-mono font-bold tabular-nums ${intra.sla_hr >= be ? 'text-emerald-600' : 'text-red-500'}`}>
+                                                                        {intra.sla_hr.toFixed(2)}
+                                                                    </div>
+                                                                    <div className="text-[9px] text-gray-400 leading-tight">today</div>
+                                                                </div>
+                                                            )}
+
+                                                            {/* Today vs avg trend */}
+                                                            {roster && intra && (() => {
+                                                                const delta = ((intra.sla_hr - roster.avg_tph) / roster.avg_tph) * 100;
+                                                                const abs = Math.abs(delta).toFixed(0);
+                                                                if (Math.abs(delta) < 3) return <span className="text-[10px] font-bold text-gray-400">→</span>;
+                                                                return delta > 0
+                                                                    ? <span className="text-[10px] font-bold text-emerald-600">↑{abs}%</span>
+                                                                    : <span className="text-[10px] font-bold text-red-500">↓{abs}%</span>;
+                                                            })()}
+
+                                                            {/* QA Score */}
+                                                            {roster?.qa_stats && (
+                                                                <div className="text-center px-1 border-l border-gray-100">
+                                                                    <div className={`text-xs font-mono font-bold tabular-nums ${roster.qa_stats.avg_score >= 80 ? 'text-emerald-600' : roster.qa_stats.avg_score >= 60 ? 'text-amber-600' : 'text-red-500'}`}>
+                                                                        {roster.qa_stats.avg_score}%
+                                                                    </div>
+                                                                    <div className="text-[9px] text-gray-400 leading-tight">QA</div>
+                                                                </div>
+                                                            )}
+
+                                                        </div>
                                                     );
                                                 })()}
                                             </td>

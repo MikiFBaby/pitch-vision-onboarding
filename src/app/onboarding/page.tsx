@@ -43,7 +43,7 @@ const AVATAR_OPTIONS = [
     { role: 'manager', label: 'Manager', url: "/images/avatar-manager-modern.png" },
     { role: 'hr', label: 'HR', url: "/images/avatar-hr-modern.png" },
     { role: 'executive', label: 'Executive', url: "/images/avatar-executive-modern.png" },
-    { role: 'partner', label: 'Partner', url: "/images/avatar-partner-modern.png" }
+    { role: 'payroll', label: 'Payroll', url: "/images/avatar-payroll-modern.png" }
 ];
 
 export default function OnboardingPage() {
@@ -54,7 +54,7 @@ export default function OnboardingPage() {
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
-    // Form State
+    // Form State — role is NOT included here; it's assigned by Smart Enrollment during signup
     const [formData, setFormData] = useState({
         firstName: '',
         lastName: '',
@@ -63,7 +63,6 @@ export default function OnboardingPage() {
         bio: '',
         interests: [] as string[],
         avatarUrl: AVATAR_OPTIONS[0].url,
-        role: AVATAR_OPTIONS[0].role
     });
 
     const fileInputRef = React.useRef<HTMLInputElement>(null);
@@ -86,7 +85,6 @@ export default function OnboardingPage() {
                 bio: profile.bio || prev.bio || '',
                 interests: (profile.interests && profile.interests.length > 0) ? profile.interests : prev.interests,
                 avatarUrl: prev.avatarUrl === AVATAR_OPTIONS[0].url ? (profile.avatar_url || AVATAR_OPTIONS[0].url) : prev.avatarUrl,
-                role: prev.role === AVATAR_OPTIONS[0].role ? (profile.role || AVATAR_OPTIONS[0].role) : prev.role
             }));
         }
     }, [user, profile, loading, refreshProfile]);
@@ -287,23 +285,31 @@ export default function OnboardingPage() {
                                 <div className="grid grid-cols-2 gap-6">
                                     <div className="space-y-3">
                                         <Label className="text-xs font-bold text-white/90 uppercase tracking-widest pl-1">First Name</Label>
-                                        <motion.div whileFocus={{ scale: 1.02 }} whileHover={{ scale: 1.01 }} className="origin-left">
+                                        <motion.div whileFocus={!profile?.first_name ? { scale: 1.02 } : undefined} whileHover={!profile?.first_name ? { scale: 1.01 } : undefined} className="origin-left">
                                             <Input
                                                 value={formData.firstName}
-                                                onChange={(e) => setFormData({ ...formData, firstName: e.target.value })}
+                                                onChange={(e) => !profile?.first_name && setFormData({ ...formData, firstName: e.target.value })}
+                                                readOnly={!!profile?.first_name}
                                                 placeholder="John"
-                                                className="bg-white/10 border-white/20 focus:border-emerald-500/80 focus:bg-white/15 h-14 rounded-xl text-lg text-white placeholder:text-white/30 transition-all shadow-lg"
+                                                className={cn(
+                                                    "bg-white/10 border-white/20 h-14 rounded-xl text-lg text-white placeholder:text-white/30 transition-all shadow-lg",
+                                                    profile?.first_name ? "text-white/70 cursor-not-allowed" : "focus:border-emerald-500/80 focus:bg-white/15"
+                                                )}
                                             />
                                         </motion.div>
                                     </div>
                                     <div className="space-y-3">
                                         <Label className="text-xs font-bold text-white/90 uppercase tracking-widest pl-1">Last Name</Label>
-                                        <motion.div whileFocus={{ scale: 1.02 }} whileHover={{ scale: 1.01 }} className="origin-left">
+                                        <motion.div whileFocus={!profile?.last_name ? { scale: 1.02 } : undefined} whileHover={!profile?.last_name ? { scale: 1.01 } : undefined} className="origin-left">
                                             <Input
                                                 value={formData.lastName}
-                                                onChange={(e) => setFormData({ ...formData, lastName: e.target.value })}
+                                                onChange={(e) => !profile?.last_name && setFormData({ ...formData, lastName: e.target.value })}
+                                                readOnly={!!profile?.last_name}
                                                 placeholder="Doe"
-                                                className="bg-white/10 border-white/20 focus:border-emerald-500/80 focus:bg-white/15 h-14 rounded-xl text-lg text-white placeholder:text-white/30 transition-all shadow-lg"
+                                                className={cn(
+                                                    "bg-white/10 border-white/20 h-14 rounded-xl text-lg text-white placeholder:text-white/30 transition-all shadow-lg",
+                                                    profile?.last_name ? "text-white/70 cursor-not-allowed" : "focus:border-emerald-500/80 focus:bg-white/15"
+                                                )}
                                             />
                                         </motion.div>
                                     </div>
@@ -359,7 +365,7 @@ export default function OnboardingPage() {
                                         className="flex items-center justify-between"
                                     >
                                         <p className="text-sm text-white/60 leading-relaxed max-w-[280px]">
-                                            Select your role and digital avatar. You can also upload a custom photo.
+                                            Choose your digital avatar. You can also upload a custom photo.
                                         </p>
                                         <button
                                             onClick={() => fileInputRef.current?.click()}
@@ -381,15 +387,15 @@ export default function OnboardingPage() {
                                         {AVATAR_OPTIONS.map((opt) => (
                                             <button
                                                 key={opt.role}
-                                                onClick={() => setFormData({ ...formData, avatarUrl: opt.url, role: opt.role })}
+                                                onClick={() => setFormData({ ...formData, avatarUrl: opt.url })}
                                                 className={cn(
                                                     "relative rounded-2xl overflow-hidden border-2 transition-all group flex flex-col",
-                                                    formData.role === opt.role && formData.avatarUrl === opt.url ? "border-white bg-white/5" : "border-white/5 hover:border-white/20 bg-white/[0.02]"
+                                                    formData.avatarUrl === opt.url ? "border-white bg-white/5" : "border-white/5 hover:border-white/20 bg-white/[0.02]"
                                                 )}
                                             >
                                                 <div className="relative aspect-square w-full">
                                                     <Image fill src={opt.url} alt={opt.label} className="object-cover transition-transform group-hover:scale-110" />
-                                                    {formData.role === opt.role && formData.avatarUrl === opt.url && (
+                                                    {formData.avatarUrl === opt.url && (
                                                         <div className="absolute inset-0 bg-black/40 flex items-center justify-center">
                                                             <CheckCircle2 className="w-6 h-6 text-white" />
                                                         </div>
@@ -398,7 +404,7 @@ export default function OnboardingPage() {
                                                 <div className="p-3 text-center">
                                                     <span className={cn(
                                                         "text-[10px] font-bold uppercase tracking-widest",
-                                                        formData.role === opt.role ? "text-white" : "text-white/40"
+                                                        formData.avatarUrl === opt.url ? "text-white" : "text-white/40"
                                                     )}>
                                                         {opt.label}
                                                     </span>

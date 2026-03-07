@@ -230,6 +230,7 @@ def main():
     parser = argparse.ArgumentParser(description="Cross-reference DialedIn agents with employee directory")
     parser.add_argument('--dates', help="Comma-separated dates to use for cross-ref (default: latest 2)")
     parser.add_argument('--update-ids', action='store_true', help="Actually update employee_id in DB")
+    parser.add_argument('--backfill-names', action='store_true', help="Backfill dialedin_name for tier-1/2 matches where NULL")
     args = parser.parse_args()
 
     print("=" * 70)
@@ -282,7 +283,7 @@ def main():
     # 3. Fetch employee directory
     print("\n[3/6] Fetching employee directory (Active employees)...")
     employees = supabase_get('employee_directory', {
-        'select': 'id,first_name,last_name,employee_status,role,hourly_wage,current_campaigns,country',
+        'select': 'id,first_name,last_name,employee_status,role,hourly_wage,current_campaigns,country,dialedin_name',
         'employee_status': 'eq.Active',
     })
     print(f"  Found {len(employees)} Active employees")
@@ -325,6 +326,41 @@ def main():
         print(f"  Updated: {updated} agents, Failed: {failed}")
     else:
         print("\n[5/6] Skipping employee_id update (use --update-ids to enable)")
+
+    # 5b. Backfill dialedin_name for tier-1/2 matches
+    if args.backfill_names and matches:
+        print("\n[5b] Backfilling dialedin_name for matched employees...")
+        backfilled = 0
+        skipped = 0
+        for agent_name, (emp, tier, conf) in matches.items():
+            if tier > 2:  # Only auto-apply tier 1 and 2 (exact + last+initial)
+                continue
+            if emp.get('dialedin_name'):  # Already has a dialedin_name
+                skipped += 1
+                continue
+            ok = supabase_patch(
+                'employee_directory',
+                {'id': f'eq.{emp["id"]}'},
+                {'dialedin_name': agent_name},
+            )
+            if ok:
+                backfilled += 1
+                print(f"    Set dialedin_name='{agent_name}' for {emp.get('first_name','')} {emp.get('last_name','')} (tier {tier})")
+            else:
+                print(f"    FAILED to set dialedin_name for {emp.get('first_name','')} {emp.get('last_name','')}")
+        print(f"  Backfilled: {backfilled}, Already set: {skipped}, Tier 3 (skipped): {sum(1 for _, (_, t, _) in matches.items() if t == 3)}")
+
+        # Print tier-3 fuzzy matches for manual review
+        tier3 = [(n, m) for n, m in matches.items() if m[1] == 3]
+        if tier3:
+            print(f"\n  TIER 3 FUZZY MATCHES (manual review needed — NOT auto-applied):")
+            for agent_name, (emp, _, conf) in sorted(tier3, key=lambda x: x[1][2], reverse=True):
+                emp_name = f"{emp.get('first_name','')} {emp.get('last_name','')}".strip()
+                print(f"    {agent_name:<35} → {emp_name:<35} (confidence: {conf})")
+    elif args.backfill_names:
+        print("\n[5b] No matches to backfill")
+    else:
+        print("  (use --backfill-names to populate dialedin_name)")
 
     # 6. Fetch ALL performance data for averages
     print("\n[6/6] Computing performance averages across all dates...")

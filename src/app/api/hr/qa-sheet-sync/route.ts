@@ -43,7 +43,13 @@ export async function POST(req: NextRequest) {
     if (!raw || !raw.trim()) return null;
     const s = raw.trim();
 
-    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+      const d = new Date(s + "T00:00:00");
+      const tomorrow = new Date();
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      if (d > tomorrow) return null;
+      return s;
+    }
 
     const match = s.match(/^(\d{1,2})[-/](\d{1,2})[-/](\d{4})$/);
     if (!match) return null;
@@ -67,6 +73,13 @@ export async function POST(req: NextRequest) {
     }
 
     if (month < 1 || month > 12 || day < 1 || day > 31) return null;
+
+    // Reject dates more than 1 day in the future (manual reviews are always for past calls)
+    const result = new Date(y, month - 1, day);
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    if (result > tomorrow) return null;
+
     return `${y}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
   }
 

@@ -1,6 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useEffect, useRef, useMemo } from "react";
+import useSWR from "swr";
 import { supabase } from "@/lib/supabase-client";
 import type { IntradayData } from "@/types/dialedin-types";
 
@@ -10,8 +11,8 @@ interface UseIntradayDataOptions {
   includeRank?: boolean;
   includeTrend?: boolean;
   includeEconomics?: boolean;
-  interval?: number;   // fallback polling interval in ms (default 300_000 = 5 min)
-  enabled?: boolean;   // whether to fetch/poll (default true)
+  interval?: number;
+  enabled?: boolean;
 }
 
 interface UseIntradayDataReturn {
@@ -32,20 +33,16 @@ export function useIntradayData(options: UseIntradayDataOptions = {}): UseIntrad
     includeRank = false,
     includeTrend = true,
     includeEconomics = false,
-    interval = 300_000,    // 5 min fallback (realtime is primary)
+    interval = 300_000,
     enabled = true,
   } = options;
 
-  const [data, setData] = useState<IntradayData | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const [lastFetched, setLastFetched] = useState<Date | null>(null);
-  const initialFetchDone = useRef(false);
   const debounceTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
   const channelName = useRef(`intraday-rt-${++channelCounter}`);
+  const lastFetchedRef = useRef<Date | null>(null);
 
-  const buildUrl = useCallback(() => {
+  const key = useMemo(() => {
+    if (!enabled) return null;
     const params = new URLSearchParams();
     if (agent) params.set("agent", agent);
     if (team) params.set("team", team);
@@ -54,125 +51,52 @@ export function useIntradayData(options: UseIntradayDataOptions = {}): UseIntrad
     if (includeEconomics) params.set("include_economics", "true");
     const qs = params.toString();
     return `/api/dialedin/intraday${qs ? `?${qs}` : ""}`;
-  }, [agent, team, includeRank, includeTrend, includeEconomics]);
+  }, [enabled, agent, team, includeRank, includeTrend, includeEconomics]);
 
-  const fetchData = useCallback(async () => {
-    if (!enabled) return;
-    if (typeof document !== "undefined" && document.hidden) return;
+  const { data, isLoading, error: swrError, mutate } = useSWR<IntradayData>(key, {
+    refreshInterval: interval,
+    revalidateOnFocus: true,
+    onSuccess: () => { lastFetchedRef.current = new Date(); },
+  });
 
-    // Cancel any in-flight request
-    abortRef.current?.abort();
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    try {
-      const res = await fetch(buildUrl(), { signal: controller.signal });
-      if (controller.signal.aborted) return;
-      if (res.ok) {
-        const json = await res.json();
-        setData(json);
-        setLastFetched(new Date());
-        setError(null);
-      } else {
-        setError(`API returned ${res.status}`);
-      }
-    } catch (err) {
-      if (err instanceof DOMException && err.name === "AbortError") return;
-      console.error("[useIntradayData] fetch error:", err);
-      setError(err instanceof Error ? err.message : "Unknown error");
-    } finally {
-      if (!controller.signal.aborted) {
-        setLoading(false);
-      }
-    }
-  }, [buildUrl, enabled]);
-
-  // Debounced refetch — scraper upserts 600+ rows per snapshot,
-  // so we wait 3s after the first INSERT to batch them into one refetch.
-  const debouncedRefetch = useCallback(() => {
-    if (debounceTimer.current) clearTimeout(debounceTimer.current);
-    debounceTimer.current = setTimeout(() => {
-      fetchData();
-    }, 3000);
-  }, [fetchData]);
-
-  // Initial fetch + reset when enabled transitions false→true
-  useEffect(() => {
-    if (!enabled) {
-      setLoading(false);
-      initialFetchDone.current = false;
-      return;
-    }
-
-    if (!initialFetchDone.current) {
-      initialFetchDone.current = true;
-      setLoading(true);
-      fetchData();
-    }
-  }, [enabled, fetchData]);
-
-  // Supabase Realtime subscription — triggers refetch when new snapshots land
+  // Supabase Realtime subscription — triggers SWR revalidation when new snapshots land
   useEffect(() => {
     if (!enabled) return;
+
+    const filterConfig: { event: "INSERT"; schema: "public"; table: string; filter?: string } = {
+      event: "INSERT",
+      schema: "public",
+      table: "dialedin_intraday_snapshots",
+    };
+
+    if (agent) {
+      filterConfig.filter = `agent_name=eq.${agent}`;
+    }
 
     const channel = supabase
       .channel(channelName.current)
-      .on(
-        "postgres_changes",
-        { event: "INSERT", schema: "public", table: "dialedin_intraday_snapshots" },
-        () => {
-          debouncedRefetch();
+      .on("postgres_changes", filterConfig, () => {
+        if (debounceTimer.current) clearTimeout(debounceTimer.current);
+        debounceTimer.current = setTimeout(() => mutate(), 3000);
+      })
+      .subscribe((status, err) => {
+        if (status === "CHANNEL_ERROR" || status === "TIMED_OUT") {
+          console.error(`[useIntradayData] Realtime subscription ${status}:`, err);
         }
-      )
-      .subscribe();
+      });
 
     return () => {
       if (debounceTimer.current) clearTimeout(debounceTimer.current);
       supabase.removeChannel(channel);
     };
-  }, [enabled, debouncedRefetch]);
-
-  // Fallback polling (in case Realtime connection drops)
-  useEffect(() => {
-    if (!enabled || interval <= 0) return;
-
-    const id = setInterval(fetchData, interval);
-    return () => clearInterval(id);
-  }, [enabled, interval, fetchData]);
-
-  // Re-fetch when key params change — abort stale request
-  useEffect(() => {
-    if (initialFetchDone.current) {
-      setLoading(true);
-      fetchData();
-    }
-  }, [agent, team]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Refetch when tab becomes visible (user returns from another tab)
-  useEffect(() => {
-    if (!enabled) return;
-
-    const onVisibilityChange = () => {
-      if (!document.hidden && initialFetchDone.current) {
-        fetchData();
-      }
-    };
-
-    document.addEventListener("visibilitychange", onVisibilityChange);
-    return () => document.removeEventListener("visibilitychange", onVisibilityChange);
-  }, [enabled, fetchData]);
-
-  // Cleanup abort controller on unmount
-  useEffect(() => {
-    return () => { abortRef.current?.abort(); };
-  }, []);
+  }, [enabled, agent, mutate]);
 
   return {
-    data,
-    loading,
+    data: data ?? null,
+    loading: isLoading,
     stale: data?.stale ?? false,
-    error,
-    lastFetched,
-    refetch: fetchData,
+    error: swrError ? (swrError instanceof Error ? swrError.message : "Unknown error") : null,
+    lastFetched: lastFetchedRef.current,
+    refetch: mutate,
   };
 }

@@ -278,20 +278,58 @@ export async function computeAndStore(
 
   if (result.agentPerformance.length > 0) {
     // Populate employee_id by matching agent_name against employee_directory
+    // Primary key: dialedin_name (exact DialedIn match), Secondary: first_name + last_name
     const { data: employees } = await supabaseAdmin
       .from('employee_directory')
-      .select('id, first_name, last_name')
+      .select('id, first_name, last_name, dialedin_name')
       .eq('employee_status', 'Active');
 
     if (employees && employees.length > 0) {
+      // Primary map: dialedin_name → id (highest confidence)
+      const dialedInMap = new Map<string, string>();
+      // Secondary map: first_name + last_name → id
       const nameMap = new Map<string, string>();
+      // Track employees needing dialedin_name backfill
+      const needsDialedInName = new Map<string, string>(); // employee_id → matched agent_name
+
       for (const emp of employees) {
+        if (emp.dialedin_name) {
+          dialedInMap.set(emp.dialedin_name.toLowerCase().trim(), emp.id);
+        }
         const full = `${emp.first_name} ${emp.last_name}`.toLowerCase().trim();
         nameMap.set(full, emp.id);
       }
+
       for (const agent of result.agentPerformance) {
         const key = (agent.agent_name || '').toLowerCase().trim();
-        agent.employee_id = nameMap.get(key) || null;
+        // Try primary (dialedin_name) first, then secondary (full name)
+        const primaryMatch = dialedInMap.get(key);
+        if (primaryMatch) {
+          agent.employee_id = primaryMatch;
+        } else {
+          const secondaryMatch = nameMap.get(key);
+          agent.employee_id = secondaryMatch || null;
+          // If matched via secondary and employee has no dialedin_name, queue for backfill
+          if (secondaryMatch && agent.agent_name) {
+            const emp = employees.find(e => e.id === secondaryMatch);
+            if (emp && !emp.dialedin_name) {
+              needsDialedInName.set(secondaryMatch, agent.agent_name);
+            }
+          }
+        }
+      }
+
+      // Auto-populate dialedin_name for employees matched via secondary key
+      if (needsDialedInName.size > 0) {
+        const updates = Array.from(needsDialedInName.entries());
+        for (const [empId, agentName] of updates) {
+          await supabaseAdmin
+            .from('employee_directory')
+            .update({ dialedin_name: agentName })
+            .eq('id', empId)
+            .is('dialedin_name', null); // Guard: only set if still NULL
+        }
+        console.log(`[ETL] Auto-populated dialedin_name for ${updates.length} employees`);
       }
     }
 

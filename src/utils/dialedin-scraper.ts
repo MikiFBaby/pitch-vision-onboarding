@@ -124,7 +124,8 @@ async function upsertSnapshots(
   rows: AgentSummaryRow[],
   snapshotAt: Date,
 ): Promise<void> {
-  const snapshotDate = snapshotAt.toISOString().split('T')[0];
+  // Use ET date — snapshot_date represents the business day in Eastern Time
+  const snapshotDate = snapshotAt.toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
   const snapshotAtISO = snapshotAt.toISOString();
 
   // Batch upsert in chunks of 200

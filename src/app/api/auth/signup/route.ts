@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { supabaseAdmin } from '@/lib/supabase-admin';
+import { mapDirectoryRoleToAppRole } from '@/lib/role-mapping';
 
 export async function POST(req: Request) {
     try {
@@ -24,8 +25,8 @@ export async function POST(req: Request) {
         const { data: directoryMatch, error: dirError } = await supabaseAdmin
             .from('employee_directory')
             .select('*')
-            .eq('email', email)
-            .maybeSingle(); // Use maybeSingle to avoid 406 on no match
+            .ilike('email', email) // Case-insensitive match (consistent with login route)
+            .maybeSingle();
 
         let finalRole = role || 'agent';
         let finalFirstName = firstName || '';
@@ -34,24 +35,7 @@ export async function POST(req: Request) {
 
         if (directoryMatch) {
             console.log(`Found Directory Match for ${email}:`, directoryMatch);
-            // Override with official data
-            // Override with official data
-            const directoryRole = directoryMatch.role ? directoryMatch.role.toLowerCase() : '';
-
-            // Map Directory Role to App Role
-            if (['owner', 'president', 'cto', 'head of operations'].includes(directoryRole)) {
-                finalRole = 'executive';
-            } else if (['head of hr', 'hr assistant', 'attendance assistant'].includes(directoryRole)) {
-                finalRole = 'hr';
-            } else if (['head of qa', 'qa'].includes(directoryRole)) {
-                finalRole = 'qa';
-            } else if (['manager - coach', 'team leader'].includes(directoryRole)) {
-                finalRole = 'manager';
-            } else if (['payroll specialist'].includes(directoryRole)) {
-                finalRole = 'payroll';
-            } else {
-                finalRole = 'agent'; // Default fallthrough for 'agent' and unknown
-            }
+            finalRole = mapDirectoryRoleToAppRole(directoryMatch.role);
 
             finalFirstName = directoryMatch.first_name || finalFirstName;
             finalLastName = directoryMatch.last_name || finalLastName;
@@ -81,7 +65,7 @@ export async function POST(req: Request) {
                 role: finalRole,
                 avatar_url: finalAvatarUrl,
                 status: 'active',
-                profile_completed: !!(finalFirstName && finalLastName),
+                profile_completed: false, // Always false — set to true only after onboarding wizard completes
                 employee_id: directoryId, // Store the link if it exists
                 ...(phone ? { phone } : {})
             }, { onConflict: 'firebase_uid' })
@@ -103,6 +87,31 @@ export async function POST(req: Request) {
                 .from('employee_directory')
                 .update({ phone })
                 .eq('id', directoryId);
+        }
+
+        // Notify Slack onboarding channel about new registration
+        const channelId = process.env.SLACK_ONBOARDING_CHANNEL_ID;
+        const samToken = process.env.SLACK_ONBOARDING_BOT_TOKEN;
+        if (channelId) {
+            try {
+                const { postSlackMessage } = await import('@/utils/slack-helpers');
+                const fullName = `${finalFirstName} ${finalLastName}`.trim() || 'Unknown';
+                await postSlackMessage(channelId,
+                    `New registration: *${fullName}* (${email}) — ${finalRole}`,
+                    [
+                        {
+                            type: 'section',
+                            text: {
+                                type: 'mrkdwn',
+                                text: `:new: *New Registration*\n*Name:* ${fullName}\n*Email:* ${email}\n*Role:* ${finalRole}\n*Directory Match:* ${directoryId ? 'Yes' : 'No'}`
+                            }
+                        }
+                    ],
+                    samToken
+                );
+            } catch (err) {
+                console.error('[Signup] Slack notification failed:', err);
+            }
         }
 
         return NextResponse.json({

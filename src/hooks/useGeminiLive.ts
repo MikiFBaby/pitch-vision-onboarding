@@ -170,7 +170,7 @@ export function useGeminiLive() {
 
             if (!apiKey) throw new Error("No API Key available");
 
-            const url = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent?key=${apiKey}`;
+            const url = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${apiKey}`;
 
             const ws = new WebSocket(url);
             wsRef.current = ws;
@@ -184,7 +184,7 @@ export function useGeminiLive() {
                 // Send Initial Setup with tools
                 const setupMessage = {
                     setup: {
-                        model: "models/gemini-2.0-flash-exp",
+                        model: "models/gemini-2.5-flash-native-audio-latest",
                         generationConfig: {
                             responseModalities: ["AUDIO"],
                             speechConfig: {
@@ -200,7 +200,7 @@ export function useGeminiLive() {
                                 text: instructionText
                             }]
                         },
-                        tools: [AURA_TOOLS] // Include email and query tools for function calling
+                        tools: options?.tools !== undefined ? options.tools : [AURA_TOOLS]
                     }
                 };
 
@@ -209,6 +209,19 @@ export function useGeminiLive() {
 
                 // Start Audio Input
                 startAudioInput();
+
+                // Send initial client content to trigger the model's greeting
+                // (Gemini Live may wait for input before speaking)
+                setTimeout(() => {
+                    if (ws.readyState === WebSocket.OPEN) {
+                        ws.send(JSON.stringify({
+                            clientContent: {
+                                turns: [{ role: "user", parts: [{ text: "Hello" }] }],
+                                turnComplete: true
+                            }
+                        }));
+                    }
+                }, 500);
             };
 
             ws.onerror = (e) => {
@@ -357,6 +370,8 @@ export function useGeminiLive() {
 
             const audioCtx = new AudioContext({ sampleRate: 16000 });
             audioContextRef.current = audioCtx;
+            // Resume context — browsers suspend AudioContexts created outside user gesture
+            if (audioCtx.state === "suspended") await audioCtx.resume();
 
             // simple processor to downsample/convert to base64 PCM
             // Fallback: ScriptProcessor (deprecated but works easier without external file)
@@ -545,6 +560,7 @@ export function useGeminiLive() {
         userSpeaking,
         volume,
         lastToolCall, // Track when Aura is executing a tool (e.g., sending email)
-        currentUserName: displayName // expose for UI
+        currentUserName: displayName, // expose for UI
+        error,
     };
 }

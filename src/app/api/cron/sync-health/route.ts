@@ -23,7 +23,7 @@ const ALERT_RECIPIENTS = ['miki@pitchperfectsolutions.net'];
  * Checks both HR Sheets sync (via sync_heartbeat) and DialedIn report
  * ingestion freshness (via dialedin_reports + dialedin_daily_kpis).
  *
- * Schedule: Once daily at 5 PM UTC (12 PM ET) on weekdays (Vercel Hobby plan — 1/day limit)
+ * Schedule: Twice daily at 9 AM + 5 PM ET on weekdays (13 + 21 UTC)
  */
 export async function GET(request: NextRequest) {
     const authHeader = request.headers.get('Authorization');
@@ -202,20 +202,86 @@ export async function GET(request: NextRequest) {
             };
         }
 
+        // ─── Directory Health ─────────────────────────────────────────
+
+        const yesterday = new Date(now.getTime() - 86400000).toISOString().slice(0, 10);
+
+        const [activeAgentRes, missingWageRes, missingCountryRes, missingSlackRes, missingDialedInNameRes, nullEmpIdRes] = await Promise.all([
+            // Total active agents
+            supabaseAdmin.from('employee_directory')
+                .select('id', { count: 'exact', head: true })
+                .eq('employee_status', 'Active')
+                .eq('role', 'Agent'),
+            // Missing wage
+            supabaseAdmin.from('employee_directory')
+                .select('id', { count: 'exact', head: true })
+                .eq('employee_status', 'Active')
+                .eq('role', 'Agent')
+                .is('hourly_wage', null),
+            // Missing country
+            supabaseAdmin.from('employee_directory')
+                .select('id', { count: 'exact', head: true })
+                .eq('employee_status', 'Active')
+                .is('country', null),
+            // Missing Slack ID
+            supabaseAdmin.from('employee_directory')
+                .select('id', { count: 'exact', head: true })
+                .eq('employee_status', 'Active')
+                .is('slack_user_id', null),
+            // Missing dialedin_name
+            supabaseAdmin.from('employee_directory')
+                .select('id', { count: 'exact', head: true })
+                .eq('employee_status', 'Active')
+                .eq('role', 'Agent')
+                .is('dialedin_name', null),
+            // Yesterday's perf with NULL employee_id
+            supabaseAdmin.from('dialedin_agent_performance')
+                .select('id', { count: 'exact', head: true })
+                .eq('report_date', yesterday)
+                .is('employee_id', null),
+        ]);
+
+        const totalAgents = activeAgentRes.count || 0;
+        const missingWageCount = missingWageRes.count || 0;
+        const missingCountryCount = missingCountryRes.count || 0;
+        const missingSlackCount = missingSlackRes.count || 0;
+        const missingDiNameCount = missingDialedInNameRes.count || 0;
+        const nullEmpIdCount = nullEmpIdRes.count || 0;
+
+        // Calculate alert thresholds
+        const wagePct = totalAgents > 0 ? (missingWageCount / totalAgents) * 100 : 0;
+        const isWageAlert = wagePct > 10;
+        const countryPct = totalAgents > 0 ? (missingCountryCount / totalAgents) * 100 : 0;
+        const isCountryAlert = countryPct > 5;
+        const slackPct = totalAgents > 0 ? (missingSlackCount / totalAgents) * 100 : 0;
+        const isSlackAlert = slackPct > 10;
+        const isDirectoryAlert = isWageAlert || isCountryAlert || isSlackAlert;
+
+        const directoryStatus = {
+            status: isDirectoryAlert ? 'degraded' : 'healthy',
+            totalAgents,
+            missingWage: { count: missingWageCount, pct: Math.round(wagePct), alert: isWageAlert },
+            missingCountry: { count: missingCountryCount, pct: Math.round(countryPct), alert: isCountryAlert },
+            missingSlack: { count: missingSlackCount, pct: Math.round(slackPct), alert: isSlackAlert },
+            missingDialedInName: { count: missingDiNameCount },
+            nullEmployeeIdYesterday: { count: nullEmpIdCount },
+        };
+
         // ─── Combined result ────────────────────────────────────────────
 
-        const overallStatus = (isHrStale || isDialedinStale || isIntradayStale) ? 'degraded' : 'healthy';
+        const overallStatus = (isHrStale || isDialedinStale || isIntradayStale || isDirectoryAlert) ? 'degraded' : 'healthy';
 
         const result = {
             status: overallStatus,
             hr: hrStatus,
             dialedin: dialedinStatus,
             intraday: intradayStatus,
+            directory: directoryStatus,
         };
 
         // ─── Send alerts if anything is stale ───────────────────────────
 
-        if (isHrStale || isDialedinStale || isIntradayStale) {
+        if (isHrStale || isDialedinStale || isIntradayStale || isDirectoryAlert) {
             const hrBeat = heartbeat ? new Date(heartbeat.last_beat) : null;
             const hrMinutes = hrBeat ? Math.round((now.getTime() - hrBeat.getTime()) / 60000) : null;
             const hrTables = (hrStatus as any).tables || [];
@@ -224,6 +290,7 @@ export async function GET(request: NextRequest) {
                 isHrStale,
                 isDialedinStale,
                 isIntradayStale,
+                isDirectoryAlert,
                 hrMinutesAgo: hrMinutes,
                 hrLastBeat: hrBeat,
                 hrTables,
@@ -234,6 +301,7 @@ export async function GET(request: NextRequest) {
                 dialedinFailures: recentFailed,
                 intradayLastScrapeMinAgo: (intradayStatus as any).lastScrape?.minutesAgo ?? null,
                 intradayRecentErrors: (intradayStatus as any).errors || [],
+                directoryStatus,
             });
         }
 
@@ -248,6 +316,7 @@ interface AlertParams {
     isHrStale: boolean;
     isDialedinStale: boolean;
     isIntradayStale: boolean;
+    isDirectoryAlert: boolean;
     hrMinutesAgo: number | null;
     hrLastBeat: Date | null;
     hrTables: { table: string; lastSync: string; minutesAgo: number | null }[];
@@ -258,6 +327,14 @@ interface AlertParams {
     dialedinFailures: { filename: string; error_message: string }[];
     intradayLastScrapeMinAgo: number | null;
     intradayRecentErrors: { at: string; error: string }[];
+    directoryStatus?: {
+        totalAgents: number;
+        missingWage: { count: number; pct: number; alert: boolean };
+        missingCountry: { count: number; pct: number; alert: boolean };
+        missingSlack: { count: number; pct: number; alert: boolean };
+        missingDialedInName: { count: number };
+        nullEmployeeIdYesterday: { count: number };
+    };
 }
 
 async function sendHealthAlert(params: AlertParams) {
@@ -367,11 +444,33 @@ async function sendHealthAlert(params: AlertParams) {
         `;
     }
 
+    // Directory health section
+    if (params.isDirectoryAlert && params.directoryStatus) {
+        const ds = params.directoryStatus;
+        const alertItems: string[] = [];
+        if (ds.missingWage.alert) alertItems.push(`${ds.missingWage.count} agents (${ds.missingWage.pct}%) missing wage`);
+        if (ds.missingCountry.alert) alertItems.push(`${ds.missingCountry.count} employees (${ds.missingCountry.pct}%) missing country`);
+        if (ds.missingSlack.alert) alertItems.push(`${ds.missingSlack.count} employees (${ds.missingSlack.pct}%) missing Slack ID`);
+
+        sections += `
+            <h2 style="color:#ca8a04;">Directory Data Gaps</h2>
+            <p>Employee directory has data coverage issues exceeding alert thresholds:</p>
+            <ul style="margin:8px 0;">
+                ${alertItems.map(item => `<li><strong>${item}</strong></li>`).join('')}
+                <li>dialedin_name coverage: ${ds.totalAgents - ds.missingDialedInName.count}/${ds.totalAgents} agents</li>
+                <li>Yesterday's NULL employee_id in DialedIn: ${ds.nullEmployeeIdYesterday.count} rows</li>
+            </ul>
+            <p><strong>Fix:</strong> Run <code>python scripts/payroll-import.py</code> (wages), <code>python scripts/dialedin-crossref.py --backfill-names</code> (dialedin_name), or check Slack sync cron</p>
+            <hr style="margin:20px 0;border:none;border-top:1px solid #e5e7eb;" />
+        `;
+    }
+
     // Build subject line
     const problems: string[] = [];
     if (params.isHrStale) problems.push('HR Sync');
     if (params.isDialedinStale) problems.push('DialedIn Ingest');
     if (params.isIntradayStale) problems.push('Intraday Scraper');
+    if (params.isDirectoryAlert) problems.push('Directory Gaps');
 
     const html = `
         <div style="font-family:sans-serif;max-width:600px;">

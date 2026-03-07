@@ -2,13 +2,16 @@
 
 import React from "react";
 import { motion } from "framer-motion";
-import { Mic, Sparkles, Play, Headphones } from "lucide-react";
+import { Sparkles, Play, Headphones, Mic } from "lucide-react";
 
 interface VoiceTrainingAgentProps {
     scenariosAvailable?: number;
+    onStartTraining?: () => void;
+    onTalkToCoach?: () => void;
+    mode?: "violations" | "general";
 }
 
-export default function VoiceTrainingAgent({ scenariosAvailable = 3 }: VoiceTrainingAgentProps) {
+export default function VoiceTrainingAgent({ scenariosAvailable = 0, onStartTraining, onTalkToCoach, mode = "violations" }: VoiceTrainingAgentProps) {
     return (
         <motion.div
             initial={{ opacity: 0, y: 20 }}
@@ -54,16 +57,36 @@ export default function VoiceTrainingAgent({ scenariosAvailable = 3 }: VoiceTrai
                     </p>
                     <div className="flex items-center gap-3">
                         <span className="text-[10px] font-bold text-indigo-400 bg-indigo-500/10 px-2 py-1 rounded">
-                            {scenariosAvailable} new scenarios from recent calls
+                            {scenariosAvailable > 0
+                                ? `${scenariosAvailable} scenario${scenariosAvailable > 1 ? "s" : ""} from recent violations`
+                                : "General compliance practice available"}
                         </span>
                     </div>
                 </div>
 
-                {/* Action Button */}
-                <button className="flex-shrink-0 flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 rounded-xl text-white font-bold text-sm uppercase tracking-wider transition-all duration-300 shadow-lg shadow-indigo-500/30 hover:shadow-indigo-500/50 hover:scale-105 group/btn">
-                    <Play size={16} className="group-hover/btn:scale-110 transition-transform" />
-                    Start Training
-                </button>
+                {/* Action Buttons */}
+                <div className="flex-shrink-0 flex flex-col gap-2">
+                    {onTalkToCoach && (
+                        <button
+                            onClick={onTalkToCoach}
+                            className="flex items-center gap-2 px-5 py-3 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 rounded-xl text-white font-bold text-sm uppercase tracking-wider transition-all duration-300 shadow-lg shadow-purple-500/30 hover:shadow-purple-500/50 hover:scale-105 group/btn"
+                        >
+                            <Mic size={16} className="group-hover/btn:scale-110 transition-transform" />
+                            Talk to Aura
+                        </button>
+                    )}
+                    <button
+                        onClick={onStartTraining}
+                        className={`flex items-center gap-2 px-5 py-3 rounded-xl text-sm uppercase tracking-wider transition-all duration-300 group/btn ${
+                            onTalkToCoach
+                                ? "bg-white/5 hover:bg-white/10 border border-white/10 text-white/70 font-medium"
+                                : "bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white font-bold shadow-lg shadow-indigo-500/30 hover:shadow-indigo-500/50 hover:scale-105"
+                        }`}
+                    >
+                        <Play size={16} className="group-hover/btn:scale-110 transition-transform" />
+                        {scenariosAvailable > 0 ? "Start Training" : "Practice"}
+                    </button>
+                </div>
             </div>
 
             {/* Audio waveform decoration */}

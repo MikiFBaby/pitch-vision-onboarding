@@ -100,8 +100,12 @@ export default function HRAttendanceFeed() {
             .on('postgres_changes', { event: '*', schema: 'public', table: 'Non Booked Days Off' }, () => fetchData())
             .subscribe();
 
+        // 5-minute polling fallback in case realtime subscription drops
+        const pollInterval = setInterval(fetchData, 5 * 60 * 1000);
+
         return () => {
             supabase.removeChannel(ch);
+            clearInterval(pollInterval);
         };
     }, [fetchData]);
 

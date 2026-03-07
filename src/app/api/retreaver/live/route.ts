@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabase-admin";
+import { jsonWithCache } from "@/utils/api-cache";
 
 export const runtime = "nodejs";
 
@@ -97,7 +98,7 @@ export async function GET() {
       }
     }
 
-    return NextResponse.json({
+    return jsonWithCache({
       date: todayEST,
       today_revenue: Math.round(totalRevenue * 100) / 100,
       today_calls: totalCalls,
@@ -107,7 +108,7 @@ export async function GET() {
       calls_per_minute: Math.round(callsPerMinute * 100) / 100,
       avg_call_duration_secs: avgCallDurationSecs != null ? Math.round(avgCallDurationSecs) : null,
       top_campaigns_today: topCampaigns,
-    });
+    }, 15, 30);
   } catch (err) {
     console.error("Retreaver live error:", err);
     const message = err instanceof Error ? err.message : "Failed to fetch live data";

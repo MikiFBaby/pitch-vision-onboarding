@@ -770,93 +770,6 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                         </p>
                     </div>
 
-                    {/* Composite Performance Status Badge (Agents only) */}
-                    {employee.role?.toLowerCase() === 'agent' && !perfLoading && perfStats?.latest && (() => {
-                        const l = perfStats.latest;
-                        // Resolve team: prefer DialedIn team, fallback to employee campaigns
-                        const badgeTeam = l.team || (() => {
-                            const campaigns: string[] = employee?.current_campaigns || [];
-                            for (const c of campaigns) {
-                                const cl = c.toLowerCase();
-                                if (cl.includes('whatif') || cl.includes('what if')) return 'Team WhatIf';
-                                if (cl.includes('medicare')) return 'Aragon Team A';
-                                if (cl.includes('aca')) return 'Jade ACA Team';
-                            }
-                            return null;
-                        })();
-                        if (isPilotCampaign(employee?.current_campaigns, badgeTeam)) return null;
-                        const be = getBreakEvenTPH(badgeTeam || null);
-                        const dayTph = l.adjusted_tph != null ? Number(l.adjusted_tph) : Number(l.tph);
-                        const dayAbove = dayTph >= be;
-                        const avgTph = perfStats.averages?.adjusted_tph != null
-                            ? perfStats.averages.adjusted_tph
-                            : perfStats.averages?.tph ?? 0;
-                        const periodAbove = avgTph >= be;
-
-                        type PerfStatus = 'performing' | 'trending_up' | 'trending_down' | 'critical';
-                        let status: PerfStatus;
-                        if (dayAbove && periodAbove) status = 'performing';
-                        else if (dayAbove && !periodAbove) status = 'trending_up';
-                        else if (!dayAbove && periodAbove) status = 'trending_down';
-                        else status = 'critical';
-
-                        const config: Record<PerfStatus, { label: string; color: string; icon: string }> = {
-                            performing:    { label: 'Performing',     color: 'bg-emerald-500/15 text-emerald-400 ring-emerald-400/30', icon: '●' },
-                            trending_up:   { label: 'Trending Up',    color: 'bg-emerald-500/10 text-emerald-300 ring-emerald-400/20', icon: '↑' },
-                            trending_down: { label: 'Trending Down',  color: 'bg-amber-500/15 text-amber-400 ring-amber-400/30',      icon: '↓' },
-                            critical:      { label: 'Critical',       color: 'bg-red-500/15 text-red-400 ring-red-400/30',             icon: '▼' },
-                        };
-                        const cfg = config[status];
-
-                        return (
-                            <div className="flex justify-center mt-2">
-                                <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-semibold ring-1 ${cfg.color}`}>
-                                    <span>{cfg.icon}</span>
-                                    {cfg.label}
-                                </div>
-                            </div>
-                        );
-                    })()}
-
-                    {/* Agent Tier Badge */}
-                    {employee.role?.toLowerCase() === 'agent' && !perfLoading && perfStats?.averages && (() => {
-                        const avgTph = perfStats.averages.adjusted_tph ?? perfStats.averages.tph ?? 0;
-                        const tier = getTier(avgTph);
-                        const tierColors: Record<string, string> = {
-                            Rookie:    'bg-amber-500/15 text-amber-400 ring-amber-400/30',
-                            Performer: 'bg-slate-500/15 text-slate-300 ring-slate-400/30',
-                            Pro:       'bg-yellow-500/15 text-yellow-400 ring-yellow-400/30',
-                            Star:      'bg-cyan-500/15 text-cyan-400 ring-cyan-400/30',
-                            Elite:     'bg-violet-500/15 text-violet-400 ring-violet-400/30',
-                        };
-                        return (
-                            <div className="flex justify-center mt-1">
-                                <div className={`inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-semibold ring-1 ${tierColors[tier.name] || tierColors.Rookie}`}>
-                                    {tier.badge} · {tier.name}
-                                </div>
-                            </div>
-                        );
-                    })()}
-
-                    {/* Hot Streak */}
-                    {employee.role?.toLowerCase() === 'agent' && perfStats?.recentDays?.length > 1 && (() => {
-                        const days = perfStats.recentDays;
-                        const effectiveTeam = perfStats.latest?.team || null;
-                        const be = getBreakEvenTPH(effectiveTeam);
-                        const slaValues = [...days].reverse().map((d: any) =>
-                            d.adjusted_tph != null ? Number(d.adjusted_tph) : Number(d.tph)
-                        );
-                        const streak = computeHotStreak(slaValues, be);
-                        if (streak < 2) return null;
-                        return (
-                            <div className="flex items-center justify-center gap-2 mt-1">
-                                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-orange-500/15 text-orange-400 ring-1 ring-orange-400/30">
-                                    {streak}-day hot streak
-                                </span>
-                            </div>
-                        );
-                    })()}
-
                     {/* Status + Contact Icons */}
                     <div className="flex items-center justify-center gap-3">
                         {employee.employee_status && (() => {
@@ -887,6 +800,96 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
                             )}
                         </div>
                     </div>
+
+                    {/* Performance Row — Status + Tier + Hot Streak inline */}
+                    {employee.role?.toLowerCase() === 'agent' && !perfLoading && (() => {
+                        // Perf status
+                        const perfBadge = (() => {
+                            if (!perfStats?.latest || !perfStats?.averages) return null;
+                            const l = perfStats.latest;
+                            const badgeTeam: string | null = (() => {
+                                if (l.team) return l.team;
+                                for (const c of (employee.current_campaigns || [])) {
+                                    const cl = c.toLowerCase();
+                                    if (cl.includes('whatif') || cl.includes('what if')) return 'Team WhatIf';
+                                    if (cl.includes('medicare')) return 'Aragon Team A';
+                                    if (cl.includes('aca')) return 'Jade ACA Team';
+                                }
+                                return null;
+                            })();
+                            if (isPilotCampaign(employee?.current_campaigns, badgeTeam)) return null;
+                            const be = getBreakEvenTPH(badgeTeam || null);
+                            const dayTph = l.adjusted_tph != null ? Number(l.adjusted_tph) : Number(l.tph);
+                            const dayAbove = dayTph >= be;
+                            const avgTph = perfStats.averages?.adjusted_tph != null
+                                ? perfStats.averages.adjusted_tph
+                                : perfStats.averages?.tph ?? 0;
+                            const periodAbove = avgTph >= be;
+                            type PerfStatus = 'performing' | 'trending_up' | 'trending_down' | 'critical';
+                            let status: PerfStatus;
+                            if (dayAbove && periodAbove) status = 'performing';
+                            else if (dayAbove && !periodAbove) status = 'trending_up';
+                            else if (!dayAbove && periodAbove) status = 'trending_down';
+                            else status = 'critical';
+                            const config: Record<PerfStatus, { label: string; color: string; icon: string }> = {
+                                performing:    { label: 'Performing',     color: 'bg-emerald-500/15 text-emerald-400 ring-emerald-400/30', icon: '●' },
+                                trending_up:   { label: 'Trending Up',    color: 'bg-emerald-500/10 text-emerald-300 ring-emerald-400/20', icon: '↑' },
+                                trending_down: { label: 'Trending Down',  color: 'bg-amber-500/15 text-amber-400 ring-amber-400/30',      icon: '↓' },
+                                critical:      { label: 'Critical',       color: 'bg-red-500/15 text-red-400 ring-red-400/30',             icon: '▼' },
+                            };
+                            return config[status];
+                        })();
+
+                        // Tier
+                        const tierBadge = (() => {
+                            if (!perfStats?.averages) return null;
+                            const avgTph = perfStats.averages.adjusted_tph ?? perfStats.averages.tph ?? 0;
+                            const tier = getTier(avgTph);
+                            const tierColors: Record<string, string> = {
+                                Rookie:    'bg-amber-500/15 text-amber-400 ring-amber-400/30',
+                                Performer: 'bg-slate-500/15 text-slate-300 ring-slate-400/30',
+                                Pro:       'bg-yellow-500/15 text-yellow-400 ring-yellow-400/30',
+                                Star:      'bg-cyan-500/15 text-cyan-400 ring-cyan-400/30',
+                                Elite:     'bg-violet-500/15 text-violet-400 ring-violet-400/30',
+                            };
+                            return { text: `${tier.badge} · ${tier.name}`, color: tierColors[tier.name] || tierColors.Rookie };
+                        })();
+
+                        // Hot streak
+                        const streakBadge = (() => {
+                            if (!perfStats?.recentDays?.length || perfStats.recentDays.length <= 1) return null;
+                            const days = perfStats.recentDays;
+                            const effectiveTeam = perfStats.latest?.team || null;
+                            const be = getBreakEvenTPH(effectiveTeam);
+                            const slaValues = [...days].reverse().map((d: any) =>
+                                d.adjusted_tph != null ? Number(d.adjusted_tph) : Number(d.tph)
+                            );
+                            const streak = computeHotStreak(slaValues, be);
+                            if (streak < 2) return null;
+                            return streak;
+                        })();
+
+                        if (!perfBadge && !tierBadge && !streakBadge) return null;
+                        return (
+                            <div className="flex flex-wrap items-center justify-center gap-1.5 mt-2">
+                                {perfBadge && (
+                                    <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold ring-1 ${perfBadge.color}`}>
+                                        <span>{perfBadge.icon}</span> {perfBadge.label}
+                                    </span>
+                                )}
+                                {tierBadge && (
+                                    <span className={`inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold ring-1 ${tierBadge.color}`}>
+                                        {tierBadge.text}
+                                    </span>
+                                )}
+                                {streakBadge && (
+                                    <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-semibold bg-orange-500/15 text-orange-400 ring-1 ring-orange-400/30">
+                                        {streakBadge}-day hot streak
+                                    </span>
+                                )}
+                            </div>
+                        );
+                    })()}
 
                     {/* Campaign Badges + Manager */}
                     {employee.current_campaigns && employee.current_campaigns.length > 0 && (
@@ -926,20 +929,33 @@ export default function EmployeeProfileDrawer({ isOpen, onClose, employee }: Emp
 
                     {/* Portal Profile — Bio & Interests */}
                     {portalProfile && (portalProfile.bio || (portalProfile.interests && portalProfile.interests.length > 0)) && (
-                        <div className="rounded-2xl bg-white/5 ring-1 ring-white/10 p-4 space-y-3">
+                        <div className="rounded-2xl bg-gradient-to-br from-violet-600/15 via-fuchsia-500/10 to-violet-600/15 ring-1 ring-violet-400/30 p-4 space-y-4">
+                            <div className="flex items-center gap-2">
+                                <div className="h-px flex-1 bg-gradient-to-r from-transparent via-violet-400/50 to-transparent" />
+                                <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-violet-300">Agent Profile</span>
+                                <div className="h-px flex-1 bg-gradient-to-r from-transparent via-violet-400/50 to-transparent" />
+                            </div>
                             {portalProfile.nickname && (
-                                <p className="text-[11px] font-bold uppercase tracking-widest text-white/40 text-center">"{portalProfile.nickname}"</p>
+                                <p className="text-center">
+                                    <span className="inline-block px-3.5 py-1 rounded-full bg-fuchsia-500/20 ring-1 ring-fuchsia-400/40 text-[12px] font-semibold text-fuchsia-200 italic">&ldquo;{portalProfile.nickname}&rdquo;</span>
+                                </p>
                             )}
                             {portalProfile.bio && (
-                                <p className="text-[13px] text-white/70 leading-relaxed">{portalProfile.bio}</p>
+                                <div>
+                                    <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-400/80 mb-1.5">About</p>
+                                    <p className="text-[13px] text-white/85 leading-relaxed">{portalProfile.bio}</p>
+                                </div>
                             )}
                             {portalProfile.interests && portalProfile.interests.length > 0 && (
-                                <div className="flex flex-wrap gap-1.5">
-                                    {portalProfile.interests.map(tag => (
-                                        <span key={tag} className="px-2 py-0.5 rounded-full text-[10px] font-medium bg-white/10 text-white/60 ring-1 ring-white/10">
-                                            {tag}
-                                        </span>
-                                    ))}
+                                <div>
+                                    <p className="text-[10px] font-bold uppercase tracking-wider text-emerald-400/80 mb-2">Interests</p>
+                                    <div className="flex flex-wrap gap-1.5">
+                                        {portalProfile.interests.map(tag => (
+                                            <span key={tag} className="px-2.5 py-1 rounded-full text-[10px] font-medium bg-violet-500/20 text-violet-100/90 ring-1 ring-violet-400/35">
+                                                {tag}
+                                            </span>
+                                        ))}
+                                    </div>
                                 </div>
                             )}
                         </div>

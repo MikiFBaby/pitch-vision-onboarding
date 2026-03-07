@@ -9,6 +9,14 @@ import { getTier, getNextTier, getTierProgress, computeHotStreak, computeQaStrea
 import type { TierDefinition } from "@/utils/agent-tiers";
 import type { AgentPerformance, IntradayAgentRow } from "@/types/dialedin-types";
 import { motion } from "framer-motion";
+import { ShieldCheck, AlertTriangle, CheckCircle } from "lucide-react";
+
+interface QAStats {
+    avg_score: number;
+    total_calls: number;
+    auto_fail_count: number;
+    pass_rate: number;
+}
 
 interface AgentPerformanceTabProps {
     agentName: string;
@@ -19,6 +27,7 @@ interface AgentPerformanceTabProps {
     currentTier: TierDefinition;
     avgSlaHr: number;
     hotStreak: number;
+    qaStats?: QAStats | null;
 }
 
 export default function AgentPerformanceTab({
@@ -30,6 +39,7 @@ export default function AgentPerformanceTab({
     currentTier,
     avgSlaHr,
     hotStreak,
+    qaStats,
 }: AgentPerformanceTabProps) {
     const nextTier = getNextTier(currentTier);
     const tierProgress = getTierProgress(avgSlaHr, currentTier);
@@ -98,6 +108,43 @@ export default function AgentPerformanceTab({
                     </div>
                 )}
             </motion.div>
+
+            {/* QA Score Card */}
+            {qaStats && (
+                <motion.div
+                    initial={{ opacity: 0, y: 10 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    transition={{ delay: 0.1 }}
+                    className="glass-card rounded-xl border-white/5 p-4"
+                >
+                    <div className="flex items-center gap-2 mb-3">
+                        <ShieldCheck size={14} className="text-blue-400" />
+                        <span className="text-[10px] text-white/40 uppercase tracking-widest">QA Compliance (30d)</span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-3">
+                        <div className="bg-white/5 rounded-lg p-3 text-center">
+                            <div className={`text-xl font-bold font-mono ${qaStats.avg_score >= 80 ? "text-emerald-400" : qaStats.avg_score >= 60 ? "text-amber-400" : "text-red-400"}`}>
+                                {qaStats.avg_score}%
+                            </div>
+                            <div className="text-[10px] text-white/40 mt-0.5">Avg Score</div>
+                        </div>
+                        <div className="bg-white/5 rounded-lg p-3 text-center">
+                            <div className="text-xl font-bold font-mono text-white flex items-center justify-center gap-1">
+                                {qaStats.pass_rate}%
+                                <CheckCircle size={12} className="text-emerald-400" />
+                            </div>
+                            <div className="text-[10px] text-white/40 mt-0.5">Pass Rate</div>
+                        </div>
+                        <div className="bg-white/5 rounded-lg p-3 text-center">
+                            <div className="text-xl font-bold font-mono text-white flex items-center justify-center gap-1">
+                                {qaStats.auto_fail_count}
+                                {qaStats.auto_fail_count > 0 && <AlertTriangle size={12} className="text-red-400" />}
+                            </div>
+                            <div className="text-[10px] text-white/40 mt-0.5">Auto-Fails</div>
+                        </div>
+                    </div>
+                </motion.div>
+            )}
 
             {/* Streaks */}
             <div className="glass-card rounded-xl border-white/5 p-4">

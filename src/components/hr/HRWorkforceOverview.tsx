@@ -214,8 +214,6 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
         ? Math.round(((todayStats.totalScheduled - todayStats.absent) / todayStats.totalScheduled) * 100)
         : 100;
 
-    const totalAbsent = todayStats.absent;
-
     return (
         <Card className="bg-gradient-to-br from-indigo-500/10 to-purple-500/10 border-white/10 text-white overflow-hidden">
             <CardHeader className="pb-2">
@@ -251,17 +249,6 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
                         <AlertTriangle className="w-6 h-6 mx-auto mb-2 text-amber-400" />
                         <div className="text-3xl font-bold text-amber-400">{todayStats.absent}</div>
                         <div className="text-sm text-white/90 mt-1 font-semibold tracking-wide">Absent</div>
-                        <div className="flex items-center justify-center gap-3 mt-2">
-                            <div className="text-center">
-                                <div className="text-lg font-bold text-blue-400">{todayStats.bookedOff}</div>
-                                <div className="text-xs text-white/50 font-medium">Planned</div>
-                            </div>
-                            <span className="text-white/20 text-lg">·</span>
-                            <div className="text-center">
-                                <div className="text-lg font-bold text-rose-400">{todayStats.unplannedOff}</div>
-                                <div className="text-xs text-white/50 font-medium">Unplanned</div>
-                            </div>
-                        </div>
                     </div>
 
                     {/* Attendance Rate */}
@@ -274,38 +261,30 @@ export default function HRWorkforceOverview({ dateRange }: HRWorkforceOverviewPr
                     </div>
                 </div>
 
-                {totalAbsent > 0 && (
+                {/* Absence Breakdown Bar */}
+                {todayStats.absent > 0 && (
                     <div className="mt-4">
-                        <div className="h-10 bg-white/10 rounded-full overflow-hidden flex">
+                        <div className="flex items-center justify-between text-xs text-white/60 mb-1.5">
+                            <span>Planned ({todayStats.bookedOff})</span>
+                            <span>Unplanned ({todayStats.unplannedOff})</span>
+                        </div>
+                        <div className="flex h-3 rounded-full overflow-hidden bg-white/5">
                             {todayStats.bookedOff > 0 && (
                                 <div
-                                    className="bg-blue-400 h-full transition-all flex items-center justify-center"
-                                    style={{ width: `${(todayStats.bookedOff / totalAbsent) * 100}%` }}
-                                    title={`Planned Time Off: ${todayStats.bookedOff}`}
-                                >
-                                    {todayStats.bookedOff > 0 && <span className="text-xl font-bold text-white drop-shadow-md">{todayStats.bookedOff}</span>}
-                                </div>
+                                    className="bg-blue-500 transition-all"
+                                    style={{ width: `${(todayStats.bookedOff / todayStats.absent) * 100}%` }}
+                                />
                             )}
                             {todayStats.unplannedOff > 0 && (
                                 <div
-                                    className="bg-rose-500 h-full transition-all flex items-center justify-center"
-                                    style={{ width: `${(todayStats.unplannedOff / totalAbsent) * 100}%` }}
-                                    title={`Unplanned Absence: ${todayStats.unplannedOff}`}
-                                >
-                                    {todayStats.unplannedOff > 0 && <span className="text-xl font-bold text-white drop-shadow-md">{todayStats.unplannedOff}</span>}
-                                </div>
+                                    className="bg-rose-500 transition-all"
+                                    style={{ width: `${(todayStats.unplannedOff / todayStats.absent) * 100}%` }}
+                                />
                             )}
-                        </div>
-                        <div className="flex items-center justify-center gap-5 mt-2">
-                            <span className="flex items-center gap-2 text-base text-white/70 font-semibold">
-                                <span className="w-3 h-3 rounded-full bg-blue-400" />Planned
-                            </span>
-                            <span className="flex items-center gap-2 text-base text-white/70 font-semibold">
-                                <span className="w-3 h-3 rounded-full bg-rose-500" />Unplanned
-                            </span>
                         </div>
                     </div>
                 )}
+
             </CardContent>
         </Card>
     );

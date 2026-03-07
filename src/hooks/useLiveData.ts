@@ -1,6 +1,5 @@
-"use client";
-
-import { useState, useEffect, useCallback, useRef } from "react";
+import { useRef } from "react";
+import useSWR from "swr";
 import type { LiveMetrics, LiveAgentStatus } from "@/types/dialedin-types";
 
 interface LiveEvent {
@@ -25,51 +24,40 @@ interface UseLiveDataReturn {
   lastUpdated: Date | null;
 }
 
+interface LiveDataResponse {
+  live_metrics: LiveMetrics | null;
+  agent_statuses: LiveAgentStatus[];
+  recent_events: LiveEvent[];
+  has_live_data: boolean;
+}
+
 export function useLiveData({
   interval = 30000,
   campaign,
   enabled = true,
 }: UseLiveDataOptions = {}): UseLiveDataReturn {
-  const [liveMetrics, setLiveMetrics] = useState<LiveMetrics | null>(null);
-  const [agentStatuses, setAgentStatuses] = useState<LiveAgentStatus[]>([]);
-  const [recentEvents, setRecentEvents] = useState<LiveEvent[]>([]);
-  const [hasLiveData, setHasLiveData] = useState(false);
-  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const initialFetchDone = useRef(false);
+  const lastUpdatedRef = useRef<Date | null>(null);
 
-  const fetchLive = useCallback(async () => {
-    if (typeof document !== "undefined" && document.hidden) return;
+  const params = new URLSearchParams();
+  if (campaign) params.set("campaign", campaign);
+  const qs = params.toString();
+  const key = enabled ? `/api/dialedin/live${qs ? `?${qs}` : ""}` : null;
 
-    try {
-      const params = new URLSearchParams();
-      if (campaign) params.set("campaign", campaign);
+  const { data, error } = useSWR<LiveDataResponse>(key, {
+    refreshInterval: interval,
+    revalidateOnFocus: false,
+    onSuccess: () => { lastUpdatedRef.current = new Date(); },
+  });
 
-      const res = await fetch(`/api/dialedin/live?${params.toString()}`);
-      if (!res.ok) return;
+  if (error) {
+    console.warn("[useLiveData] Live data fetch failed:", error);
+  }
 
-      const data = await res.json();
-      setLiveMetrics(data.live_metrics || null);
-      setAgentStatuses(data.agent_statuses || []);
-      setRecentEvents(data.recent_events || []);
-      setHasLiveData(data.has_live_data || false);
-      setLastUpdated(new Date());
-    } catch {
-      // Silently fail — live data is supplementary
-    }
-  }, [campaign]);
-
-  useEffect(() => {
-    if (!enabled) return;
-
-    // Initial fetch
-    if (!initialFetchDone.current) {
-      initialFetchDone.current = true;
-      fetchLive();
-    }
-
-    const id = setInterval(fetchLive, interval);
-    return () => clearInterval(id);
-  }, [enabled, interval, fetchLive]);
-
-  return { liveMetrics, agentStatuses, recentEvents, hasLiveData, lastUpdated };
+  return {
+    liveMetrics: data?.live_metrics ?? null,
+    agentStatuses: data?.agent_statuses ?? [],
+    recentEvents: data?.recent_events ?? [],
+    hasLiveData: data?.has_live_data ?? false,
+    lastUpdated: lastUpdatedRef.current,
+  };
 }
