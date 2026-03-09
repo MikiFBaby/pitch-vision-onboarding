@@ -211,6 +211,11 @@ export function transformRow(row: DatabaseCallRow): CallData {
         afNeedsReview: row.af_needs_review ?? false,
         afSecondPass: parseJsonField(row.af_second_pass, null) || undefined,
 
+        // CPA (Compliance Pre-Audit) fields
+        cpaStatus: (row.cpa_status as 'pass' | 'fail' | 'n/a') || undefined,
+        cpaFindings: parseJsonField(row.cpa_findings, []),
+        cpaConfidence: row.cpa_confidence ?? undefined,
+
         // Speaker turn metrics
         speakerMetrics: (() => {
             const raw = parseJsonField(row.speaker_metrics, null);

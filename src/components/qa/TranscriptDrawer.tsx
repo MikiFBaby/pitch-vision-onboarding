@@ -8,7 +8,7 @@ import {
   Volume2, VolumeX, ShieldCheck, Zap, Check, Search, ExternalLink,
   Settings2, ChevronRight, Activity, MousePointer2, Calendar, Copy, Quote, AlertTriangle, MoreHorizontal,
   FileText, Lightbulb, Flag, User, Headphones, Award, CheckCircle, Sliders, Hash, Bookmark, ArrowRight, Minus, Plus, ChevronDown, ChevronUp,
-  Brain, BrainCircuit, Eye, FileSearch, AlertCircle, ClipboardCheck, Send, GraduationCap, ClipboardList, Users, Layers, Maximize2, Minimize2, Target, Phone
+  Brain, BrainCircuit, Eye, FileSearch, AlertCircle, ClipboardCheck, Send, GraduationCap, ClipboardList, Users, Layers, Maximize2, Minimize2, Target, Phone, ShieldAlert
 } from 'lucide-react';
 import { NeonButton } from './ui/NeonButton';
 import { useAuth } from '@/context/AuthContext';
@@ -1687,6 +1687,31 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                   );
                 })()}
               </div>
+
+              {/* CPA Pre-Audit Badge (Medicare/WhatIF only) */}
+              {call.cpaStatus && call.cpaStatus !== 'n/a' && (
+                <div className="shrink-0 py-2 px-2 text-center border-r border-slate-100 min-w-[60px]">
+                  <div className="text-[9px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">CPA</div>
+                  {call.cpaStatus === 'pass' ? (
+                    <div className="flex flex-col items-center gap-0.5">
+                      <div className="px-2 py-1 rounded-full bg-emerald-100 text-emerald-600 flex items-center gap-1">
+                        <ShieldCheck size={12} />
+                        <span className="text-[10px] font-black">PASS</span>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="flex flex-col items-center gap-0.5">
+                      <div className="px-2 py-1 rounded-full bg-orange-100 text-orange-600 flex items-center gap-1" title={`Missing: ${(call.cpaFindings || []).map(f => f === 'medicare_ab' ? 'A&B' : f === 'rwb_card' ? 'RWB Card' : 'Consent').join(', ')}`}>
+                        <ShieldAlert size={12} />
+                        <span className="text-[10px] font-black">FAIL</span>
+                      </div>
+                      {call.cpaConfidence && (
+                        <span className="text-[8px] text-orange-500 font-bold">{call.cpaConfidence}%</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+              )}
 
               {/* Agent */}
               <div className="shrink-0 py-2 px-2 text-center border-r border-slate-100 max-w-[120px]">

@@ -158,6 +158,11 @@ export interface CallData {
     laStartedAtSeconds?: number;
     analysisCutoffSeconds?: number;
 
+    // CPA (Compliance Pre-Audit) fields
+    cpaStatus?: 'pass' | 'fail' | 'n/a';
+    cpaFindings?: ('medicare_ab' | 'rwb_card' | 'transfer_consent')[];
+    cpaConfidence?: number;
+
     // Additional metadata
     batchId?: string;
     suggestedListenStart?: string;
@@ -245,6 +250,11 @@ export interface DatabaseCallRow {
     la_detected: boolean | null;
     la_started_at_seconds: number | null;
     analysis_cutoff_seconds: number | null;
+
+    // CPA (Compliance Pre-Audit) columns
+    cpa_status: string | null;
+    cpa_findings: any | null;
+    cpa_confidence: number | null;
 
     // Additional metadata columns
     batch_id: string | null;

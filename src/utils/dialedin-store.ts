@@ -7,7 +7,7 @@ import { parseXLSBuffer, identifyReportType, extractDateRange, toISODate } from 
 import { processDay, type ETLResult } from './dialedin-kpi';
 import { postSlackMessage } from './slack-helpers';
 import { REPORT_TYPE_CONFIG, type ParsedReportData, type IngestionSource, type ReportType } from '@/types/dialedin-types';
-import { uploadReportToS3 } from './s3-upload';
+import { uploadReportToS3 } from './s3-client';
 
 const ALL_REPORT_TYPES = Object.keys(REPORT_TYPE_CONFIG) as ReportType[];
 
