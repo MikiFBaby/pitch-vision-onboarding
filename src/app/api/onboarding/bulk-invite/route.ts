@@ -271,7 +271,7 @@ export async function POST(request: NextRequest) {
                     const { error: sendError } = await resend.emails.send({
                         from: process.env.RESEND_FROM_EMAIL || 'Pitch Vision <onboarding@pitchvision.io>',
                         to: emp.email,
-                        subject: 'Reminder: Your Pitch Vision Account Is Waiting',
+                        subject: getReminderContent(appRole).subject,
                         html: buildReminderEmailHtml(emp.first_name || 'Team Member', emp.email, appRole),
                     });
 
@@ -499,12 +499,82 @@ function buildEmailHtml(firstName: string, email: string, role: AppRole): string
 }
 
 // ---------------------------------------------------------------------------
+// Reminder-specific content (bespoke per role)
+// ---------------------------------------------------------------------------
+function getReminderContent(role: AppRole): EmailContent {
+    const content: Record<AppRole, EmailContent> = {
+        agent: {
+            subject: 'Reminder: Your Pitch Vision Account Is Waiting',
+            intro: 'Your real-time pay tracker, daily stats, schedule, and Pitch Points rewards are all waiting for you. See exactly how much you\'re earning, track your transfers per hour, and never miss a schedule update.',
+            features: [
+                'Real-time pay visibility — see your earnings as they happen',
+                'Live transfer stats and performance tracking',
+                'Your daily schedule, breaks, and shift details',
+                'Pitch Points rewards and leaderboard rankings',
+            ],
+        },
+        manager: {
+            subject: 'Reminder: Your Pitch Vision Command Center Is Waiting',
+            intro: 'Your team\'s live performance data, coaching tools, and agent scouting dashboard are ready. Monitor transfers per hour, identify coaching opportunities, and track your team\'s KPIs in real time.',
+            features: [
+                'Live team performance and transfer tracking',
+                'Agent coaching tools and scouting reports',
+                'QA compliance alerts and scorecards',
+                'Watch list and side-by-side agent comparisons',
+            ],
+        },
+        qa: {
+            subject: 'Reminder: Your Pitch Vision QA Dashboard Is Waiting',
+            intro: 'AI-powered call analysis is running — your compliance dashboard, auto-fail detection, and agent scorecards are ready for review. Start validating calls with intelligent scoring.',
+            features: [
+                'AI-powered call scoring and transcript review',
+                'Auto-fail detection with confidence tiers',
+                'Compliance trend tracking and dashboards',
+                'Agent scoreboard and performance reports',
+            ],
+        },
+        hr: {
+            subject: 'Reminder: Your Pitch Vision HR Hub Is Waiting',
+            intro: 'Real-time attendance monitoring, digital onboarding workflows, and the full employee directory are ready for you. Manage your workforce from one central dashboard.',
+            features: [
+                'Live attendance feed and watch list alerts',
+                'Digital onboarding with contract signing',
+                'Employee directory with profiles and documents',
+                'Workforce analytics and compliance reports',
+            ],
+        },
+        executive: {
+            subject: 'Reminder: Your Pitch Vision Executive Dashboard Is Waiting',
+            intro: 'Your P&L analytics, live revenue tracking, and operational dashboards are ready. Get full visibility into labor costs, transfer rates, and strategic KPIs across the entire operation.',
+            features: [
+                'Live revenue ticker and P&L analytics',
+                'Labor cost tracking and ROI by agent',
+                'Operational efficiency and TPH dashboards',
+                'Strategic workforce planning tools',
+            ],
+        },
+        payroll: {
+            subject: 'Reminder: Your Pitch Vision Payroll Hub Is Waiting',
+            intro: 'Payroll processing tools, compensation tracking, and employee wage data are ready for you. Streamline your workflow with integrated payroll management.',
+            features: [
+                'Payroll processing and period management',
+                'Employee compensation and wage tracking',
+                'Integrated directory with pay details',
+                'Payroll reporting and audit tools',
+            ],
+        },
+    };
+
+    return content[role] || content.agent;
+}
+
+// ---------------------------------------------------------------------------
 // Reminder email HTML template (role-aware)
 // ---------------------------------------------------------------------------
 function buildReminderEmailHtml(firstName: string, email: string, role: AppRole): string {
     const signupUrl = `${APP_URL}/login?mode=signup&email=${encodeURIComponent(email)}&role=${role}`;
     const logoUrl = `${APP_URL}/images/logo-header.png`;
-    const content = getEmailContent(role);
+    const content = getReminderContent(role);
 
     const featureListHtml = content.features
         .map(
@@ -560,11 +630,11 @@ function buildReminderEmailHtml(firstName: string, email: string, role: AppRole)
                                 Hi ${firstName},
                             </p>
                             <p style="margin:0 0 16px;font-size:15px;color:#9ca3af;line-height:1.7;">
-                                We noticed you haven't set up your <strong style="color:#e5e7eb;">Pitch Vision</strong> account yet. Your personalized dashboard is ready and waiting — it only takes 2 minutes to get started.
+                                We noticed you haven't set up your <strong style="color:#e5e7eb;">Pitch Vision</strong> account yet. ${content.intro}
                             </p>
 
                             <p style="margin:0 0 16px;font-size:15px;color:#9ca3af;line-height:1.7;">
-                                Here's what you'll get access to:
+                                Here's what's waiting for you:
                             </p>
 
                             <!-- Feature List -->
