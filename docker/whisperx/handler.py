@@ -18,6 +18,7 @@ import os
 import time
 import tempfile
 import traceback
+import subprocess
 import urllib.request
 
 import torch
@@ -31,7 +32,8 @@ MODEL_DIR = os.environ.get("MODEL_DIR", "/models")
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 COMPUTE_TYPE = "float16" if DEVICE == "cuda" else "float32"
-MAX_AUDIO_DURATION = 1200  # 20 minutes
+MAX_AUDIO_DURATION = 300  # 5 minutes default (trimmed, not rejected)
+ABSOLUTE_MAX_DURATION = 3600  # 1 hour hard reject
 DEFAULT_VAD_ONSET = 0.3
 DEFAULT_VAD_OFFSET = 0.3
 
@@ -86,6 +88,8 @@ def handler(event):
         min_speakers = job_input.get("min_speakers")
         max_speakers = job_input.get("max_speakers")
 
+        max_duration = job_input.get("max_duration", MAX_AUDIO_DURATION)
+
         if not audio_url:
             return {"error": "audio_url is required"}
 
@@ -94,12 +98,28 @@ def handler(event):
             tmp_path = tmp.name
             urllib.request.urlretrieve(audio_url, tmp_path)
 
-        # Load audio
+        # Load audio and check duration
         audio_array = whisperx.load_audio(tmp_path)
         duration = len(audio_array) / 16000
 
-        if duration > MAX_AUDIO_DURATION:
-            return {"error": f"Audio duration {duration:.0f}s exceeds max {MAX_AUDIO_DURATION}s"}
+        if duration > ABSOLUTE_MAX_DURATION:
+            return {"error": f"Audio duration {duration:.0f}s exceeds absolute max {ABSOLUTE_MAX_DURATION}s"}
+
+        # Trim if over max_duration
+        trimmed = False
+        if duration > max_duration:
+            trimmed_path = tmp_path + "_trimmed.wav"
+            subprocess.run(
+                ["ffmpeg", "-y", "-i", tmp_path, "-t", str(max_duration), trimmed_path],
+                capture_output=True, check=True,
+            )
+            os.unlink(tmp_path)
+            os.rename(trimmed_path, tmp_path)
+            audio_array = whisperx.load_audio(tmp_path)
+            original_duration = duration
+            duration = len(audio_array) / 16000
+            trimmed = True
+            print(f"[whisperx] Trimmed {original_duration:.0f}s → {duration:.0f}s")
 
         # 1. Transcribe (vad_options set at model load time)
         model = get_model(vad_onset=vad_onset, vad_offset=vad_offset)
@@ -160,13 +180,17 @@ def handler(event):
 
         processing_time = time.time() - start_time
 
-        return {
+        output = {
             "segments": segments,
             "language": result.get("language", language),
             "processing_time_s": round(processing_time, 2),
             "audio_duration_s": round(duration, 2),
             "realtime_factor": round(processing_time / max(duration, 0.1), 2),
         }
+        if trimmed:
+            output["trimmed"] = True
+            output["original_duration_s"] = round(original_duration, 2)
+        return output
 
     except Exception as e:
         print(f"[whisperx] Error: {traceback.format_exc()}")
