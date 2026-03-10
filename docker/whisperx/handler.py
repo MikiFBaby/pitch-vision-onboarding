@@ -1,18 +1,24 @@
 """
 RunPod Serverless Handler for WhisperX
-Version: 1.0
+Version: 2.0
 
 RunPod invokes handler(event) for each request. The event contains:
   - input.audio_url: URL to download audio from (presigned S3 URL)
   - input.language: language code (default: "en")
   - input.diarize: boolean (default: false)
+  - input.split_channels: boolean (default: false) — if true, detect stereo
+    and split Ch0 (Agent) / Ch1 (Customer) via ffmpeg, transcribing each
+    independently for perfect speaker separation. Falls back to diarization
+    if audio is mono.
   - input.vad_onset: float (default: 0.3)
   - input.vad_offset: float (default: 0.3)
   - input.min_speakers: int (optional)
   - input.max_speakers: int (optional)
   - input.metadata: dict (optional, passed through to output for webhook callbacks)
 
-Returns the same segment format as the FastAPI /transcribe endpoint.
+Returns:
+  - If split_channels and stereo: { channels: { agent: { segments }, customer: { segments } }, channel_count: 2, ... }
+  - Otherwise: { segments: [...], ... }  (same as v1.0)
 """
 
 import os
@@ -21,6 +27,7 @@ import tempfile
 import traceback
 import subprocess
 import urllib.request
+import json
 
 import torch
 import whisperx
@@ -71,6 +78,111 @@ def get_diarize_model():
     return _diarize_model
 
 
+# ─── Audio utilities ─────────────────────────────────────────────────
+
+
+def get_channel_count(audio_path):
+    """Use ffprobe to detect the number of audio channels."""
+    try:
+        result = subprocess.run(
+            [
+                "ffprobe", "-v", "error",
+                "-select_streams", "a:0",
+                "-show_entries", "stream=channels",
+                "-of", "json",
+                audio_path,
+            ],
+            capture_output=True, text=True, timeout=10,
+        )
+        info = json.loads(result.stdout)
+        return int(info["streams"][0]["channels"])
+    except Exception as e:
+        print(f"[whisperx] ffprobe channel detection failed: {e}")
+        return None
+
+
+def split_stereo(audio_path, tmp_dir):
+    """
+    Split a stereo WAV into two mono channels using ffmpeg.
+    Ch0 (Left) = Agent, Ch1 (Right) = Customer.
+    Returns (agent_path, customer_path).
+    """
+    agent_path = os.path.join(tmp_dir, "ch0_agent.wav")
+    customer_path = os.path.join(tmp_dir, "ch1_customer.wav")
+
+    # Extract left channel (agent)
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-i", audio_path,
+            "-af", "pan=mono|c0=c0",
+            "-ar", "16000",  # WhisperX expects 16kHz
+            agent_path,
+        ],
+        capture_output=True, check=True, timeout=60,
+    )
+
+    # Extract right channel (customer)
+    subprocess.run(
+        [
+            "ffmpeg", "-y", "-i", audio_path,
+            "-af", "pan=mono|c0=c1",
+            "-ar", "16000",
+            customer_path,
+        ],
+        capture_output=True, check=True, timeout=60,
+    )
+
+    return agent_path, customer_path
+
+
+def transcribe_single(audio_path, model, language, vad_onset, vad_offset):
+    """Transcribe a single audio file. Returns formatted segments."""
+    audio_array = whisperx.load_audio(audio_path)
+    duration = len(audio_array) / 16000
+
+    result = model.transcribe(
+        audio_array,
+        language=language,
+        batch_size=16,
+    )
+
+    # Align for word-level timestamps
+    model_a, metadata = whisperx.load_align_model(
+        language_code=result["language"],
+        device=DEVICE,
+    )
+    result = whisperx.align(
+        result["segments"],
+        model_a,
+        metadata,
+        audio_array,
+        DEVICE,
+        return_char_alignments=False,
+    )
+
+    segments = []
+    for seg in result.get("segments", []):
+        segment = {
+            "start": round(seg.get("start", 0), 3),
+            "end": round(seg.get("end", 0), 3),
+            "text": seg.get("text", "").strip(),
+        }
+        if "words" in seg:
+            segment["words"] = [
+                {
+                    "word": w.get("word", ""),
+                    "start": round(w.get("start", 0), 3),
+                    "end": round(w.get("end", 0), 3),
+                    "score": round(w.get("score", 0), 3),
+                }
+                for w in seg["words"]
+                if "word" in w
+            ]
+        segments.append(segment)
+
+    return segments, duration
+
+
 # ─── Handler ─────────────────────────────────────────────────────────
 
 
@@ -78,12 +190,14 @@ def handler(event):
     """RunPod serverless handler."""
     start_time = time.time()
     tmp_path = None
+    tmp_dir = None
 
     try:
         job_input = event.get("input", {})
         audio_url = job_input.get("audio_url")
         language = job_input.get("language", "en")
         diarize = job_input.get("diarize", False)
+        split_channels = job_input.get("split_channels", False)
         vad_onset = job_input.get("vad_onset", 0.3)
         vad_offset = job_input.get("vad_offset", 0.3)
         min_speakers = job_input.get("min_speakers")
@@ -95,10 +209,12 @@ def handler(event):
         if not audio_url:
             return {"error": "audio_url is required"}
 
+        # Create temp directory for channel files
+        tmp_dir = tempfile.mkdtemp(prefix="whisperx_")
+
         # Download audio from URL
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            tmp_path = tmp.name
-            urllib.request.urlretrieve(audio_url, tmp_path)
+        tmp_path = os.path.join(tmp_dir, "input.wav")
+        urllib.request.urlretrieve(audio_url, tmp_path)
 
         # Load audio and check duration
         audio_array = whisperx.load_audio(tmp_path)
@@ -109,8 +225,9 @@ def handler(event):
 
         # Trim if over max_duration
         trimmed = False
+        original_duration = duration
         if duration > max_duration:
-            trimmed_path = tmp_path + "_trimmed.wav"
+            trimmed_path = os.path.join(tmp_dir, "trimmed.wav")
             subprocess.run(
                 ["ffmpeg", "-y", "-i", tmp_path, "-t", str(max_duration), trimmed_path],
                 capture_output=True, check=True,
@@ -118,13 +235,79 @@ def handler(event):
             os.unlink(tmp_path)
             os.rename(trimmed_path, tmp_path)
             audio_array = whisperx.load_audio(tmp_path)
-            original_duration = duration
             duration = len(audio_array) / 16000
             trimmed = True
             print(f"[whisperx] Trimmed {original_duration:.0f}s → {duration:.0f}s")
 
-        # 1. Transcribe (vad_options set at model load time)
         model = get_model(vad_onset=vad_onset, vad_offset=vad_offset)
+
+        # ──────────────────────────────────────────────────────────────
+        # STEREO CHANNEL SPLITTING PATH
+        # ──────────────────────────────────────────────────────────────
+        if split_channels:
+            channel_count = get_channel_count(tmp_path)
+            print(f"[whisperx] Channel detection: {channel_count} channel(s), split_channels={split_channels}")
+
+            if channel_count and channel_count >= 2:
+                # Split stereo → two mono channels
+                agent_path, customer_path = split_stereo(tmp_path, tmp_dir)
+
+                print("[whisperx] Transcribing agent channel (Ch0/Left)...")
+                agent_segments, agent_duration = transcribe_single(
+                    agent_path, model, language, vad_onset, vad_offset
+                )
+                # Tag all agent segments with speaker label
+                for seg in agent_segments:
+                    seg["speaker"] = "Agent"
+
+                print("[whisperx] Transcribing customer channel (Ch1/Right)...")
+                customer_segments, customer_duration = transcribe_single(
+                    customer_path, model, language, vad_onset, vad_offset
+                )
+                for seg in customer_segments:
+                    seg["speaker"] = "Customer"
+
+                processing_time = time.time() - start_time
+
+                output = {
+                    "channels": {
+                        "agent": {
+                            "segments": agent_segments,
+                            "duration_s": round(agent_duration, 2),
+                            "segment_count": len(agent_segments),
+                        },
+                        "customer": {
+                            "segments": customer_segments,
+                            "duration_s": round(customer_duration, 2),
+                            "segment_count": len(customer_segments),
+                        },
+                    },
+                    "channel_count": channel_count,
+                    "split_mode": "stereo",
+                    "language": language,
+                    "processing_time_s": round(processing_time, 2),
+                    "audio_duration_s": round(duration, 2),
+                    "realtime_factor": round(processing_time / max(duration, 0.1), 2),
+                }
+                if trimmed:
+                    output["trimmed"] = True
+                    output["original_duration_s"] = round(original_duration, 2)
+                if job_metadata:
+                    output["metadata"] = job_metadata
+
+                print(f"[whisperx] Stereo split complete: {len(agent_segments)} agent segs, {len(customer_segments)} customer segs ({processing_time:.1f}s)")
+                return output
+
+            else:
+                # Mono audio — fall back to diarization
+                print(f"[whisperx] Audio is mono ({channel_count} ch) — falling back to diarization")
+                diarize = True  # Force diarization for mono
+
+        # ──────────────────────────────────────────────────────────────
+        # STANDARD PATH (mono diarization or no split)
+        # ──────────────────────────────────────────────────────────────
+
+        # 1. Transcribe
         result = model.transcribe(
             audio_array,
             language=language,
@@ -189,6 +372,12 @@ def handler(event):
             "audio_duration_s": round(duration, 2),
             "realtime_factor": round(processing_time / max(duration, 0.1), 2),
         }
+
+        # If we fell back to diarization from split_channels (mono audio), mark it
+        if split_channels:
+            output["channel_count"] = 1
+            output["split_mode"] = "mono_diarize_fallback"
+
         if trimmed:
             output["trimmed"] = True
             output["original_duration_s"] = round(original_duration, 2)
@@ -200,8 +389,10 @@ def handler(event):
         print(f"[whisperx] Error: {traceback.format_exc()}")
         return {"error": str(e)}
     finally:
-        if tmp_path and os.path.exists(tmp_path):
-            os.unlink(tmp_path)
+        # Clean up temp directory and all files
+        if tmp_dir and os.path.exists(tmp_dir):
+            import shutil
+            shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 # Pre-load model when container starts (RunPod keeps containers warm)
