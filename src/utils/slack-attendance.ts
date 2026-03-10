@@ -102,7 +102,88 @@ export async function isAuthorizedForAttendance(slackUserId: string): Promise<bo
 // AI Parsing with OpenRouter
 // ---------------------------------------------------------------------------
 
+/**
+ * Regex-based fast parser for common attendance formats.
+ * Handles these patterns without needing an AI call:
+ *   "Name - reason"          → Anastazia Avenoso-Pate - sick
+ *   "NCNS for Name"          → NCNS for David Brown
+ *   "Name is/was reason"     → Ade is sick today
+ *   "Name called out reason" → Sarah called out sick
+ * Returns events only if ALL non-empty lines match; otherwise returns [].
+ */
+function regexFallbackParse(text: string): ParsedAttendanceEvent[] {
+    const today = new Date().toISOString().split('T')[0];
+    const lines = text.split('\n').map(l => l.trim()).filter(Boolean);
+
+    const events: ParsedAttendanceEvent[] = [];
+    for (const line of lines) {
+        const event = tryRegexParseLine(line, today);
+        if (event) {
+            events.push(event);
+        }
+    }
+
+    if (events.length > 0 && events.length === lines.length) {
+        return events;
+    }
+    return [];
+}
+
+function tryRegexParseLine(line: string, today: string): ParsedAttendanceEvent | null {
+    // Pattern 1: "Name - reason" (space+dash+space separator)
+    // Lazy name capture so hyphenated names (e.g. "Avenoso-Pate") aren't split
+    const dashMatch = line.match(/^(.+?)\s+[-–—]\s+(.+)$/);
+    if (dashMatch) {
+        const name = dashMatch[1].trim();
+        const reason = dashMatch[2].trim();
+        if (name.length >= 2) {
+            return { agent_name: name, event_type: 'unplanned', date: today, minutes: null, reason: reason || null };
+        }
+    }
+
+    // Pattern 2: "NCNS for Name" / "no show for Name" / "no call no show for Name"
+    const ncnsMatch = line.match(/^(?:ncns|no\s*show|no\s*call\s*no\s*show)\s+(?:for\s+)?(.+)$/i);
+    if (ncnsMatch) {
+        const name = ncnsMatch[1].replace(/\s*(today|yesterday)$/i, '').trim();
+        if (name.length >= 2) {
+            return { agent_name: name, event_type: 'unplanned', date: today, minutes: null, reason: 'no call no show' };
+        }
+    }
+
+    // Pattern 3: "Name is/was sick/absent/out (today)" or "Name called out (sick)"
+    const isWasMatch = line.match(/^(.+?)\s+(?:is|was|called\s+(?:out|in|off))\s+(.+)$/i);
+    if (isWasMatch) {
+        const name = isWasMatch[1].trim();
+        let reason = isWasMatch[2].replace(/\s*(today|yesterday)$/i, '').trim();
+        if (name.length >= 2 && reason.length >= 2) {
+            return { agent_name: name, event_type: 'unplanned', date: today, minutes: null, reason };
+        }
+    }
+
+    // Pattern 4: "Name won't/wont be in" / "Name not coming in"
+    const wontMatch = line.match(/^(.+?)\s+(?:won'?t\s+be\s+in|not\s+coming\s+in|can'?t\s+(?:come|make\s+it))(.*)$/i);
+    if (wontMatch) {
+        const name = wontMatch[1].trim();
+        if (name.length >= 2) {
+            return { agent_name: name, event_type: 'unplanned', date: today, minutes: null, reason: 'won\'t be in' };
+        }
+    }
+
+    return null;
+}
+
 export async function parseAttendanceMessage(text: string, conversationContext?: string): Promise<ParsedAttendanceEvent[]> {
+    // Fast path: regex for "Name - reason" format (no AI call needed)
+    const regexEvents = regexFallbackParse(text);
+    if (regexEvents.length > 0) {
+        console.log(`[Attendance] Regex fast-path parsed ${regexEvents.length} events`);
+        const greetingPrefixes = /^(hey|hi|hello|so|yeah|ok|oh|yo|sup)\b[,\s]*/i;
+        return regexEvents.map(e => ({
+            ...e,
+            agent_name: e.agent_name.replace(greetingPrefixes, '').trim(),
+        }));
+    }
+
     const apiKey = process.env.OPENROUTER_API_KEY;
     if (!apiKey) {
         console.error('[Attendance] OPENROUTER_API_KEY not configured');
