@@ -73,6 +73,12 @@ function LoginForm() {
             body: JSON.stringify({ firebaseUid, email })
         });
 
+        if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            console.error('Login API error:', response.status, text);
+            throw new Error(response.status === 404 ? 'Service temporarily unavailable. Please try again.' : `Server error (${response.status}). Please try again.`);
+        }
+
         const data = await response.json();
 
         if (!data.success) {
@@ -97,6 +103,11 @@ function LoginForm() {
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ firebaseUid, email, role })
         });
+        if (!response.ok) {
+            const text = await response.text().catch(() => '');
+            console.error('Signup API error:', response.status, text);
+            throw new Error(response.status === 404 ? 'Service temporarily unavailable. Please try again.' : `Registration failed (${response.status}). Please try again.`);
+        }
         const data = await response.json();
         if (!data.success) throw new Error(data.error || 'Registration failed');
         return data;

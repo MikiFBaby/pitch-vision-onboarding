@@ -92,14 +92,22 @@ export default function OnboardingPage() {
     const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0];
         if (file) {
-            const reader = new FileReader();
-            reader.onloadend = () => {
-                setFormData({
-                    ...formData,
-                    avatarUrl: reader.result as string
-                });
+            // Compress image client-side to stay within Vercel's 4.5MB body limit
+            const img = new window.Image();
+            img.onload = () => {
+                const canvas = document.createElement('canvas');
+                const MAX = 400; // 400x400 max avatar size
+                let w = img.width, h = img.height;
+                if (w > h) { h = Math.round(h * MAX / w); w = MAX; }
+                else { w = Math.round(w * MAX / h); h = MAX; }
+                canvas.width = w;
+                canvas.height = h;
+                canvas.getContext('2d')!.drawImage(img, 0, 0, w, h);
+                const compressed = canvas.toDataURL('image/jpeg', 0.8);
+                setFormData(prev => ({ ...prev, avatarUrl: compressed }));
+                URL.revokeObjectURL(img.src);
             };
-            reader.readAsDataURL(file);
+            img.src = URL.createObjectURL(file);
         }
     };
 
@@ -140,6 +148,17 @@ export default function OnboardingPage() {
                     ...formData
                 })
             });
+
+            // Handle non-JSON error responses (e.g. Vercel 413/404 plain text)
+            if (!response.ok) {
+                const text = await response.text();
+                console.error('Profile API non-OK response:', response.status, text);
+                throw new Error(
+                    response.status === 413 ? 'Image too large. Please upload a smaller photo.' :
+                    response.status === 404 ? 'Profile service unavailable. Please try again.' :
+                    `Server error (${response.status}). Please try again.`
+                );
+            }
 
             const data = await response.json();
             console.log('Onboarding Submission Result:', data);
