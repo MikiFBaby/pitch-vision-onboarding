@@ -217,7 +217,92 @@ export async function POST(request: NextRequest) {
             });
         }
 
-        return NextResponse.json({ error: 'Invalid action. Must be "send", "test", "preview", or "audit".' }, { status: 400 });
+        if (action === 'reminder') {
+            const targetRole: AppRole | undefined = body.role;
+
+            // 1. Get all active employees who were already invited (invite_status = 'sent')
+            const { data: invited, error: invErr } = await supabaseAdmin
+                .from('employee_directory')
+                .select('id, first_name, last_name, email, role')
+                .eq('employee_status', 'Active')
+                .eq('invite_status', 'sent')
+                .not('email', 'is', null);
+
+            if (invErr) return NextResponse.json({ error: invErr.message }, { status: 500 });
+
+            // 2. Get all existing user emails (already signed up) — exclude them
+            const { data: existingUsers, error: usersErr } = await supabaseAdmin
+                .from('users')
+                .select('email');
+
+            if (usersErr) return NextResponse.json({ error: usersErr.message }, { status: 500 });
+
+            const signedUpEmails = new Set(
+                (existingUsers || []).map((u: any) => u.email?.toLowerCase()).filter(Boolean)
+            );
+
+            // 3. Filter to only employees who have NOT signed up
+            let targets = (invited || []).filter(
+                (emp) => emp.email && !signedUpEmails.has(emp.email.toLowerCase())
+            );
+
+            // Optional role filter
+            if (targetRole && APP_ROLES.includes(targetRole)) {
+                targets = targets.filter((emp) => mapDirectoryRoleToAppRole(emp.role) === targetRole);
+            }
+
+            if (targets.length === 0) {
+                return NextResponse.json({ success: true, sent: 0, remaining: 0, message: 'No pending reminders — everyone has signed up or no invites were sent.' });
+            }
+
+            const totalPending = targets.length;
+            if (targets.length > MAX_SENDS_PER_INVOCATION) {
+                targets = targets.slice(0, MAX_SENDS_PER_INVOCATION);
+            }
+
+            let sentCount = 0;
+            let failedCount = 0;
+
+            for (let i = 0; i < targets.length; i++) {
+                const emp = targets[i];
+                try {
+                    const appRole = mapDirectoryRoleToAppRole(emp.role);
+
+                    const { error: sendError } = await resend.emails.send({
+                        from: process.env.RESEND_FROM_EMAIL || 'Pitch Vision <onboarding@pitchvision.io>',
+                        to: emp.email,
+                        subject: 'Reminder: Your Pitch Vision Account Is Waiting',
+                        html: buildReminderEmailHtml(emp.first_name || 'Team Member', emp.email, appRole),
+                    });
+
+                    if (sendError) failedCount++;
+                    else sentCount++;
+
+                    // Update invite_status to 'reminded'
+                    await supabaseAdmin
+                        .from('employee_directory')
+                        .update({ invite_status: 'reminded' })
+                        .eq('id', emp.id);
+                } catch {
+                    failedCount++;
+                }
+
+                if (i < targets.length - 1) {
+                    await new Promise((resolve) => setTimeout(resolve, 600));
+                }
+            }
+
+            const remaining = totalPending - targets.length;
+            return NextResponse.json({
+                success: true,
+                sent: sentCount,
+                failed: failedCount,
+                remaining,
+                ...(remaining > 0 ? { message: `Reminded ${sentCount}/${totalPending}. Call again for remaining ${remaining}.` } : {})
+            });
+        }
+
+        return NextResponse.json({ error: 'Invalid action. Must be "send", "reminder", "test", "preview", or "audit".' }, { status: 400 });
 
     } catch (err: any) {
         return NextResponse.json({ error: err.message }, { status: 500 });
@@ -374,6 +459,150 @@ function buildEmailHtml(firstName: string, email: string, role: AppRole): string
                                            style="display:inline-block;padding:16px 48px;background-color:transparent;color:#c7d2fe;font-size:15px;font-weight:600;text-decoration:none;border-radius:12px;border:2px solid #6366f1;letter-spacing:0.5px;transition:all 0.2s ease;">
                                             Get Started
                                         </a>
+                                    </td>
+                                </tr>
+                            </table>
+
+                            <!-- Divider -->
+                            <table width="100%" cellpadding="0" cellspacing="0">
+                                <tr>
+                                    <td style="border-top:1px solid #1f2937;padding-top:20px;">
+                                        <p style="margin:0 0 6px;font-size:12px;color:#4b5563;line-height:1.5;">
+                                            Or copy this link into your browser:
+                                        </p>
+                                        <p style="margin:0;font-size:12px;color:#6366f1;word-break:break-all;line-height:1.5;">
+                                            ${signupUrl}
+                                        </p>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+
+                    <!-- Footer -->
+                    <tr>
+                        <td style="padding:28px 44px;border-top:1px solid #111827;text-align:center;">
+                            <p style="margin:0 0 4px;font-size:11px;color:#374151;letter-spacing:0.5px;text-transform:uppercase;">
+                                Pitch Perfect Solutions Inc.
+                            </p>
+                            <p style="margin:0;font-size:11px;color:#1f2937;">
+                                Powered by Pitch Vision
+                            </p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>`;
+}
+
+// ---------------------------------------------------------------------------
+// Reminder email HTML template (role-aware)
+// ---------------------------------------------------------------------------
+function buildReminderEmailHtml(firstName: string, email: string, role: AppRole): string {
+    const signupUrl = `${APP_URL}/login?mode=signup&email=${encodeURIComponent(email)}&role=${role}`;
+    const logoUrl = `${APP_URL}/images/logo-header.png`;
+    const content = getEmailContent(role);
+
+    const featureListHtml = content.features
+        .map(
+            (f) =>
+                `<tr><td style="padding:4px 0;font-size:14px;color:#9ca3af;line-height:1.6;">
+                    <span style="color:#6366f1;margin-right:8px;">&#10003;</span> ${f}
+                </td></tr>`
+        )
+        .join('');
+
+    return `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        .cta-btn:hover { border-color: #818cf8 !important; background-color: rgba(99,102,241,0.15) !important; }
+    </style>
+</head>
+<body style="margin:0;padding:0;background-color:#050505;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+    <table width="100%" cellpadding="0" cellspacing="0" style="background-color:#050505;padding:48px 20px;">
+        <tr>
+            <td align="center">
+                <table width="600" cellpadding="0" cellspacing="0" style="background-color:#0a0a0a;border-radius:20px;overflow:hidden;border:1px solid #1a1a2e;">
+
+                    <!-- Logo Header -->
+                    <tr>
+                        <td style="padding:44px 40px 0;text-align:center;">
+                            <img src="${logoUrl}" alt="Pitch Vision" width="220" style="display:inline-block;max-width:220px;height:auto;" />
+                        </td>
+                    </tr>
+
+                    <!-- Gradient Divider -->
+                    <tr>
+                        <td style="padding:24px 40px 0;text-align:center;">
+                            <div style="width:80px;height:2px;background:linear-gradient(90deg,#6366f1,#06b6d4);margin:0 auto;border-radius:2px;"></div>
+                        </td>
+                    </tr>
+
+                    <!-- Urgency Badge -->
+                    <tr>
+                        <td style="padding:24px 44px 0;text-align:center;">
+                            <span style="display:inline-block;padding:6px 16px;background-color:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.25);border-radius:20px;font-size:12px;font-weight:600;color:#f87171;letter-spacing:0.5px;text-transform:uppercase;">
+                                Action Required
+                            </span>
+                        </td>
+                    </tr>
+
+                    <!-- Body -->
+                    <tr>
+                        <td style="padding:24px 44px 16px;">
+                            <p style="margin:0 0 20px;font-size:20px;font-weight:600;color:#ffffff;letter-spacing:-0.3px;">
+                                Hi ${firstName},
+                            </p>
+                            <p style="margin:0 0 16px;font-size:15px;color:#9ca3af;line-height:1.7;">
+                                We noticed you haven't set up your <strong style="color:#e5e7eb;">Pitch Vision</strong> account yet. Your personalized dashboard is ready and waiting — it only takes 2 minutes to get started.
+                            </p>
+
+                            <p style="margin:0 0 16px;font-size:15px;color:#9ca3af;line-height:1.7;">
+                                Here's what you'll get access to:
+                            </p>
+
+                            <!-- Feature List -->
+                            <table width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 24px;">
+                                ${featureListHtml}
+                            </table>
+
+                            <!-- Deadline callout -->
+                            <table width="100%" cellpadding="0" cellspacing="0" style="margin:0 0 28px;">
+                                <tr>
+                                    <td style="padding:16px 20px;background-color:rgba(99,102,241,0.06);border:1px solid rgba(99,102,241,0.15);border-radius:12px;">
+                                        <p style="margin:0;font-size:14px;color:#a5b4fc;line-height:1.6;">
+                                            <strong style="color:#c7d2fe;">Please complete your signup by Friday, March 13th.</strong><br/>
+                                            All team members are required to have an active Pitch Vision account.
+                                        </p>
+                                    </td>
+                                </tr>
+                            </table>
+
+                            <!-- CTA Button -->
+                            <table width="100%" cellpadding="0" cellspacing="0">
+                                <tr>
+                                    <td align="center" style="padding:0 0 32px;">
+                                        <a href="${signupUrl}" class="cta-btn"
+                                           style="display:inline-block;padding:16px 48px;background-color:transparent;color:#c7d2fe;font-size:15px;font-weight:600;text-decoration:none;border-radius:12px;border:2px solid #6366f1;letter-spacing:0.5px;transition:all 0.2s ease;">
+                                            Complete My Signup
+                                        </a>
+                                    </td>
+                                </tr>
+                            </table>
+
+                            <!-- Help text -->
+                            <table width="100%" cellpadding="0" cellspacing="0">
+                                <tr>
+                                    <td style="padding:0 0 16px;">
+                                        <p style="margin:0;font-size:13px;color:#6b7280;line-height:1.6;text-align:center;">
+                                            Having trouble? Reply to this email or reach out to your manager for help.
+                                        </p>
                                     </td>
                                 </tr>
                             </table>
