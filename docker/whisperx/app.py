@@ -61,7 +61,7 @@ def get_diarize_model():
             raise ValueError("HF_TOKEN required for speaker diarization")
         print("[whisperx] Loading diarization model...")
         _diarize_model = whisperx.diarize.DiarizationPipeline(
-            use_auth_token=HF_TOKEN,
+            token=HF_TOKEN,
             device=DEVICE,
         )
         print("[whisperx] Diarization model loaded")
