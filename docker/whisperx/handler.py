@@ -10,6 +10,7 @@ RunPod invokes handler(event) for each request. The event contains:
   - input.vad_offset: float (default: 0.3)
   - input.min_speakers: int (optional)
   - input.max_speakers: int (optional)
+  - input.metadata: dict (optional, passed through to output for webhook callbacks)
 
 Returns the same segment format as the FastAPI /transcribe endpoint.
 """
@@ -89,6 +90,7 @@ def handler(event):
         max_speakers = job_input.get("max_speakers")
 
         max_duration = job_input.get("max_duration", MAX_AUDIO_DURATION)
+        job_metadata = job_input.get("metadata", {})
 
         if not audio_url:
             return {"error": "audio_url is required"}
@@ -190,6 +192,8 @@ def handler(event):
         if trimmed:
             output["trimmed"] = True
             output["original_duration_s"] = round(original_duration, 2)
+        if job_metadata:
+            output["metadata"] = job_metadata
         return output
 
     except Exception as e:
