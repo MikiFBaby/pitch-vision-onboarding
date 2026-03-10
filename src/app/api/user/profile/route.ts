@@ -53,12 +53,28 @@ export async function POST(req: Request) {
 
         console.log('Profile Update Success:', { id: data.id, firstName: data.first_name });
 
-        // Sync phone to employee_directory if linked
-        if (phone && data.employee_id) {
-            await supabaseAdmin
-                .from('employee_directory')
-                .update({ phone })
-                .eq('id', data.employee_id);
+        // Sync phone to employee_directory (by link or email fallback)
+        if (phone) {
+            if (data.employee_id) {
+                await supabaseAdmin
+                    .from('employee_directory')
+                    .update({ phone })
+                    .eq('id', data.employee_id);
+            } else if (data.email) {
+                // Fallback: match by email if employee_id wasn't linked at signup
+                const { data: dirMatch } = await supabaseAdmin
+                    .from('employee_directory')
+                    .select('id')
+                    .ilike('email', data.email)
+                    .eq('employee_status', 'Active')
+                    .maybeSingle();
+                if (dirMatch) {
+                    await supabaseAdmin
+                        .from('employee_directory')
+                        .update({ phone })
+                        .eq('id', dirMatch.id);
+                }
+            }
         }
 
         // Fire profile completion notifications — await to prevent Vercel from killing
@@ -89,22 +105,30 @@ async function notifyProfileCompletion(user: any) {
 
     // Run Slack + email in parallel (Slack is fast ~200ms, email is slow ~2-5s)
     await Promise.allSettled([
-        // Slack notification (priority — fast)
-        channelId ? (async () => {
-            const { postSlackMessage } = await import('@/utils/slack-helpers');
-            await postSlackMessage(channelId,
-                `Profile completed: *${fullName}* (${user.email}) — ${user.role}`,
-                [
-                    {
-                        type: 'section',
-                        text: {
-                            type: 'mrkdwn',
-                            text: `:white_check_mark: *New Profile Completed*\n*Name:* ${fullName}\n*Email:* ${user.email}\n*Role:* ${user.role}${user.phone ? `\n*Phone:* ${user.phone}` : ''}`
+        // Slack notification (direct fetch to avoid dynamic import issues on Vercel)
+        (channelId && samToken) ? (async () => {
+            const slackRes = await fetch('https://slack.com/api/chat.postMessage', {
+                method: 'POST',
+                headers: {
+                    Authorization: `Bearer ${samToken}`,
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    channel: channelId,
+                    text: `<!channel> Profile completed: *${fullName}* (${user.email}) — ${user.role}`,
+                    blocks: [
+                        {
+                            type: 'section',
+                            text: {
+                                type: 'mrkdwn',
+                                text: `<!channel>\n:white_check_mark: *Profile Completed*\n*Name:* ${fullName}\n*Email:* ${user.email}\n*Role:* ${user.role}${user.phone ? `\n*Phone:* ${user.phone}` : ''}`
+                            }
                         }
-                    }
-                ],
-                samToken
-            );
+                    ],
+                }),
+            });
+            const slackData = await slackRes.json();
+            if (!slackData.ok) console.error('[Profile] Slack API error:', slackData.error);
         })() : Promise.resolve(),
 
         // Email notification to admin
@@ -137,13 +161,20 @@ async function notifyProfileCompletion(user: any) {
 
         if (total > 0 && completed === total) {
             await Promise.allSettled([
-                channelId ? (async () => {
-                    const { postSlackMessage } = await import('@/utils/slack-helpers');
-                    await postSlackMessage(channelId,
-                        `:rocket: *ALL ${total} EMPLOYEES HAVE COMPLETED THEIR PROFILES!* The platform is ready for launch.`,
-                        undefined,
-                        samToken
-                    );
+                (channelId && samToken) ? (async () => {
+                    const slackRes = await fetch('https://slack.com/api/chat.postMessage', {
+                        method: 'POST',
+                        headers: {
+                            Authorization: `Bearer ${samToken}`,
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            channel: channelId,
+                            text: `<!channel> :rocket: *ALL ${total} EMPLOYEES HAVE COMPLETED THEIR PROFILES!* The platform is ready for launch.`,
+                        }),
+                    });
+                    const d = await slackRes.json();
+                    if (!d.ok) console.error('[Profile] Slack launch notification error:', d.error);
                 })() : Promise.resolve(),
 
                 fetch(`${appUrl}/api/email/send`, {
