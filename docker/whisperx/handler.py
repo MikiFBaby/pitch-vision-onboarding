@@ -32,6 +32,8 @@ HF_TOKEN = os.environ.get("HF_TOKEN", "")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 COMPUTE_TYPE = "float16" if DEVICE == "cuda" else "float32"
 MAX_AUDIO_DURATION = 1200  # 20 minutes
+DEFAULT_VAD_ONSET = 0.3
+DEFAULT_VAD_OFFSET = 0.3
 
 # ─── Model cache ─────────────────────────────────────────────────────
 
@@ -39,7 +41,7 @@ _model = None
 _diarize_model = None
 
 
-def get_model():
+def get_model(vad_onset=DEFAULT_VAD_ONSET, vad_offset=DEFAULT_VAD_OFFSET):
     global _model
     if _model is None:
         print(f"[whisperx] Loading {MODEL_SIZE} on {DEVICE} ({COMPUTE_TYPE})...")
@@ -48,6 +50,7 @@ def get_model():
             device=DEVICE,
             compute_type=COMPUTE_TYPE,
             download_root=MODEL_DIR,
+            asr_options={"vad_onset": vad_onset, "vad_offset": vad_offset},
         )
         print("[whisperx] Model loaded")
     return _model
@@ -98,13 +101,12 @@ def handler(event):
         if duration > MAX_AUDIO_DURATION:
             return {"error": f"Audio duration {duration:.0f}s exceeds max {MAX_AUDIO_DURATION}s"}
 
-        # 1. Transcribe
-        model = get_model()
+        # 1. Transcribe (vad_options set at model load time)
+        model = get_model(vad_onset=vad_onset, vad_offset=vad_offset)
         result = model.transcribe(
             audio_array,
             language=language,
             batch_size=16,
-            vad_options={"vad_onset": vad_onset, "vad_offset": vad_offset},
         )
 
         # 2. Align
