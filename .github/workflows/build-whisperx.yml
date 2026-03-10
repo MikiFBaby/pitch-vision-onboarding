@@ -40,15 +40,19 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Lowercase owner name
+        id: owner
+        run: echo "name=$(echo '${{ github.repository_owner }}' | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_OUTPUT"
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v5
         with:
           context: docker/whisperx
           push: ${{ inputs.push_image }}
           tags: |
-            ghcr.io/${{ github.repository_owner }}/whisperx-server:latest
+            ghcr.io/${{ steps.owner.outputs.name }}/whisperx-server:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
       - name: Output image info
-        run: echo "Image pushed. Use in RunPod endpoint configuration."
+        run: echo "Image pushed to ghcr.io/${{ steps.owner.outputs.name }}/whisperx-server:latest"
