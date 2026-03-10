@@ -50,7 +50,7 @@ def get_model(vad_onset=DEFAULT_VAD_ONSET, vad_offset=DEFAULT_VAD_OFFSET):
             device=DEVICE,
             compute_type=COMPUTE_TYPE,
             download_root=MODEL_DIR,
-            asr_options={"vad_onset": vad_onset, "vad_offset": vad_offset},
+            vad_options={"vad_onset": vad_onset, "vad_offset": vad_offset},
         )
         print("[whisperx] Model loaded")
     return _model
