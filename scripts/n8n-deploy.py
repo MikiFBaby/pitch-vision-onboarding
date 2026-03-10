@@ -63,6 +63,7 @@ WORKFLOW_ALIASES = {
     "error-handler": "6KYZ8iIlZa0J35bt",
     "orchestrator": "pXsXeajgkUU4tRnY",
     "webhook": "oSeZ4uL50OeP4yPo",
+    "cpa": "tuIPgrh5fR64knHq",
 }
 
 

@@ -8,8 +8,25 @@ import { listS3Objects, getS3PresignedUrl, type S3Object } from './s3-client';
 import { supabaseAdmin } from '@/lib/supabase-admin';
 
 const N8N_WEBHOOK_URL = 'https://n8n.pitchvision.io/webhook/qa-upload';
+const CPA_WEBHOOK_URL = 'https://n8n.pitchvision.io/webhook/cpa-upload';
 const MAX_CONCURRENT = 10;
 const BATCH_DELAY_MS = 2000;
+
+// Pipeline routing: 'existing' (default), 'cpa' (all to CPA), 'split' (S3 auto -> CPA, manual -> existing)
+type PipelineMode = 'existing' | 'cpa' | 'split';
+
+function getPipelineMode(): PipelineMode {
+  const mode = (process.env.QA_PIPELINE_MODE || 'existing').toLowerCase();
+  if (mode === 'cpa' || mode === 'split') return mode;
+  return 'existing';
+}
+
+function getWebhookUrl(uploadSource: string): string {
+  const mode = getPipelineMode();
+  if (mode === 'cpa') return CPA_WEBHOOK_URL;
+  if (mode === 'split' && uploadSource === 's3_auto') return CPA_WEBHOOK_URL;
+  return N8N_WEBHOOK_URL;
+}
 
 // ─── Filename Parsing ───────────────────────────────────────────────
 
@@ -22,10 +39,31 @@ export interface ParsedRecording {
   originalFilename: string;
 }
 
+// Known Chase campaign names (longest first for prefix matching)
+const CHASE_CAMPAIGNS = [
+  'Elite FYM Medicare', 'Medicare Aragon', 'WhatIf',
+];
+
+function splitCampaignAgent(combined: string): { campaign: string; agentName: string } {
+  const sorted = [...CHASE_CAMPAIGNS].sort((a, b) => b.length - a.length);
+  for (const camp of sorted) {
+    if (combined.startsWith(camp + '_')) {
+      return { campaign: camp, agentName: combined.slice(camp.length + 1) };
+    }
+  }
+  // Fallback: split on last underscore
+  const lastIdx = combined.lastIndexOf('_');
+  if (lastIdx > 0) {
+    return { campaign: combined.slice(0, lastIdx), agentName: combined.slice(lastIdx + 1) };
+  }
+  return { campaign: '', agentName: combined };
+}
+
 /**
  * Parse a DialedIn recording filename to extract metadata.
  *
  * Supported patterns (order matters — first match wins):
+ *   0. Chase: CampaignID_CampaignName_AgentName_Phone_M_D_YYYY-HH_MM_SS.wav
  *   1. AgentFirstName_AgentLastName_PhoneNumber_YYYYMMDD_HHMMSS.wav
  *   2. AgentFirstName-AgentLastName-PhoneNumber-MM-DD-YYYY-HH-MM-SS.wav
  *   3. Campaign_AgentName_PhoneNumber_Timestamp.wav
@@ -36,6 +74,25 @@ export function parseDialedInFilename(rawPath: string): ParsedRecording | null {
   // Strip path, keep just filename
   const filename = rawPath.split('/').pop() || rawPath;
   const nameOnly = filename.replace(/\.[^.]+$/, ''); // strip extension
+
+  // Pattern 0 (Chase): CampaignID_CampaignName_AgentName_Phone_M_D_YYYY-HH_MM_SS
+  // Example: 225262_Elite FYM Medicare_Samer Hajj_3262137399_3_9_2026-09_51_40
+  const p0 = nameOnly.match(
+    /^(\d+)_(.+)_(\d{10,11})_(\d{1,2})_(\d{1,2})_(\d{4})-(\d{2})_(\d{2})_(\d{2})$/,
+  );
+  if (p0) {
+    const { campaign, agentName } = splitCampaignAgent(p0[2]);
+    const month = p0[4].padStart(2, '0');
+    const day = p0[5].padStart(2, '0');
+    return {
+      campaign,
+      agentName,
+      phoneNumber: p0[3],
+      callDate: `${p0[6]}-${month}-${day}`,
+      callTime: `${p0[7]}:${p0[8]}:${p0[9]}`,
+      originalFilename: filename,
+    };
+  }
 
   // Pattern 1: FirstName_LastName_PhoneNumber_YYYYMMDD_HHMMSS
   const p1 = nameOnly.match(
@@ -159,18 +216,20 @@ async function getAlreadyProcessedKeys(
 async function submitRecordingToN8n(
   presignedUrl: string,
   metadata: ParsedRecording,
-): Promise<{ batchId?: string; jobId?: string }> {
+  uploadSource: string = 's3_auto',
+): Promise<{ batchId?: string; jobId?: string; webhook?: string }> {
   const batchId = `s3_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+  const webhookUrl = getWebhookUrl(uploadSource);
 
   const payload = {
     file_url: presignedUrl,
     file_name: metadata.originalFilename,
     batch_id: batchId,
-    upload_source: 's3_auto',
+    upload_source: uploadSource,
     agent_name: metadata.agentName,
   };
 
-  const response = await fetch(N8N_WEBHOOK_URL, {
+  const response = await fetch(webhookUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
@@ -182,7 +241,7 @@ async function submitRecordingToN8n(
   }
 
   const data = await response.json();
-  return { batchId: data.batch_id || batchId, jobId: data.job_id };
+  return { batchId: data.batch_id || batchId, jobId: data.job_id, webhook: webhookUrl };
 }
 
 // ─── Batch orchestrator ─────────────────────────────────────────────
@@ -210,7 +269,8 @@ export interface BatchResult {
 export async function processS3Batch(options: BatchOptions): Promise<BatchResult> {
   const { bucket, prefix, since, limit = 500, dryRun = false } = options;
 
-  console.log(`[qa-s3-ingest] Listing s3://${bucket}/${prefix} since=${since?.toISOString() ?? 'all'}...`);
+  const pipelineMode = getPipelineMode();
+  console.log(`[qa-s3-ingest] mode=${pipelineMode} | Listing s3://${bucket}/${prefix} since=${since?.toISOString() ?? 'all'}...`);
 
   // 1. List all objects
   const allObjects = await listS3Objects(bucket, prefix, { since, maxKeys: limit * 2 });
