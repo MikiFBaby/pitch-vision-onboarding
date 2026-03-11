@@ -841,15 +841,23 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
     if (call?.timelineMarkers && call.timelineMarkers.length > 0) {
       const isCpaCall = !!(call?.cpaStatus && call.cpaStatus !== 'n/a');
 
+      // For CPA calls, determine the transfer time — markers after this are suppressed
+      const cpaTransferSec = isCpaCall
+        ? (call?.transferInitiatedAtSeconds ?? call?.laStartedAtSeconds ?? null)
+        : null;
+
       call.timelineMarkers.forEach(m => {
         // For CPA calls, only show meaningful markers (CPA findings, transfer/LA, end)
         // Skip conversation-flow markers (speaker changes, every-5th-segment) that clutter the timeline
         if (isCpaCall) {
           const mt = (m as any);
-          const isSignificant = mt.is_cpa_finding || mt.is_transfer_marker || mt.is_la_marker ||
-            (m.type || '').toLowerCase() === 'transfer' || (m.type || '').toLowerCase() === 'la_joined' ||
-            (m.type || '').toLowerCase() === 'end';
-          if (!isSignificant) return;
+          const isTransferOrLA = mt.is_transfer_marker || mt.is_la_marker ||
+            (m.type || '').toLowerCase() === 'transfer' || (m.type || '').toLowerCase() === 'la_joined';
+          const isCpaFinding = mt.is_cpa_finding;
+          const isEnd = (m.type || '').toLowerCase() === 'end';
+          if (!isCpaFinding && !isTransferOrLA && !isEnd) return;
+          // For CPA findings: only show verified (passed) checks
+          if (isCpaFinding && (m.status || '').toLowerCase() !== 'pass') return;
         }
 
         let timeVal = m.time;
@@ -889,6 +897,13 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
         if (secs >= MIN_MARKER_TIME_SECONDS && pos <= 100 && !isNaN(pos)) {
           const markerType = (m.type || '').toLowerCase();
           const markerStatus = (m.status || '').toLowerCase();
+          const mt = (m as any);
+
+          // For CPA calls: suppress CPA finding markers after the transfer point
+          // The blue transfer marker is the endpoint — no compliance markers needed after it
+          if (isCpaCall && mt.is_cpa_finding && cpaTransferSec != null && cpaTransferSec > 0 && secs >= cpaTransferSec) {
+            return;
+          }
 
           // Determine marker type and color
           let type: 'pass' | 'fail' | 'chapter' | 'transfer' = 'fail';
@@ -2084,11 +2099,11 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
         <div className="flex-1 overflow-y-auto custom-scrollbar bg-white relative">
           {activeTab === 'transcript' ? (
             <div className="px-6 py-8 space-y-6">
-              {/* CPA Missing Checks Banner — show at top for checks with no timestamp */}
+              {/* CPA Missing Checks Banner — show all failed/missing checks at top */}
               {call?.cpaFindings && (() => {
                 const MAJOR = ['double_confirm_ab', 'double_confirm_rwb', 'disclosure_recorded_line', 'disclosure_dba_name', 'verbal_consent'];
                 const missingChecks = (call.cpaFindings || []).filter((f: any) =>
-                  MAJOR.includes(f.check) && f.found === false && !f.time_seconds && f.time_seconds !== 0
+                  MAJOR.includes(f.check) && f.found === false
                 );
                 if (missingChecks.length === 0) return null;
                 return (
@@ -2102,6 +2117,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                         <span key={i} className="bg-rose-100 text-rose-700 text-[10px] font-bold px-2.5 py-1 rounded-full border border-rose-300 flex items-center gap-1">
                           <XCircle size={10} />
                           {CPA_CHECK_LABELS[f.check] || f.check}
+                          {f.ai_reasoning && <span className="font-normal ml-1 text-rose-500">— {f.ai_reasoning}</span>}
                         </span>
                       ))}
                     </div>
@@ -2135,7 +2151,8 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                     })
                   : [];
 
-                // CPA compliance check dividers — each metric gets a full-width marker at its timestamp
+                // CPA compliance check dividers — verified checks get green markers at their timestamp
+                // Only show markers BEFORE the transfer point (blue transfer = endpoint)
                 const CPA_DIVIDER_CHECKS = [
                   { key: 'double_confirm_ab', label: 'Medicare A & B Confirmation', passLabel: 'Medicare A & B Confirmed', failLabel: 'Missing: Medicare A & B Confirmation' },
                   { key: 'double_confirm_rwb', label: 'Red/White/Blue Card', passLabel: 'Red/White/Blue Card Confirmed', failLabel: 'Missing: Red/White/Blue Card' },
@@ -2147,12 +2164,16 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                   ? CPA_DIVIDER_CHECKS.map(chk => {
                       const f = call.cpaFindings!.find((ff: any) => ff.check === chk.key);
                       if (!f || f.time_seconds == null || f.time_seconds <= 0) return null;
+                      // Only show verified (passed) checks — failed checks are in the Missing banner
+                      if (f.found !== true) return null;
                       const sec = f.time_seconds;
+                      // Don't show markers after transfer point — transfer is the endpoint
+                      if (transferSec != null && transferSec > 0 && sec >= transferSec) return null;
                       const show = idx > 0
                         && parsedTranscript[idx - 1].startSeconds < sec
                         && msg.startSeconds >= sec;
                       if (!show) return null;
-                      return { ...chk, sec, passed: f.found === true };
+                      return { ...chk, sec, passed: true };
                     }).filter(Boolean) as { key: string; label: string; passLabel: string; failLabel: string; sec: number; passed: boolean }[]
                   : [];
 
@@ -2182,19 +2203,19 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                       </div>
                     )}
 
-                    {/* CPA compliance check dividers — full-width markers at exact timestamps */}
+                    {/* CPA verified check dividers — green markers for passed checks before transfer */}
                     {cpaDividers.map((d) => (
                       <div key={`cpa-div-${d.key}`} className="relative my-3">
                         <div className="absolute inset-0 flex items-center">
-                          <div className={`w-full border-t-2 ${d.passed ? 'border-emerald-300' : 'border-rose-300'}`} />
+                          <div className="w-full border-t-2 border-emerald-300" />
                         </div>
                         <div className="relative flex justify-center">
-                          <div className={`${d.passed ? 'bg-emerald-500' : 'bg-rose-500'} text-white px-3.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 shadow-sm`}>
-                            {d.passed ? <CheckCircle size={11} /> : <XCircle size={11} />}
-                            <span>{d.passed ? d.passLabel : d.failLabel}</span>
+                          <div className="bg-emerald-500 text-white px-3.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 shadow-sm">
+                            <CheckCircle size={11} />
+                            <span>{d.passLabel}</span>
                             <button
                               onClick={() => handleSeek(d.sec)}
-                              className={`ml-1 ${d.passed ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-rose-600 hover:bg-rose-700'} px-1.5 py-0.5 rounded text-[9px] flex items-center gap-0.5`}
+                              className="ml-1 bg-emerald-600 hover:bg-emerald-700 px-1.5 py-0.5 rounded text-[9px] flex items-center gap-0.5"
                             >
                               <Play size={7} fill="currentColor" />
                               {Math.floor(d.sec / 60)}:{String(Math.floor(d.sec % 60)).padStart(2, '0')}

@@ -40,7 +40,7 @@ MODEL_DIR = os.environ.get("MODEL_DIR", "/models")
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 COMPUTE_TYPE = "float16" if DEVICE == "cuda" else "float32"
-MAX_AUDIO_DURATION = 600  # 10 minutes default (trimmed, not rejected)
+MAX_AUDIO_DURATION = 300  # 5 minutes default (trimmed, not rejected)
 ABSOLUTE_MAX_DURATION = 3600  # 1 hour hard reject
 DEFAULT_VAD_ONSET = 0.3
 DEFAULT_VAD_OFFSET = 0.3

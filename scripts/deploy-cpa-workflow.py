@@ -735,7 +735,7 @@ if (laDetected && laTimestamp != null) {
 // CPA pre-screen only needs the intro/consent portion of the call.
 // Longer recordings just add noise and cost without compliance value.
 // ═══════════════════════════════════════════════════════════════
-const CPA_MAX_SECONDS = 600; // 10 minutes — captures late consent/transfers (was 5min)
+const CPA_MAX_SECONDS = 300; // 5 minutes — standard CPA trim limit
 agentSegments = agentSegments.filter(s => s.end <= CPA_MAX_SECONDS);
 customerSegments = customerSegments.filter(s => s.end <= CPA_MAX_SECONDS);
 const trimmed = (audioDuration > CPA_MAX_SECONDS);
@@ -1178,7 +1178,7 @@ RUNPOD_SUBMIT_BODY = (
     '  language: "en", '
     '  split_channels: true, '
     '  diarize: true, '
-    '  max_duration: 600, '
+    '  max_duration: 300, '
     '  vad_onset: 0.3, '
     '  vad_offset: 0.3, '
     '  metadata: { '
