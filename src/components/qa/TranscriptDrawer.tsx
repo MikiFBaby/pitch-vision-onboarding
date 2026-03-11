@@ -136,6 +136,26 @@ const FormattedCoachResponse = ({ text }: { text: string }) => {
   );
 };
 
+// CPA check label map — v5.0 keys + v3.0 backward compat
+const CPA_CHECK_LABELS: Record<string, string> = {
+  // v5.0 keys (current pipeline)
+  'double_confirm_ab': 'Medicare A & B Confirmation',
+  'double_confirm_rwb': 'Red/White/Blue Card',
+  'disclosure_recorded_line': 'Recorded Line Disclosure',
+  'disclosure_dba_name': 'DBA Company Name',
+  'verbal_consent': 'Verbal Consent to Transfer',
+  'short_call': 'Call Duration',
+  // v3.0 backward compat (old data still in DB)
+  'AF-07_dnc': 'DNC / Do Not Call',
+  'AF-09_misrep': 'Misrepresentation',
+  'AF-10_banned': 'Banned Phrases',
+  'AF-05_no_interaction': 'Customer Interaction',
+  'medicare_ab': 'Medicare A & B Confirmation',
+  'rwb_card': 'Red/White/Blue Card Mention',
+  'recorded_line': 'Recorded Line Disclosure',
+  'transfer_consent': 'Transfer Consent',
+};
+
 export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClose, onScoreUpdate, onQASubmit, onManualAutoFail }) => {
   const [isPlaying, setIsPlaying] = useState(false);
   const [activeTab, setActiveTab] = useState<'analysis' | 'transcript'>('analysis');
@@ -150,6 +170,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
   const [isMuted, setIsMuted] = useState(false);
   const [volume, setVolume] = useState(0.8);
   const [audioError, setAudioError] = useState<string | null>(null);
+  const [presignedRecordingUrl, setPresignedRecordingUrl] = useState<string | null>(null);
 
   // Coach interaction state
   const [coachQuery, setCoachQuery] = useState('');
@@ -818,7 +839,19 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
 
     // Add significant timeline events from database
     if (call?.timelineMarkers && call.timelineMarkers.length > 0) {
+      const isCpaCall = !!(call?.cpaStatus && call.cpaStatus !== 'n/a');
+
       call.timelineMarkers.forEach(m => {
+        // For CPA calls, only show meaningful markers (CPA findings, transfer/LA, end)
+        // Skip conversation-flow markers (speaker changes, every-5th-segment) that clutter the timeline
+        if (isCpaCall) {
+          const mt = (m as any);
+          const isSignificant = mt.is_cpa_finding || mt.is_transfer_marker || mt.is_la_marker ||
+            (m.type || '').toLowerCase() === 'transfer' || (m.type || '').toLowerCase() === 'la_joined' ||
+            (m.type || '').toLowerCase() === 'end';
+          if (!isSignificant) return;
+        }
+
         let timeVal = m.time;
         let secs = -1;
 
@@ -861,7 +894,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
           let type: 'pass' | 'fail' | 'chapter' | 'transfer' = 'fail';
           let color = 'bg-rose-500';
 
-          if (markerType === 'transfer' || markerStatus === 'info') {
+          if (markerType === 'transfer' || markerType === 'la_joined' || markerStatus === 'info') {
             type = 'transfer';
             color = 'bg-blue-500'; // Blue for LA transfer point
           } else if (markerStatus.includes('pass') || markerType === 'pass') {
@@ -1319,6 +1352,27 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
       setCoachQuery('');
       setExpandedAuditIdx(null);
       setAudioError(null); // Reset audio error for new call
+      setPresignedRecordingUrl(null);
+
+      // For S3-backed recordings, fetch a fresh presigned URL
+      // Fallback: extract S3 key from expired recording_url for older CPA rows
+      let effectiveS3Key = call.s3RecordingKey;
+      if (!effectiveS3Key && call.recordingUrl) {
+        try {
+          const parsed = new URL(call.recordingUrl);
+          if (parsed.hostname.includes('pitchvision-qa-recordings') || parsed.pathname.includes('vm-recordings') || parsed.pathname.includes('chase-recordings')) {
+            effectiveS3Key = decodeURIComponent(parsed.pathname.replace(/^\//, ''));
+          }
+        } catch { /* not a valid URL */ }
+      }
+      if (effectiveS3Key) {
+        fetch(`/api/qa/presign-recording?key=${encodeURIComponent(effectiveS3Key)}`)
+          .then(r => r.json())
+          .then(data => {
+            if (data.url) setPresignedRecordingUrl(data.url);
+          })
+          .catch(err => console.warn('[Audio] Presign failed:', err));
+      }
 
       // Always default to analysis tab - user requested this
       setActiveTab('analysis');
@@ -1701,7 +1755,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                     </div>
                   ) : (
                     <div className="flex flex-col items-center gap-0.5">
-                      <div className="px-2 py-1 rounded-full bg-orange-100 text-orange-600 flex items-center gap-1" title={`Missing: ${(call.cpaFindings || []).map(f => f === 'medicare_ab' ? 'A&B' : f === 'rwb_card' ? 'RWB Card' : 'Consent').join(', ')}`}>
+                      <div className="px-2 py-1 rounded-full bg-orange-100 text-orange-600 flex items-center gap-1" title={`Missing: ${(call.cpaFindings || []).filter((f: any) => (f.required !== false && !f.informational) && (f.triggered === true || (f.hasOwnProperty('found') && f.found === false))).map((f: any) => CPA_CHECK_LABELS[f.check] || f.check).join(', ')}`}>
                         <ShieldAlert size={12} />
                         <span className="text-[10px] font-black">FAIL</span>
                       </div>
@@ -1775,10 +1829,10 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
         <div className="px-6 pt-4 pb-2 z-40 bg-[#F2F2F7]">
           <div className="bg-white rounded-2xl shadow-lg border border-slate-200 p-4 flex items-center gap-4 relative overflow-visible">
             {/* Only render audio element if we have a valid, non-empty URL */}
-            {call.recordingUrl && call.recordingUrl.trim() !== '' && (
+            {(presignedRecordingUrl || (call.recordingUrl && call.recordingUrl.trim() !== '')) && (
               <audio
                 ref={audioRef}
-                src={call.recordingUrl}
+                src={presignedRecordingUrl || call.recordingUrl}
                 onTimeUpdate={handleTimeUpdate}
                 onLoadedMetadata={handleLoadedMetadata}
                 onEnded={() => setIsPlaying(false)}
@@ -1824,12 +1878,12 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
 
             <button
               onClick={togglePlay}
-              disabled={!call.recordingUrl || call.recordingUrl.trim() === '' || !!audioError}
+              disabled={!(presignedRecordingUrl || (call.recordingUrl && call.recordingUrl.trim() !== '')) || !!audioError}
               className={`h-12 w-12 rounded-full flex items-center justify-center shrink-0 transition-transform shadow-lg ${!call.recordingUrl || call.recordingUrl.trim() === '' || audioError
                 ? 'bg-gray-300 text-gray-500 cursor-not-allowed'
                 : 'bg-black text-white active:scale-90'
                 }`}
-              title={audioError || (!call.recordingUrl || call.recordingUrl.trim() === '' ? 'No recording available' : 'Play/Pause')}
+              title={audioError || (!(presignedRecordingUrl || (call.recordingUrl && call.recordingUrl.trim() !== '')) ? 'No recording available' : 'Play/Pause')}
             >
               {isPlaying ? <Pause size={24} fill="currentColor" /> : <Play size={24} fill="currentColor" className="ml-0.5" />}
             </button>
@@ -1846,7 +1900,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                   audioRef.current.playbackRate = newRate;
                 }
               }}
-              disabled={!call.recordingUrl || call.recordingUrl.trim() === '' || !!audioError}
+              disabled={!(presignedRecordingUrl || (call.recordingUrl && call.recordingUrl.trim() !== '')) || !!audioError}
               className={`h-8 min-w-[42px] px-2 rounded-lg flex items-center justify-center shrink-0 text-xs font-bold transition-all ${!call.recordingUrl || call.recordingUrl.trim() === '' || audioError
                 ? 'bg-gray-200 text-gray-400 cursor-not-allowed'
                 : 'bg-purple-100 text-purple-700 hover:bg-purple-200 active:scale-95 border border-purple-200'
@@ -2290,7 +2344,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                           );
                         })()}
 
-                        {/* Clarity Score */}
+                        {/* Clarity Score — hidden when not available (e.g., CPA regex-only calls) */}
                         {(() => {
                           let clarity = call.languageAssessment.clarity_score ?? call.languageAssessment.clarityScore;
 
@@ -2298,6 +2352,8 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                             const agentMetrics = call.speakerMetrics?.agent as any;
                             clarity = agentMetrics?.clarity_score ?? agentMetrics?.clarityScore ?? agentMetrics?.clarity;
                           }
+                          // Don't show 0/100 when clarity is genuinely unavailable
+                          if (clarity === undefined || clarity === null) return null;
                           const clarityValue = clarity || 0;
 
                           return (
@@ -3602,6 +3658,115 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                 </div>
               </div>
 
+
+              {/* CPA PRE-SCREEN RESULTS */}
+              {call.cpaStatus && call.cpaStatus !== 'n/a' && call.cpaFindings && call.cpaFindings.length > 0 && (
+                <div className="space-y-4 mt-6">
+                  <div className="flex items-center gap-2 pl-2">
+                    <ShieldCheck size={14} className="text-indigo-500" />
+                    <h4 className="text-[11px] font-black text-[#8E8E93] uppercase tracking-widest">CPA Pre-Screen Results</h4>
+                    <span className={`ml-auto px-2 py-0.5 rounded-full text-[10px] font-bold ${call.cpaStatus === 'pass' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>
+                      {call.cpaStatus === 'pass' ? 'PASS' : 'FAIL'}
+                    </span>
+                  </div>
+                  <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
+                    {(() => {
+                      // v5.0 uses required=true, v3.0 uses informational=true/false
+                      const isRequired = (f: any) => f.required !== false && !f.informational;
+                      const coreChecks = (call.cpaFindings || []).filter(isRequired);
+                      const infoChecks = (call.cpaFindings || []).filter((f: any) => !isRequired(f));
+
+                      return (
+                        <>
+                          {/* Core requirement checks */}
+                          <div className="divide-y divide-slate-100">
+                            {coreChecks.map((f: any, idx: number) => {
+                              // v5.0: found=false means FAIL; v3.0: triggered=true means FAIL
+                              const isFail = f.triggered === true || (f.hasOwnProperty('found') && f.found === false);
+                              return (
+                                <div key={idx} className="p-5 flex items-start gap-4 hover:bg-slate-50 transition-colors">
+                                  <div className="relative mt-1 shrink-0">
+                                    <div className={`h-7 w-7 rounded-full flex items-center justify-center ${isFail ? 'bg-rose-100 text-rose-600' : 'bg-emerald-100 text-emerald-600'}`}>
+                                      {isFail ? <XCircle size={14} /> : <CheckCircle2 size={14} />}
+                                    </div>
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <div className="flex items-center gap-2">
+                                      <p className={`text-xs font-bold ${isFail ? 'text-rose-700' : 'text-emerald-700'}`}>
+                                        {CPA_CHECK_LABELS[f.check] || f.check}
+                                      </p>
+                                      {f.time && (
+                                        <span className="text-[9px] text-slate-400 font-mono bg-slate-100 px-1.5 py-0.5 rounded">[{f.time}]</span>
+                                      )}
+                                      <span className={`ml-auto text-[9px] font-bold uppercase tracking-wider ${isFail ? 'text-rose-500' : 'text-emerald-500'}`}>
+                                        {isFail ? 'FAIL' : 'PASS'}
+                                      </span>
+                                    </div>
+                                    <p className="text-[11px] text-slate-500 mt-1">{f.description}</p>
+                                    {isFail && f.phrase && (
+                                      <p className="text-[11px] italic text-rose-500 mt-1.5 bg-rose-50 px-2.5 py-1.5 rounded-lg border border-rose-100">
+                                        &ldquo;{f.phrase}&rdquo;
+                                      </p>
+                                    )}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+
+                          {/* Informational / bonus checks (v3.0 only — v5.0 has none) */}
+                          {infoChecks.length > 0 && (
+                            <div className="p-5 border-t border-slate-100">
+                              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-3">Key Disclosures</p>
+                              <div className="grid grid-cols-2 gap-1.5">
+                                {infoChecks.map((f: any, idx: number) => {
+                                  const found = f.found === true;
+                                  return (
+                                    <div key={idx} className={`flex items-center gap-2 px-2.5 py-1.5 rounded-lg ${found ? 'bg-slate-50 border border-slate-200' : 'bg-amber-50 border border-amber-200'}`}>
+                                      {found ? (
+                                        <Check size={12} className="text-emerald-500 shrink-0" />
+                                      ) : (
+                                        <Minus size={12} className="text-amber-400 shrink-0" />
+                                      )}
+                                      <span className={`text-[11px] font-medium ${found ? 'text-slate-700' : 'text-amber-600'}`}>
+                                        {CPA_CHECK_LABELS[f.check] || f.check}
+                                      </span>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          )}
+
+                          {/* CPA Call Analysis (WPM, pace, engagement) */}
+                          {call.languageAssessment && (
+                            <div className="p-5 border-t border-slate-100">
+                              <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider mb-3">Call Analysis</p>
+                              <div className="grid grid-cols-3 gap-2">
+                                <div className="text-center p-2 bg-slate-50 rounded-lg">
+                                  <p className="text-lg font-black text-slate-800">{call.languageAssessment.agent_wpm || call.languageAssessment.wpm || '—'}</p>
+                                  <p className="text-[9px] text-slate-500 font-bold uppercase">Agent WPM</p>
+                                </div>
+                                <div className="text-center p-2 bg-slate-50 rounded-lg">
+                                  <p className="text-sm font-black text-slate-800 capitalize">{call.languageAssessment.pace || '—'}</p>
+                                  <p className="text-[9px] text-slate-500 font-bold uppercase">Pace</p>
+                                </div>
+                                <div className="text-center p-2 bg-slate-50 rounded-lg">
+                                  <p className="text-lg font-black text-slate-800">{call.speakerMetrics?.agent?.speakingPercentage ?? call.languageAssessment?.engagement?.agent_talk_pct ?? '—'}%</p>
+                                  <p className="text-[9px] text-slate-500 font-bold uppercase">Agent Talk</p>
+                                </div>
+                              </div>
+                              {call.languageAssessment.note && (
+                                <p className="text-[10px] text-slate-400 italic mt-1.5">{call.languageAssessment.note}</p>
+                              )}
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
+                  </div>
+                </div>
+              )}
 
               {/* AUTO-FAIL OVERRIDE SECTION */}
               {effectiveAutoFailTriggered && call.qaStatus !== 'approved' && (

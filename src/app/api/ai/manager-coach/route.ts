@@ -75,7 +75,7 @@ export async function POST(request: NextRequest) {
         "X-Title": "Manager Coaching Assistant",
       },
       body: JSON.stringify({
-        model: "deepseek/deepseek-chat-v3-0324",
+        model: "deepseek/deepseek-v3.2",
         messages: [
           { role: "system", content: SYSTEM_PROMPT },
           { role: "user", content: userPrompt },

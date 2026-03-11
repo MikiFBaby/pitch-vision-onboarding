@@ -147,6 +147,7 @@ export function transformRow(row: DatabaseCallRow): CallData {
         summary: row.summary || "",
         keyQuotes: parseJsonField(row.key_quotes, []),
         recordingUrl: row.recording_url || "",
+        s3RecordingKey: row.s3_recording_key || undefined,
         analyzedAt: row.analyzed_at || row.created_at,
         transcript: row.transcript || "",
 
@@ -252,7 +253,7 @@ export function transformRow(row: DatabaseCallRow): CallData {
         customerSpeakingTime: row.customer_speaking_time || undefined,
 
         // Tag for escalation/training/audit tracking
-        tag: row.tag as 'escalated' | 'training' | 'training_review' | 'audit_list' | 'manual_review' | undefined,
+        tag: row.tag as 'escalated' | 'training' | 'training_review' | 'audit_list' | 'manual_review' | 'cpa_pass' | 'cpa_fail' | undefined,
 
         // Licensed Agent (LA) detection metadata
         transferDetected: row.transfer_detected ?? undefined,

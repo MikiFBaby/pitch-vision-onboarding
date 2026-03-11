@@ -217,6 +217,7 @@ async function submitRecordingToN8n(
   presignedUrl: string,
   metadata: ParsedRecording,
   uploadSource: string = 's3_auto',
+  s3Key?: string,
 ): Promise<{ batchId?: string; jobId?: string; webhook?: string }> {
   const batchId = `s3_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const webhookUrl = getWebhookUrl(uploadSource);
@@ -227,6 +228,7 @@ async function submitRecordingToN8n(
     batch_id: batchId,
     upload_source: uploadSource,
     agent_name: metadata.agentName,
+    s3_key: s3Key || '',
   };
 
   const response = await fetch(webhookUrl, {
@@ -347,6 +349,8 @@ export async function processS3Batch(options: BatchOptions): Promise<BatchResult
               callTime: '',
               originalFilename: obj.key.split('/').pop() || obj.key,
             },
+            uploadSource,
+            obj.key,
           );
 
           await supabaseAdmin

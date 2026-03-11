@@ -206,8 +206,33 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
 
   // --- Visual Helpers ---
 
-  const getStatusConfig = (status: string, score?: number) => {
+  const getStatusConfig = (status: string, score?: number, cpaStatus?: string) => {
     const s = (status || '').toLowerCase();
+    const cpa = (cpaStatus || '').toLowerCase();
+
+    // Priority 0: CPA-specific status (regex pre-screen)
+    if (s.includes('cpa') || cpa === 'pass' || cpa === 'fail') {
+      if (s.includes('fail') || (cpa === 'fail' && !s.includes('pass'))) {
+        return {
+          bg: 'bg-orange-50',
+          border: 'border-orange-300',
+          text: 'text-orange-700',
+          iconColor: 'text-orange-600',
+          Icon: ShieldAlert,
+          label: 'CPA FAIL'
+        };
+      }
+      if (cpa === 'pass') {
+        return {
+          bg: 'bg-green-50',
+          border: 'border-green-300',
+          text: 'text-green-700',
+          iconColor: 'text-green-600',
+          Icon: ShieldCheck,
+          label: 'CPA PASS'
+        };
+      }
+    }
 
     // Priority 1: Critical Failure Keywords (Override score)
     if (s.includes('no consent') ||
@@ -680,6 +705,7 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
                 <th className="px-4 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Call Date</th>
                 <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Analyzed At</th>
                 <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest text-center">Source</th>
+                <th className="px-4 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest text-center">CPA</th>
                 <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Agent</th>
                 <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Campaign</th>
                 <th className="px-6 py-4 text-[10px] font-black text-slate-500 uppercase tracking-widest">Contact</th>
@@ -705,13 +731,13 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
             <tbody className="divide-y divide-slate-100 bg-white">
               {finalFilteredCalls.length === 0 ? (
                 <tr>
-                  <td colSpan={showQAColumn ? 18 : 14} className="px-6 py-12 text-center text-slate-400 text-sm font-medium">
+                  <td colSpan={showQAColumn ? 19 : 15} className="px-6 py-12 text-center text-slate-400 text-sm font-medium">
                     No calls match the current active filters.
                   </td>
                 </tr>
               ) : (
                 finalFilteredCalls.map((call) => {
-                  const statusConfig = getStatusConfig(call.status, call.complianceScore);
+                  const statusConfig = getStatusConfig(call.status, call.complianceScore, call.cpaStatus);
                   const riskConfig = getRiskConfig(call.riskLevel, call.status, call.complianceScore);
                   const scoreColor = getScoreStyle(call.complianceScore);
                   const isSelected = selectedIds.has(call.id);
@@ -771,11 +797,32 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
                               <Bot size={12} className="text-cyan-500" />
                               <span className="text-[10px] font-bold uppercase tracking-wider text-cyan-700">Dialer</span>
                             </div>
+                          ) : call.uploadType === 'hourly_dialer' ? (
+                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-50 border border-amber-200 text-slate-600" title="Hourly Dialer (CPA)">
+                              <Bot size={12} className="text-amber-500" />
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-amber-700">Hourly Dialer</span>
+                            </div>
                           ) : (
                             <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-fuchsia-50 border border-fuchsia-100 text-slate-600" title="Manual Upload">
                               <UploadCloud size={12} className="text-fuchsia-500" />
                               <span className="text-[10px] font-bold uppercase tracking-wider text-fuchsia-700">Manual</span>
                             </div>
+                          )}
+                        </td>
+                        {/* CPA Pre-Audit Column */}
+                        <td className="px-4 py-5 text-center">
+                          {call.cpaStatus === 'pass' ? (
+                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-50 border border-emerald-200" title="CPA Pre-Audit: Passed all checks">
+                              <ShieldCheck size={12} className="text-emerald-500" />
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">Pass</span>
+                            </div>
+                          ) : call.cpaStatus === 'fail' ? (
+                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-50 border border-amber-200" title={`CPA Flagged: ${(call.cpaFindings || []).map((f: string) => f === 'medicare_ab' ? 'A&B' : f === 'rwb_card' ? 'RWB' : f === 'transfer_consent' ? 'Consent' : f).join(', ')}`}>
+                              <AlertTriangle size={12} className="text-amber-500" />
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-amber-700">Flag</span>
+                            </div>
+                          ) : (
+                            <span className="text-slate-300 text-xs">&mdash;</span>
                           )}
                         </td>
                         <td className="px-6 py-5">
@@ -962,7 +1009,7 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
                       </tr>
                       {expandedId === call.id && (
                         <tr className="bg-slate-50/80 animate-in fade-in zoom-in-95">
-                          <td colSpan={showQAColumn ? 18 : 14} className="px-12 py-10 border-t border-slate-200 shadow-inner">
+                          <td colSpan={showQAColumn ? 19 : 15} className="px-12 py-10 border-t border-slate-200 shadow-inner">
                             <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
                               {/* Summary Section */}
                               <div className="bg-white p-7 rounded-2xl border border-slate-200 shadow-sm flex flex-col h-full">

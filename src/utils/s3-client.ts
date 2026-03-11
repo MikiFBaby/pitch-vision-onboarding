@@ -22,9 +22,10 @@ export interface S3Object {
   etag?: string;
 }
 
-// ---------- Client singleton ----------
+// ---------- Client singletons ----------
 
 let s3Client: S3Client | null = null;
+let qaS3Client: S3Client | null = null;
 
 export function getS3Client(): S3Client | null {
   if (s3Client) return s3Client;
@@ -42,6 +43,33 @@ export function getS3Client(): S3Client | null {
     credentials: { accessKeyId, secretAccessKey },
   });
   return s3Client;
+}
+
+/** S3 client for QA recordings bucket — uses QA_AWS_* env vars if set, falls back to AWS_* */
+export function getQaS3Client(): S3Client | null {
+  if (qaS3Client) return qaS3Client;
+
+  const region = process.env.AWS_REGION;
+  const accessKeyId = process.env.QA_AWS_ACCESS_KEY_ID || process.env.AWS_ACCESS_KEY_ID;
+  const secretAccessKey = process.env.QA_AWS_SECRET_ACCESS_KEY || process.env.AWS_SECRET_ACCESS_KEY;
+
+  if (!region || !accessKeyId || !secretAccessKey) {
+    return null;
+  }
+
+  qaS3Client = new S3Client({
+    region,
+    credentials: { accessKeyId, secretAccessKey },
+  });
+  return qaS3Client;
+}
+
+// ---------- Bucket-aware client routing ----------
+
+const QA_RECORDINGS_BUCKET = 'pitchvision-qa-recordings';
+
+function getClientForBucket(bucket: string): S3Client | null {
+  return bucket === QA_RECORDINGS_BUCKET ? getQaS3Client() : getS3Client();
 }
 
 // ---------- Upload (existing) ----------
@@ -100,7 +128,7 @@ export async function listS3Objects(
   prefix: string,
   options?: { since?: Date; maxKeys?: number },
 ): Promise<S3Object[]> {
-  const client = getS3Client();
+  const client = getClientForBucket(bucket);
   if (!client) throw new Error('S3 not configured (missing AWS credentials)');
 
   const maxKeys = options?.maxKeys ?? 10_000;
@@ -147,7 +175,7 @@ export async function getS3PresignedUrl(
   key: string,
   expiresInSeconds = 900,
 ): Promise<string> {
-  const client = getS3Client();
+  const client = getClientForBucket(bucket);
   if (!client) throw new Error('S3 not configured (missing AWS credentials)');
 
   const command = new GetObjectCommand({ Bucket: bucket, Key: key });
@@ -163,7 +191,7 @@ export async function getS3ObjectBuffer(
   bucket: string,
   key: string,
 ): Promise<Buffer> {
-  const client = getS3Client();
+  const client = getClientForBucket(bucket);
   if (!client) throw new Error('S3 not configured (missing AWS credentials)');
 
   const response = await client.send(

@@ -81,7 +81,7 @@ function QADashboardContent() {
         'agent_name', 'phone_number', 'call_duration', 'original_call_duration',
         'call_date', 'call_time', 'call_status', 'call_score', 'risk_level',
         'upload_type', 'checklist', 'violations', 'review_flags', 'summary',
-        'recording_url', 'analyzed_at', 'language_assessment', 'focus_areas',
+        'recording_url', 's3_recording_key', 'analyzed_at', 'language_assessment', 'focus_areas',
         'qa_status', 'qa_reviewed_by', 'qa_reviewed_at', 'qa_notes', 'review_priority',
         'compliance_score', 'speaker_metrics', 'timeline_markers',
         'agent_turn_count', 'customer_turn_count', 'agent_speaking_time',
@@ -92,7 +92,8 @@ function QADashboardContent() {
         'analysis_cutoff_seconds', 'batch_id', 'suggested_listen_start',
         'talk_ratio', 'dominant_speaker', 'total_talk_time',
         'agent_speaking_pct', 'customer_speaking_pct',
-        'af_confidence_level', 'af_needs_review', 'af_second_pass'
+        'af_confidence_level', 'af_needs_review', 'af_second_pass',
+        'cpa_status', 'cpa_findings', 'cpa_confidence'
     ].join(',');
 
     // Fetch calls from Supabase

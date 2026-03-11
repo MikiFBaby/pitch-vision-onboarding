@@ -44,18 +44,30 @@ API_BASE = "https://n8n.pitchvision.io/api/v1/workflows"
 SUBMIT_WORKFLOW_ID = "tuIPgrh5fR64knHq"
 CALLBACK_WORKFLOW_ID = "JdP9HKC82GV9BdW1"
 
-# Load API key
-API_KEY = os.environ.get("N8N_API_KEY")
-if not API_KEY:
+# Load keys from env or .env.local
+def _load_env_key(key_name):
+    val = os.environ.get(key_name)
+    if val:
+        return val
     env_path = SCRIPTS_DIR.parent / ".env.local"
     if env_path.exists():
         for line in env_path.read_text().splitlines():
-            if line.startswith("N8N_API_KEY="):
-                API_KEY = line.split("=", 1)[1].strip()
-                break
+            if line.startswith(f"{key_name}="):
+                return line.split("=", 1)[1].strip()
+    return None
+
+API_KEY = _load_env_key("N8N_API_KEY")
 if not API_KEY:
     print("ERROR: N8N_API_KEY not found")
     sys.exit(1)
+
+# RunPod API key — read at deploy time, embedded into n8n workflow JSON
+# (n8n community edition doesn't support $env in expression fields)
+RUNPOD_API_KEY = _load_env_key("RUNPOD_API_KEY")
+if not RUNPOD_API_KEY:
+    # Fallback: check for the key defined elsewhere or in the main pipeline
+    print("WARNING: RUNPOD_API_KEY not found in env — submit workflow auth may fail")
+    RUNPOD_API_KEY = ""
 
 HEADERS = {"X-N8N-API-KEY": API_KEY, "Content-Type": "application/json"}
 
@@ -101,7 +113,7 @@ const findings = [];
 // ═══════════════════════════════════════════════════════════════
 
 // 1a. Medicare Parts A & B mentioned (agent or customer)
-const abRe = /part\s*a\s*(and|&|\+)\s*(part\s*)?b/i;
+const abRe = /(?:(?:medicare|parts?)\s+)?a\s*(and|&|\+)\s*(?:parts?\s*)?b/i;
 const abHit = abRe.test(agentText + ' ' + customerText);
 const abS = findSeg(allSegments, abRe);
 findings.push({
@@ -424,6 +436,137 @@ if (isStereo && rawAgentSegments && rawCustomerSegments) {
 }
 
 // ═══════════════════════════════════════════════════════════════
+// LA (LICENSED AGENT) DETECTION — ported from main pipeline v3.26
+// Detects transfer initiation → LA joining → relabels segments
+// ═══════════════════════════════════════════════════════════════
+const transferInitiationPatterns = [
+  /hear(?:ing)?\s+(?:a\s+)?(?:some\s+|a\s+slight\s+|a\s+little\s+)?ring(?:ing)?/i,
+  /stay\s+(?:on|with)\s+(?:the|me)/i,
+  /transfer(?:ring)?\s+(?:you|the\s+call)/i,
+  /connect(?:ing)?\s+(?:you|us)\s+(?:to|with|over)/i,
+  /(?:specialist|agent|coordinator|colleague|someone)\s+(?:is\s+going\s+to|will|going\s+to)\s+(?:come|join|be)\s+(?:on|with)/i,
+  /(?:put|get)\s+(?:you|us)\s+(?:through|over|connected|transferred)/i,
+  /grab\s+(?:that\s+)?(?:coordinator|someone|one\s+of\s+my)/i,
+  /(?:agent|specialist|coordinator)\s+(?:on|to)\s+the\s+line/i,
+  /(?:someone|she|he)\s+(?:will\s+be|is\s+going\s+to|gonna)\s+(?:join|come|be\s+with)/i,
+  /leave\s+(?:him|her|them)\s+for\s+the\s+transfer/i,
+  /warm\s+transfer/i,
+  /(?:I'?(?:m|ll)|gonna|going\s+to)\s+(?:transfer|connect|get\s+(?:you|a))/i,
+  /connecting\s+(?:us|you)\s+(?:over|with|to)/i,
+  /(?:coordinator|specialist|someone)\s+(?:on|coming\s+on)\s+the\s+line/i,
+  /see\s+with\s+my\s+(?:specialist|agent)/i,
+  /talk\s+to\s+my\s+(?:specialist|agent)/i,
+  /(?:specialist|agent)\s+will\s+(?:help|come|review|assist)/i,
+  /(?:someone)\s+coming\s+on\s+the\s+line/i,
+];
+
+const laIntroductionPatterns = [
+  /licensed\s+\w+\s+(?:insurance\s+)?agent/i,
+  /(?:hi|hello|hey)[\s,]+(?:this\s+is|my\s+name\s+is|I'?m)\s+\w+/i,
+  /who\s+do\s+I\s+have\s+the\s+pleasure/i,
+  /do\s+you\s+mind\s+(?:if\s+I\s+)?assist/i,
+  /I'?ll\s+(?:let\s+you\s+take|be)\s+(?:the|your)\s+(?:call|license)/i,
+  /senior\s+managing?\s+agent/i,
+  /purpose\s+(?:for|of)\s+this\s+call/i,
+  /I\s+just\s+have\s+\w+\s+with\s+me/i,
+  /nice\s+to\s+meet\s+you/i,
+  /(?:benefit|benefits)\s+(?:review|enrollment|specialist)/i,
+  /(?:I'?m|my\s+name\s+is)\s+(?:the\s+)?licensed/i,
+  /let\s+me\s+(?:introduce|go\s+ahead)/i,
+  /taking\s+(?:over|it)\s+from\s+here/i,
+];
+
+let transferDetected = false;
+let transferTimestamp = null;
+let laDetected = false;
+let laTimestamp = null;
+let laSegments = [];
+
+// Only search agent segments (agent channel in stereo, agent-labeled in mono)
+const agentTextFirst = agentSegments.filter(s => s.start >= 20).map(s => s.text).join(' ');
+const agentNameLowerLA = agentNameFromMeta.toLowerCase().trim();
+const agentNamePartsLA = agentNameLowerLA.split(/\s+/).filter(p => p.length >= 3);
+
+// 1. Detect transfer initiation — scan agent segments after 20s
+for (const seg of agentSegments) {
+  if (seg.start < 20) continue; // v3.26: 20s minimum threshold
+  if (transferDetected) break;
+  for (const pat of transferInitiationPatterns) {
+    if (pat.test(seg.text)) {
+      transferDetected = true;
+      transferTimestamp = seg.start;
+      break;
+    }
+  }
+}
+
+// 2. Detect LA introduction — scan agent segments AFTER transfer
+if (transferDetected) {
+  const postTransferSegs = agentSegments.filter(s => s.start >= transferTimestamp);
+  for (const seg of postTransferSegs) {
+    // Skip segments that are clearly the original agent's own name
+    const segLower = seg.text.toLowerCase();
+    const isOwnName = agentNamePartsLA.some(part => {
+      const nameIntroMatch = segLower.match(/(?:this\s+is|my\s+name\s+is|I'?m)\s+(\w+)/i);
+      return nameIntroMatch && nameIntroMatch[1].toLowerCase() === part;
+    });
+    if (isOwnName) continue;
+
+    for (const pat of laIntroductionPatterns) {
+      if (pat.test(seg.text)) {
+        laDetected = true;
+        laTimestamp = seg.start;
+        break;
+      }
+    }
+    if (laDetected) break;
+  }
+
+  // Name-change fallback: if 2+ different names self-identify in agent channel,
+  // the second name = LA. Exclude the known agent's name.
+  if (!laDetected) {
+    const introPattern = /(?:this\s+is|my\s+name\s+is|I'?m)\s+(\w+)/gi;
+    const foundNames = [];
+    for (const seg of agentSegments) {
+      let m;
+      while ((m = introPattern.exec(seg.text)) !== null) {
+        const name = m[1].toLowerCase();
+        const isAgent = agentNamePartsLA.includes(name);
+        if (!isAgent && !foundNames.includes(name)) {
+          foundNames.push(name);
+          if (foundNames.length >= 1 && seg.start > transferTimestamp) {
+            laDetected = true;
+            laTimestamp = seg.start;
+          }
+        }
+      }
+      if (laDetected) break;
+    }
+  }
+
+  // If transfer detected but no LA intro found, use transfer as LA start fallback
+  if (!laDetected && transferDetected) {
+    // Just mark transfer — don't assume LA joined without evidence
+    laTimestamp = null;
+  }
+}
+
+// 3. Relabel post-LA agent segments as "Licensed Agent"
+if (laDetected && laTimestamp != null) {
+  for (let i = 0; i < agentSegments.length; i++) {
+    if (agentSegments[i].start >= laTimestamp) {
+      agentSegments[i].speaker = 'Licensed Agent';
+      laSegments.push(agentSegments[i]);
+    }
+  }
+  console.log('LA DETECTION: transfer at ' + Math.floor(transferTimestamp) + 's, LA joined at ' + Math.floor(laTimestamp) + 's, ' + laSegments.length + ' segments relabeled');
+} else if (transferDetected) {
+  console.log('LA DETECTION: transfer at ' + Math.floor(transferTimestamp) + 's, LA intro not confirmed');
+} else {
+  console.log('LA DETECTION: no transfer detected');
+}
+
+// ═══════════════════════════════════════════════════════════════
 // BUILD MERGED TRANSCRIPT
 // ═══════════════════════════════════════════════════════════════
 const allSegments = [...agentSegments, ...customerSegments].sort((a, b) => a.start - b.start);
@@ -435,8 +578,13 @@ const formattedTranscript = allSegments.map(seg => {
   return `[${mins}:${String(secs).padStart(2, '0')}] ${seg.speaker}: ${seg.text}`;
 }).join('\n');
 
-const agentText = agentSegments.map(s => s.text).join(' ');
+// Separate agent text: pre-transfer only (for compliance eval purposes)
+const preTransferAgentSegs = transferDetected && laTimestamp
+  ? agentSegments.filter(s => s.start < laTimestamp && s.speaker === 'Agent')
+  : agentSegments.filter(s => s.speaker === 'Agent');
+const agentText = preTransferAgentSegs.map(s => s.text).join(' ');
 const customerText = customerSegments.map(s => s.text).join(' ');
+const laText = laSegments.map(s => s.text).join(' ');
 
 // ═══════════════════════════════════════════════════════════════
 // EXCLUSIVE TIME-WINDOW SPEAKER METRICS
@@ -466,13 +614,94 @@ const customerPct = totalSpeaking > 0 ? 100 - agentPct : 0;
 const talkRatio = customerSeconds > 0 ? (agentSeconds / customerSeconds).toFixed(2) : 'N/A';
 const dominantSpeaker = agentPct > 60 ? 'agent' : customerPct > 60 ? 'customer' : 'balanced';
 
-// WPM computation
+// Pre-transfer speaking seconds (critical for accurate WPM when transfer detected)
+// After transfer, agent channel = prospect, customer channel = LA — not our agent's speech
+let preTransferAgentSecs = agentSeconds;
+let preTransferCustomerSecs = customerSeconds;
+if (transferDetected && laTimestamp) {
+  preTransferAgentSecs = 0;
+  preTransferCustomerSecs = 0;
+  const cutoff = Math.min(Math.floor(laTimestamp), totalSeconds);
+  for (let i = 0; i < cutoff; i++) {
+    if (timeline[i] === 'agent') preTransferAgentSecs++;
+    else if (timeline[i] === 'customer') preTransferCustomerSecs++;
+  }
+  preTransferAgentSecs = Math.max(1, preTransferAgentSecs);
+}
+const preTransferTotalSpeaking = preTransferAgentSecs + preTransferCustomerSecs;
+const preTransferAgentPct = preTransferTotalSpeaking > 0 ? Math.round((preTransferAgentSecs / preTransferTotalSpeaking) * 100) : 0;
+const preTransferCustomerPct = preTransferTotalSpeaking > 0 ? 100 - preTransferAgentPct : 0;
+
+// WPM computation — use pre-transfer speaking seconds since agentText is pre-transfer only
 const agentWords = agentText.split(/\s+/).filter(w => w).length;
 const customerWords = customerText.split(/\s+/).filter(w => w).length;
-const agentWpm = agentSeconds > 0 ? Math.round((agentWords / agentSeconds) * 60) : 0;
-const customerWpm = customerSeconds > 0 ? Math.round((customerWords / customerSeconds) * 60) : 0;
-const overallWpm = totalSpeaking > 0 ? Math.round(((agentWords + customerWords) / totalSpeaking) * 60) : 0;
+const laWords = laText ? laText.split(/\s+/).filter(w => w).length : 0;
+const agentWpm = preTransferAgentSecs > 0 ? Math.round((agentWords / preTransferAgentSecs) * 60) : 0;
+const customerWpm = preTransferCustomerSecs > 0 ? Math.round((customerWords / preTransferCustomerSecs) * 60) : 0;
+const overallWpm = preTransferTotalSpeaking > 0 ? Math.round(((agentWords + customerWords) / preTransferTotalSpeaking) * 60) : 0;
 const getPace = (wpm) => wpm > 180 ? 'rushed' : wpm > 160 ? 'fast' : wpm < 100 ? 'slow' : 'appropriate';
+
+// Pre-transfer WPM is now identical to agentWpm (both use pre-transfer data)
+const preTransferWpm = agentWpm;
+
+// ═══════════════════════════════════════════════════════════════
+// BESPOKE TONE / LANGUAGE ANALYSIS (regex-based, no AI needed)
+// ═══════════════════════════════════════════════════════════════
+// Use pre-transfer agent text for tone scan (post-transfer is prospect/LA, not our agent)
+const fullAgentText = transferDetected && laTimestamp
+  ? agentSegments.filter(s => s.start < laTimestamp).map(s => s.text).join(' ')
+  : agentSegments.map(s => s.text).join(' ');
+const combinedText = (fullAgentText + ' ' + customerText).toLowerCase();
+
+// Tone keyword detection — scan for indicators
+const toneIndicators = {
+  professional: [/\b(?:sir|ma'?am|mister|miss|mrs)\b/gi, /\bthank\s+you\b/gi, /\bplease\b/gi, /\byou'?re\s+welcome\b/gi],
+  empathetic: [/\bunderstand\b/gi, /\bsorry\b/gi, /\bappreciate\b/gi, /\bconcern/gi, /\bworr(?:y|ied)\b/gi, /\bhear\s+you\b/gi],
+  confident: [/\babsolutely\b/gi, /\bdefinitely\b/gi, /\bcertainly\b/gi, /\bof\s+course\b/gi, /\bexactly\b/gi],
+  friendly: [/\bhow\s+are\s+you\b/gi, /\bhave\s+a\s+(?:good|great|wonderful)\b/gi, /\bnice\s+(?:to|talking|speaking)\b/gi, /\btake\s+care\b/gi],
+  rushed: [/\bquickly\b/gi, /\breal\s+quick\b/gi, /\bjust\s+(?:a\s+)?(?:sec|second|moment|minute)\b/gi],
+  unclear: [/\bum+\b/gi, /\buh+\b/gi, /\blike\b/gi],
+};
+
+const toneScores = {};
+const toneKeywords = [];
+for (const [trait, patterns] of Object.entries(toneIndicators)) {
+  let count = 0;
+  for (const pat of patterns) {
+    const matches = fullAgentText.match(pat);
+    if (matches) count += matches.length;
+  }
+  toneScores[trait] = count;
+  if (count >= 2 && trait !== 'unclear' && trait !== 'rushed') toneKeywords.push(trait);
+}
+
+// Add pace-derived keyword
+if (agentWpm >= 100 && agentWpm <= 160) toneKeywords.push('measured');
+else if (agentWpm > 160) toneKeywords.push('fast-paced');
+if (toneScores.rushed >= 2 || agentWpm > 180) toneKeywords.push('hurried');
+if (toneScores.unclear >= 5) toneKeywords.push('hesitant');
+if (toneKeywords.length === 0) toneKeywords.push('neutral');
+
+// Ensure 3-5 keywords
+while (toneKeywords.length < 3) {
+  const fallbacks = ['direct', 'conversational', 'steady', 'clear', 'engaged'];
+  for (const fb of fallbacks) {
+    if (!toneKeywords.includes(fb)) { toneKeywords.push(fb); break; }
+  }
+}
+
+// Build bespoke language summary from metrics
+const fillerCount = (toneScores.unclear || 0);
+const politenessCount = (toneScores.professional || 0);
+const empathyCount = (toneScores.empathetic || 0);
+const summaryParts = [];
+summaryParts.push('Agent spoke at ' + agentWpm + ' WPM (' + getPace(agentWpm) + ' pace)');
+if (politenessCount >= 3) summaryParts.push('with frequent courtesy markers');
+else if (politenessCount >= 1) summaryParts.push('with some courtesy markers');
+if (empathyCount >= 2) summaryParts.push('showing empathy');
+if (fillerCount >= 5) summaryParts.push('with notable filler usage');
+if (transferDetected) summaryParts.push('Transfer initiated at ' + Math.floor(transferTimestamp) + 's');
+const languageSummary = summaryParts.join(', ') + '.';
 
 // ═══════════════════════════════════════════════════════════════
 // TIMELINE MARKERS (conversation flow)
@@ -509,6 +738,34 @@ allSegments.forEach((seg, idx) => {
   lastSpeaker = seg.speaker;
 });
 
+// Transfer / LA markers
+if (transferDetected && transferTimestamp != null) {
+  const tSec = Math.floor(transferTimestamp);
+  const tMin = Math.floor(tSec / 60);
+  const tS = tSec % 60;
+  const tFmt = tMin + ':' + String(tS).padStart(2, '0');
+  timelineMarkers.push({
+    time_seconds: tSec, time_formatted: tFmt, time: tFmt,
+    speaker: 'agent', is_speaker_change: false, has_pause_before: false,
+    pause_duration: 0, text_preview: 'Transfer initiated',
+    event: 'Transfer initiated', title: 'Transfer', type: 'transfer',
+    is_transfer_marker: true,
+  });
+}
+if (laDetected && laTimestamp != null) {
+  const lSec = Math.floor(laTimestamp);
+  const lMin = Math.floor(lSec / 60);
+  const lS = lSec % 60;
+  const lFmt = lMin + ':' + String(lS).padStart(2, '0');
+  timelineMarkers.push({
+    time_seconds: lSec, time_formatted: lFmt, time: lFmt,
+    speaker: 'licensed_agent', is_speaker_change: true, has_pause_before: false,
+    pause_duration: 0, text_preview: 'Licensed Agent joined',
+    event: 'Licensed Agent joined the call', title: 'Licensed Agent', type: 'la_joined',
+    is_la_marker: true,
+  });
+}
+
 // End-of-call marker
 if (allSegments.length > 0) {
   const lastSeg = allSegments[allSegments.length - 1];
@@ -526,6 +783,9 @@ if (allSegments.length > 0) {
     });
   }
 }
+
+// Sort all timeline markers by time
+timelineMarkers.sort((a, b) => (a.time_seconds || 0) - (b.time_seconds || 0));
 
 // ═══════════════════════════════════════════════════════════════
 // CAMPAIGN DETECTION FROM FILENAME
@@ -605,6 +865,28 @@ return {
   product_type: productType,
   product_type_source: productTypeSource,
   campaign_type: campaignName,
+
+  // LA detection
+  transfer_detected: transferDetected,
+  transfer_timestamp: transferTimestamp,
+  la_detected: laDetected,
+  la_timestamp: laTimestamp,
+  la_segment_count: laSegments.length,
+  la_text: laText || null,
+  pre_transfer_agent_text: agentText,
+  pre_transfer_wpm: preTransferWpm,
+  pre_transfer_agent_seconds: preTransferAgentSecs,
+  pre_transfer_customer_seconds: preTransferCustomerSecs,
+  pre_transfer_agent_pct: preTransferAgentPct,
+  pre_transfer_customer_pct: preTransferCustomerPct,
+
+  // Bespoke tone / language analysis
+  tone_keywords: toneKeywords.slice(0, 5),
+  tone_scores: toneScores,
+  language_summary: languageSummary,
+  filler_count: toneScores.unclear || 0,
+  politeness_count: toneScores.professional || 0,
+  empathy_count: toneScores.empathetic || 0,
 
   // Channel / swap metadata
   channel_count: channelCount,
@@ -810,8 +1092,10 @@ CALLBACK_FORWARD_CODE = r"""
 /**
  * Forward CPA-PASS calls to full AI pipeline for deeper AF-code analysis.
  * Prepares the payload for the main QA webhook (/webhook/qa-upload).
+ * v2.0: Includes AI verification context for downstream pipeline.
  */
 const data = $json;
+const aiVerify = data.ai_verification || {};
 
 return {
   forward_payload: {
@@ -822,8 +1106,11 @@ return {
     upload_source: 'cpa_pass',
     s3_key: data.s3_key || (data.file_name ? 'chase-recordings/' + data.file_name : ''),
     cpa_status: 'pass',
+    cpa_regex_status: data.cpa_regex_status || 'pass',
     cpa_findings: data.cpa_findings || [],
     cpa_confidence: data.cpa_confidence || 0,
+    cpa_ai_confidence: aiVerify.ai_cpa_confidence || null,
+    cpa_ai_checks: aiVerify.checks || null,
   },
 };
 """.strip()
@@ -832,14 +1119,22 @@ return {
 # Enriched store payload for CPA FAIL calls → Supabase directly
 CALLBACK_STORE_CODE = r"""
 /**
- * Prepare enriched CPA FAIL payload for storage v3.0
+ * Prepare enriched CPA FAIL payload for storage v3.1
  * Uses pre-computed metrics from Format Transcript v2.0:
  *   - Speaker metrics (exclusive time windows, turn counts, WPM, pace)
  *   - Conversation-flow timeline markers (merged with CPA finding markers)
  *   - Campaign detection (filename + transcript fallback)
  *   - Auto-swap detection metadata
+ *
+ * v3.1: Downstream Supabase Insert node now uses UPSERT on s3_recording_key.
  */
 const data = $json;
+
+// ─── AI Verification Output ────────────────────────────────────────
+const aiVerify = (data.ai_verification && !data.ai_verification.used_regex_only)
+  ? data.ai_verification
+  : {};
+const aiLang = aiVerify.language_assessment || {};
 
 // ─── Helpers ────────────────────────────────────────────────────────
 function fmtDur(seconds) {
@@ -932,8 +1227,8 @@ return {
     batch_id: uniqueBatchId,
     analyzed_at: new Date().toISOString(),
 
-    // CPA-specific
-    cpa_status: 'fail',
+    // CPA-specific — AI verification enrichment
+    cpa_status: data.cpa_status || 'fail',
     cpa_findings: data.cpa_findings || [],
     cpa_confidence: data.cpa_confidence || 0,
     compliance_score: 0,
@@ -942,7 +1237,9 @@ return {
     risk_level: 'HIGH',
     call_status: 'CPA Fail',
     call_score: '0',
-    summary: 'CPA Pre-Audit: FAIL. ' + failReasons.join('; ') + '.',
+    summary: aiVerify.summary || ('CPA Pre-Audit: FAIL. ' + failReasons.join('; ') + '.'),
+    ai_verification: data.ai_verification || null,
+    cpa_regex_status: data.cpa_regex_status || data.cpa_status || 'fail',
 
     // Recording
     s3_recording_key: data.s3_key || '',
@@ -953,19 +1250,24 @@ return {
     product_type: data.product_type || 'UNKNOWN',
     campaign_type: data.campaign_type || '',
 
-    // Speaker metrics (pre-computed by Format Transcript v2.0)
+    // Speaker metrics — use pre-transfer values when transfer detected
+    // After transfer, agent channel = prospect, customer channel = LA — not our agent's metrics
     speaker_metrics: {
       agent: {
         turnCount: data.agent_turn_count || 0,
-        speakingTimeSeconds: data.agent_speaking_time || 0,
-        speakingTimeFormatted: fmtDur(data.agent_speaking_time || 0),
-        speakingPercentage: data.agent_speaking_pct || 0,
+        speakingTimeSeconds: data.pre_transfer_agent_seconds || data.agent_speaking_time || 0,
+        speakingTimeFormatted: fmtDur(data.pre_transfer_agent_seconds || data.agent_speaking_time || 0),
+        speakingPercentage: data.pre_transfer_agent_pct || data.agent_speaking_pct || 0,
+        wpm: agentWpm,
+        wordCount: data.agent_word_count || 0,
       },
       customer: {
         turnCount: data.customer_turn_count || 0,
-        speakingTimeSeconds: data.customer_speaking_time || 0,
-        speakingTimeFormatted: fmtDur(data.customer_speaking_time || 0),
-        speakingPercentage: data.customer_speaking_pct || 0,
+        speakingTimeSeconds: data.pre_transfer_customer_seconds || data.customer_speaking_time || 0,
+        speakingTimeFormatted: fmtDur(data.pre_transfer_customer_seconds || data.customer_speaking_time || 0),
+        speakingPercentage: data.pre_transfer_customer_pct || data.customer_speaking_pct || 0,
+        wpm: customerWpm,
+        wordCount: data.customer_word_count || 0,
       },
       total: {
         turnCount: (data.agent_turn_count || 0) + (data.customer_turn_count || 0),
@@ -975,10 +1277,10 @@ return {
     },
     agent_turn_count: data.agent_turn_count || 0,
     customer_turn_count: data.customer_turn_count || 0,
-    agent_speaking_time: data.agent_speaking_time || 0,
-    customer_speaking_time: data.customer_speaking_time || 0,
-    agent_speaking_pct: data.agent_speaking_pct || 0,
-    customer_speaking_pct: data.customer_speaking_pct || 0,
+    agent_speaking_time: data.pre_transfer_agent_seconds || data.agent_speaking_time || 0,
+    customer_speaking_time: data.pre_transfer_customer_seconds || data.customer_speaking_time || 0,
+    agent_speaking_pct: data.pre_transfer_agent_pct || data.agent_speaking_pct || 0,
+    customer_speaking_pct: data.pre_transfer_customer_pct || data.customer_speaking_pct || 0,
     total_talk_time: data.total_talk_time || 0,
     talk_ratio: String(data.talk_ratio || '0'),
     dominant_speaker: data.dominant_speaker || 'agent',
@@ -988,7 +1290,7 @@ return {
     checklist,
     auto_fail_reasons,
 
-    // Language assessment — uses pre-computed WPM/pace from Format Transcript
+    // Language assessment — AI-enriched (v6.0) with regex fallback
     language_assessment: {
       wpm: overallWpm,
       agent_wpm: agentWpm,
@@ -996,20 +1298,41 @@ return {
       pace: agentPace,
       agent_pace: agentPace,
       customer_pace: customerPace,
+      pre_transfer_wpm: data.pre_transfer_wpm || agentWpm,
       engagement: {
         agent_talk_pct: data.agent_speaking_pct || 0,
         customer_talk_pct: data.customer_speaking_pct || 0,
         dominant_speaker: data.dominant_speaker || 'agent',
         turn_count: (data.agent_turn_count || 0) + (data.customer_turn_count || 0),
       },
-      tone_keywords: null,
-      clarity: null,
-      note: 'CPA pre-screen only — tone and clarity require full AI analysis',
+      // Prefer AI output over regex-derived values
+      tone_keywords: aiLang.tone_keywords || data.tone_keywords || [],
+      tone_scores: data.tone_scores || null,
+      language_summary: aiLang.language_summary || data.language_summary || null,
+      filler_count: data.filler_count || 0,
+      politeness_count: data.politeness_count || 0,
+      empathy_count: data.empathy_count || 0,
+      clarity: aiLang.clarity || null,
+      empathy: aiLang.empathy || null,
+      note: aiVerify.summary
+        ? 'CPA pre-screen with AI verification'
+        : (data.la_detected
+          ? 'CPA pre-screen with LA detection — tone analysis is regex-based'
+          : 'CPA pre-screen — tone analysis is regex-based'),
     },
     duration_assessment: {
       assessment: (data.audio_duration_s || data.call_duration_seconds || 0) >= 120 ? 'appropriate' : 'short',
       agent_speaking_pct: data.agent_speaking_pct || 0,
     },
+
+    // LA (Licensed Agent) detection
+    transfer_detected: data.transfer_detected || false,
+    transfer_initiated_at_seconds: data.transfer_timestamp || null,
+    la_detected: data.la_detected || false,
+    la_started_at_seconds: data.la_timestamp || null,
+    la_segment_count: data.la_segment_count || 0,
+    la_text: data.la_text || null,
+    analysis_cutoff_seconds: data.la_timestamp || null,
 
     // Channel / swap detection metadata
     channel_count: data.channel_count || 1,
@@ -1027,6 +1350,226 @@ return {
   },
 };
 """.strip()
+
+
+# ─── CPA AI Verify System Prompt ──────────────────────────────────────
+
+CPA_AI_SYSTEM_PROMPT = r"""You are a CPA (Compliance Pre-Audit) verification assistant for a call center QA pipeline.
+You review call transcripts for 3 SPECIFIC compliance requirements ONLY.
+You do NOT perform a full compliance audit — that happens downstream if the call passes.
+
+YOUR TASK: Verify whether these requirements were GENUINELY met:
+
+## 1. DOUBLE CONFIRMATION
+Agent must EXPLICITLY ASK the customer about Medicare Parts A & B, AND the customer must CONFIRM.
+The Red/White/Blue card must also be MENTIONED and ACKNOWLEDGED.
+- Agent simply saying "Part A and B" is NOT sufficient — they must ASK the customer.
+- Customer must give an affirmative response (yes, yeah, uh-huh, mm-hmm, sure, okay all count).
+- If agent asks and then proceeds without a visible response, mark as "inconclusive" (WhisperX may have missed it).
+
+## 2. DISCLOSURE
+Agent must clearly state: (a) they are on a recorded line, AND (b) their DBA company name.
+Approved DBA names: America's Health, Benefit Link, Health Benefit Guide.
+- "recorded line" / "recorded call" / "on a recorded line" all count.
+- Partial disclosure (recorded line but no DBA, or DBA but no recorded line) = fail.
+
+## 3. VERBAL CONSENT TO TRANSFER
+Customer must give GENUINE verbal consent to be transferred to a Licensed Agent.
+- The consent must be IN RESPONSE TO the transfer request — not a "yes" or "okay" to an unrelated question.
+- Context is critical: "okay" after "how are you doing?" is NOT consent. "okay" after "let me connect you with a specialist" IS consent.
+- "yeah", "sure", "go ahead", "uh-huh", "mm-hmm", "that's fine", "sounds good" all count as affirmative.
+- If agent announces transfer and proceeds without visible objection, mark as "inconclusive" (WhisperX may have missed brief consent).
+
+## TRANSCRIPTION NOTES
+- WhisperX transcription is imperfect — brief responses ("yeah", "uh-huh") are sometimes missed.
+- "recorded mind" = "recorded line" (accent variation captured by WhisperX).
+- If evidence is borderline, lean toward "inconclusive" rather than "fail".
+
+## LANGUAGE ASSESSMENT
+Also assess the agent's communication quality (pre-transfer portion only):
+- clarity (1-10): How clear, articulate, and understandable was the agent?
+- empathy (1-10): Did the agent show genuine care and understanding?
+- tone_keywords: 3-5 descriptive adjectives specific to THIS call (never use generic defaults)
+- language_summary: 1-2 bespoke sentences about THIS specific call's communication quality
+
+## OUTPUT FORMAT
+Return ONLY valid JSON matching this schema:
+{
+  "checks": {
+    "medicare_ab": {"status": "pass|fail|inconclusive", "confidence": 0-100, "reasoning": "1 sentence"},
+    "rwb_card": {"status": "pass|fail|inconclusive", "confidence": 0-100, "reasoning": "1 sentence"},
+    "disclosure": {"status": "pass|fail|inconclusive", "confidence": 0-100, "reasoning": "1 sentence"},
+    "verbal_consent": {"status": "pass|fail|inconclusive", "confidence": 0-100, "reasoning": "1 sentence"}
+  },
+  "ai_cpa_status": "pass|fail",
+  "ai_cpa_confidence": 0-100,
+  "language_assessment": {
+    "clarity": 1-10,
+    "empathy": 1-10,
+    "tone_keywords": ["word1", "word2", "word3"],
+    "language_summary": "Bespoke 1-2 sentence assessment of this call"
+  },
+  "summary": "Bespoke 1-2 sentence overall assessment"
+}
+
+RULES:
+- ai_cpa_status = "pass" ONLY if ALL 4 checks are "pass" or "inconclusive" with confidence >= 60.
+- ai_cpa_status = "fail" if ANY check is "fail".
+- If a check is "inconclusive" with confidence < 60, treat as fail for routing purposes.
+- Return ONLY the JSON object. No markdown, no explanation, no preamble."""
+
+
+# ─── CPA AI Verify Code ──────────────────────────────────────────────
+
+CPA_AI_VERIFY_CODE = r"""
+/**
+ * CPA AI Verify v1.0 — Lightweight AI verification of CPA pre-screen results
+ *
+ * Runs on ALL calls (pass and fail) to:
+ * 1. Verify whether regex-detected compliance checks were genuinely met
+ * 2. Provide AI-generated language assessment (clarity, empathy, tone)
+ * 3. Override regex routing when AI disagrees (catch false positives/negatives)
+ *
+ * Pattern: Follows Confidence Gate (deploy-confidence-tiers.py) fetch + parse approach.
+ * Graceful fallback: On API failure, keeps regex results unchanged.
+ */
+const input = $json;
+const regexStatus = input.cpa_status || 'fail';
+const regexFindings = input.cpa_findings || [];
+const transcript = (input.merged_transcript || '').substring(0, 4000);
+const agentText = (input.agent_text || '').substring(0, 2000);
+const customerText = (input.customer_text || '').substring(0, 2000);
+
+// System prompt injected by deploy script
+const systemPrompt = SYSTEM_PROMPT_PLACEHOLDER;
+
+const userPrompt = `AGENT TRANSCRIPT (pre-transfer only):\n${agentText}\n\nCUSTOMER TRANSCRIPT (pre-transfer only):\n${customerText}\n\nFULL MERGED TRANSCRIPT:\n${transcript}\n\nREGEX PRE-SCREEN RESULTS:\n${JSON.stringify(regexFindings, null, 2)}\n\nAnalyze whether each compliance check was GENUINELY met.`;
+
+// Get API key
+let apiKey;
+try { apiKey = $env.OPENROUTER_API_KEY; } catch(e) { apiKey = null; }
+
+if (!apiKey) {
+  console.log('CPA AI VERIFY: No OPENROUTER_API_KEY — keeping regex results');
+  return { json: {
+    ...input,
+    cpa_regex_status: regexStatus,
+    ai_verification: { error: 'No API key configured', used_regex_only: true },
+  }};
+}
+
+try {
+  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + apiKey,
+      'Content-Type': 'application/json',
+      'HTTP-Referer': 'https://pitchvision.io',
+      'X-Title': 'PitchVision CPA AI Verify'
+    },
+    body: JSON.stringify({
+      model: 'deepseek/deepseek-v3.2',
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: userPrompt }
+      ],
+      temperature: 0.1,
+      max_tokens: 800
+    })
+  });
+
+  if (!response.ok) {
+    const errText = await response.text();
+    console.log('CPA AI VERIFY: API error (' + response.status + '): ' + errText.substring(0, 200));
+    return { json: {
+      ...input,
+      cpa_regex_status: regexStatus,
+      ai_verification: { error: 'API HTTP ' + response.status, used_regex_only: true },
+    }};
+  }
+
+  const result = await response.json();
+  const content = (result.choices && result.choices[0] && result.choices[0].message)
+    ? result.choices[0].message.content
+    : '';
+
+  if (!content) {
+    console.log('CPA AI VERIFY: Empty response from API');
+    return { json: {
+      ...input,
+      cpa_regex_status: regexStatus,
+      ai_verification: { error: 'Empty API response', used_regex_only: true },
+    }};
+  }
+
+  // Parse JSON — try direct, then extract from markdown fences
+  let parsed = null;
+  try {
+    parsed = JSON.parse(content);
+  } catch(e1) {
+    // Try extracting JSON from markdown code fences
+    const fenceMatch = content.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+    if (fenceMatch) {
+      try { parsed = JSON.parse(fenceMatch[1]); } catch(e2) {}
+    }
+    // Try brace extraction
+    if (!parsed) {
+      const firstBrace = content.indexOf('{');
+      const lastBrace = content.lastIndexOf('}');
+      if (firstBrace !== -1 && lastBrace > firstBrace) {
+        try { parsed = JSON.parse(content.substring(firstBrace, lastBrace + 1)); } catch(e3) {}
+      }
+    }
+  }
+
+  if (!parsed || !parsed.checks) {
+    console.log('CPA AI VERIFY: Could not parse AI response');
+    return { json: {
+      ...input,
+      cpa_regex_status: regexStatus,
+      ai_verification: { error: 'Parse failure', raw_response: content.substring(0, 500), used_regex_only: true },
+    }};
+  }
+
+  // AI determination
+  const aiStatus = parsed.ai_cpa_status || 'fail';
+  const aiConfidence = parsed.ai_cpa_confidence || 0;
+
+  // Preserve original regex status, use AI determination for routing
+  const finalStatus = aiStatus;
+
+  console.log(`CPA AI VERIFY: regex=${regexStatus}, ai=${aiStatus} (conf=${aiConfidence}), final=${finalStatus}`);
+
+  return { json: {
+    ...input,
+    cpa_status: finalStatus,
+    cpa_regex_status: regexStatus,
+    cpa_confidence: aiConfidence,
+    ai_verification: {
+      checks: parsed.checks,
+      ai_cpa_status: aiStatus,
+      ai_cpa_confidence: aiConfidence,
+      language_assessment: parsed.language_assessment || null,
+      summary: parsed.summary || null,
+      used_regex_only: false,
+    },
+  }};
+
+} catch (err) {
+  console.log('CPA AI VERIFY: Fetch error: ' + (err.message || String(err)));
+  return { json: {
+    ...input,
+    cpa_regex_status: regexStatus,
+    ai_verification: { error: 'Fetch error: ' + (err.message || String(err)), used_regex_only: true },
+  }};
+}
+""".strip()
+
+# Inject the system prompt into the verify code (avoid nested raw strings)
+CPA_AI_VERIFY_CODE = CPA_AI_VERIFY_CODE.replace(
+    "SYSTEM_PROMPT_PLACEHOLDER",
+    json.dumps(CPA_AI_SYSTEM_PROMPT.strip())
+)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1111,7 +1654,7 @@ def make_submit_nodes():
             "headerParameters": {
                 "parameters": [
                     {"name": "Content-Type", "value": "application/json"},
-                    {"name": "Authorization", "value": '={{ "Bearer " + $env.RUNPOD_API_KEY }}'},
+                    {"name": "Authorization", "value": f"Bearer {RUNPOD_API_KEY}"},
                 ],
             },
             "sendBody": True,
@@ -1193,9 +1736,12 @@ def update_callback_workflow(dry_run=False):
     - Format Transcript v3.0 (stereo channel split + mono auto-swap)
     - Extract Transcription v3.0 (stereo channels + mono fallback)
     - CPA Pre-Screen v5.0
+    - CPA AI Verify v1.0 (NEW — lightweight AI verification)
     - Route Decision flipped (pass → forward, fail → store)
-    - Forward-to-pipeline code for PASS path
-    - Enriched store code for FAIL path
+    - Forward-to-pipeline code for PASS path (v2.0 — includes AI context)
+    - Enriched store code for FAIL path (v6.0 — AI language assessment)
+    - Supabase Insert → UPSERT on s3_recording_key (idempotent callbacks)
+    - Error workflow configured for DLQ capture
     """
     print(f"\n--- Updating Callback Workflow ({CALLBACK_WORKFLOW_ID}) ---")
 
@@ -1261,34 +1807,107 @@ def update_callback_workflow(dry_run=False):
             node["parameters"]["jsCode"] = CALLBACK_EXTRACT_CODE
             updated.append(f"{name} -> v3.0 (stereo channels + mono fallback)")
 
+        elif name == "Supabase Insert":
+            # PHASE 1: Convert INSERT → UPSERT on s3_recording_key
+            # PostgREST upsert: add on_conflict param + Prefer resolution header
+            base_url = "https://eyrxkirpubylgkkvcrlh.supabase.co/rest/v1/QA Results"
+            node["parameters"]["url"] = f"{base_url}?on_conflict=s3_recording_key"
+            # Update Prefer header to include merge-duplicates
+            for param in node["parameters"].get("headerParameters", {}).get("parameters", []):
+                if param.get("name") == "Prefer":
+                    param["value"] = "resolution=merge-duplicates,return=representation"
+            updated.append(f"{name} -> UPSERT on s3_recording_key (was INSERT)")
+
+    # 2b. Insert CPA AI Verify node if not present
+    ai_verify_exists = any(n["name"] == "CPA AI Verify" for n in workflow["nodes"])
+    if not ai_verify_exists:
+        # Find position from CPA Pre-Screen node
+        prescreen_node = next((n for n in workflow["nodes"] if n["name"] == "CPA Pre-Screen"), None)
+        route_node = next((n for n in workflow["nodes"] if n["name"] == "Route Decision"), None)
+
+        if prescreen_node and route_node:
+            ps_pos = prescreen_node.get("position", [800, 300])
+            rd_pos = route_node.get("position", [1100, 300])
+            # Place AI Verify between Pre-Screen and Route Decision
+            ai_x = (ps_pos[0] + rd_pos[0]) // 2
+            ai_y = ps_pos[1]
+
+            # Shift Route Decision and downstream nodes right to make room
+            shift_amount = 300
+            for node in workflow["nodes"]:
+                pos = node.get("position", [0, 0])
+                if pos[0] >= rd_pos[0]:
+                    node["position"] = [pos[0] + shift_amount, pos[1]]
+
+            new_node = {
+                "id": str(uuid.uuid4()),
+                "name": "CPA AI Verify",
+                "type": "n8n-nodes-base.code",
+                "typeVersion": 2,
+                "position": [ai_x, ai_y],
+                "parameters": {
+                    "jsCode": CPA_AI_VERIFY_CODE,
+                    "mode": "runOnceForEachItem",
+                },
+            }
+            workflow["nodes"].append(new_node)
+            updated.append("CPA AI Verify -> NEW node (AI verification v1.0)")
+
+            # Rewire connections: Pre-Screen → AI Verify → Route Decision
+            connections = workflow.get("connections", {})
+            if "CPA Pre-Screen" in connections:
+                # Re-point Pre-Screen output to AI Verify
+                connections["CPA Pre-Screen"] = {
+                    "main": [[{"node": "CPA AI Verify", "type": "main", "index": 0}]]
+                }
+            # AI Verify output → Route Decision
+            connections["CPA AI Verify"] = {
+                "main": [[{"node": "Route Decision", "type": "main", "index": 0}]]
+            }
+            updated.append("Connections: Pre-Screen → AI Verify → Route Decision")
+        else:
+            print("  WARNING: Could not find CPA Pre-Screen or Route Decision nodes for AI Verify insertion")
+    else:
+        # Update existing AI Verify node code
+        for node in workflow["nodes"]:
+            if node["name"] == "CPA AI Verify":
+                node["parameters"]["jsCode"] = CPA_AI_VERIFY_CODE
+                updated.append("CPA AI Verify -> updated code (v1.0)")
+                break
+
     if not updated:
         print("  WARNING: No nodes were updated!")
         return None
+
+    # 3. Configure error workflow for DLQ capture
+    settings = workflow.get("settings", {})
+    settings["errorWorkflow"] = "6KYZ8iIlZa0J35bt"  # QA Error Handler workflow
+    updated.append("settings.errorWorkflow -> QA Error Handler (DLQ capture)")
 
     for u in updated:
         print(f"  Updated: {u}")
 
     if dry_run:
-        print(f"\n  [DRY RUN] Would update {len(updated)} nodes. No changes made.")
+        print(f"\n  [DRY RUN] Would update {len(updated)} nodes + settings. No changes made.")
         out_path = SCRIPTS_DIR.parent / ".n8n-snapshots" / "cpa-callback-preview.json"
         out_path.parent.mkdir(parents=True, exist_ok=True)
         preview = {
             "name": workflow.get("name"),
             "nodes": workflow["nodes"],
             "connections": workflow.get("connections", {}),
-            "settings": workflow.get("settings", {}),
+            "settings": settings,
         }
         out_path.write_text(json.dumps(preview, indent=2))
         print(f"  Preview saved to: {out_path}")
         return None
 
-    # 3. PUT it back (strip to required fields only)
+    # 4. PUT it back (strip to required fields only)
     print("  Deploying updated callback workflow...")
     payload = {
         "name": workflow.get("name", "CPA Callback Processor"),
         "nodes": workflow["nodes"],
         "connections": workflow.get("connections", {}),
-        "settings": workflow.get("settings", {}),
+        "settings": settings,
     }
 
     resp = requests.put(

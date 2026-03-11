@@ -31,6 +31,22 @@ export interface KeyQuote {
     assessment: string;
 }
 
+// CPA Pre-Screen finding (from regex pre-audit)
+export interface CpaFinding {
+    check: string;           // e.g., 'double_confirm_ab', 'verbal_consent' (v5.0)
+    triggered?: boolean;     // v3.0 — was violation detected?
+    found?: boolean;         // v5.0 — was evidence found? (true=PASS, false=FAIL)
+    required?: boolean;      // v5.0 — is this a required check?
+    informational?: boolean; // v3.0 — true for non-fail checks
+    description: string;     // Human-readable result
+    phrase?: string;         // Matched phrase (for banned phrase violations)
+    type?: string;           // e.g., 'none', 'strong', 'weak'
+    customer_words?: number; // For AF-05 no_interaction check
+    duration_s?: number;     // Call duration in seconds
+    time_seconds?: number;   // v5.0 — timestamp in call (seconds)
+    time?: string;           // v5.0 — formatted timestamp (e.g., "1:23")
+}
+
 // Speaker metrics from transcript analysis
 export interface SpeakerMetrics {
     agent: {
@@ -76,6 +92,7 @@ export interface CallData {
     summary: string;
     keyQuotes: KeyQuote[];
     recordingUrl: string;
+    s3RecordingKey?: string;
     analyzedAt: string;
     transcript: string;
 
@@ -92,7 +109,7 @@ export interface CallData {
     qaNotes?: string;
     qaOverrides?: { [key: string]: string };  // Item key -> override status (PASS/FAIL)
     reviewPriority: ReviewPriority;
-    uploadType?: 'manual' | 'automated';
+    uploadType?: 'manual' | 'automated' | 'hourly_dialer';
 
     // Extended analysis fields from n8n pipeline
     languageAssessment?: any;
@@ -149,7 +166,7 @@ export interface CallData {
     customerSpeakingTime?: number;
 
     // Tag for escalation/training/audit tracking
-    tag?: 'escalated' | 'training' | 'training_review' | 'audit_list' | 'manual_review';
+    tag?: 'escalated' | 'training' | 'training_review' | 'audit_list' | 'manual_review' | 'cpa_pass' | 'cpa_fail';
 
     // Licensed Agent (LA) detection metadata
     transferDetected?: boolean;
@@ -160,7 +177,7 @@ export interface CallData {
 
     // CPA (Compliance Pre-Audit) fields
     cpaStatus?: 'pass' | 'fail' | 'n/a';
-    cpaFindings?: ('medicare_ab' | 'rwb_card' | 'transfer_consent')[];
+    cpaFindings?: CpaFinding[];
     cpaConfidence?: number;
 
     // Additional metadata
@@ -199,6 +216,7 @@ export interface DatabaseCallRow {
     summary: string | null;
     key_quotes: any | null;
     recording_url: string | null;
+    s3_recording_key: string | null;
     analyzed_at: string | null;
     transcript: string | null;
 

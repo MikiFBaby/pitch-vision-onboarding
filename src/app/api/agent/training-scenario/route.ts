@@ -129,7 +129,7 @@ Output JSON with exactly this structure:
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "deepseek/deepseek-chat-v3-0324",
+        model: "deepseek/deepseek-v3.2",
         messages: [
           { role: "system", content: systemPrompt },
           { role: "user", content: userPrompt },
