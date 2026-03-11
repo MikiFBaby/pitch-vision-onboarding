@@ -915,7 +915,9 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
     }
 
     // Add auto-fail violation markers (AF-01 through AF-14)
-    if (call?.autoFailReasons && Array.isArray(effectiveAutoFailReasons)) {
+    // Skip for CPA calls — CPA findings are already in timelineMarkers (is_cpa_finding=true)
+    const isCpaCallForMarkers = !!(call?.cpaStatus && call.cpaStatus !== 'n/a');
+    if (!isCpaCallForMarkers && call?.autoFailReasons && Array.isArray(effectiveAutoFailReasons)) {
       const warningOnlyCodes = ['AF-13']; // AF-13 is warning-only
 
       effectiveAutoFailReasons.forEach((reason: any, idx: number) => {
@@ -946,6 +948,10 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
     }
 
     // Process all checklist items with override support
+    // Skip for CPA calls — CPA findings already covered by timelineMarkers above
+    if (isCpaCallForMarkers) {
+      // CPA markers already added from timelineMarkers — skip checklist to avoid duplication
+    } else {
     // Filter out N/A items first, then process
     const validItems = fullAuditList.filter((item: any) => {
       const status = (item.status || '').toLowerCase();
@@ -1005,6 +1011,7 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
         });
       }
     });
+    } // end else (non-CPA checklist markers)
 
     // Sort by seconds first
     list.sort((a, b) => a.seconds - b.seconds);
@@ -1755,13 +1762,10 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                     </div>
                   ) : (
                     <div className="flex flex-col items-center gap-0.5">
-                      <div className="px-2 py-1 rounded-full bg-orange-100 text-orange-600 flex items-center gap-1" title={`Missing: ${(call.cpaFindings || []).filter((f: any) => (f.required !== false && !f.informational) && (f.triggered === true || (f.hasOwnProperty('found') && f.found === false))).map((f: any) => CPA_CHECK_LABELS[f.check] || f.check).join(', ')}`}>
+                      <div className="px-2 py-1 rounded-full bg-red-100 text-red-600 flex items-center gap-1" title={`Missing: ${(call.cpaFindings || []).filter((f: any) => (f.required !== false && !f.informational) && (f.triggered === true || (f.hasOwnProperty('found') && f.found === false))).map((f: any) => CPA_CHECK_LABELS[f.check] || f.check).join(', ')}`}>
                         <ShieldAlert size={12} />
                         <span className="text-[10px] font-black">FAIL</span>
                       </div>
-                      {call.cpaConfidence && (
-                        <span className="text-[8px] text-orange-500 font-bold">{call.cpaConfidence}%</span>
-                      )}
                     </div>
                   )}
                 </div>
@@ -2080,51 +2084,164 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
         <div className="flex-1 overflow-y-auto custom-scrollbar bg-white relative">
           {activeTab === 'transcript' ? (
             <div className="px-6 py-8 space-y-6">
+              {/* CPA Missing Checks Banner — show at top for checks with no timestamp */}
+              {call?.cpaFindings && (() => {
+                const MAJOR = ['double_confirm_ab', 'double_confirm_rwb', 'disclosure_recorded_line', 'disclosure_dba_name', 'verbal_consent'];
+                const missingChecks = (call.cpaFindings || []).filter((f: any) =>
+                  MAJOR.includes(f.check) && f.found === false && !f.time_seconds && f.time_seconds !== 0
+                );
+                if (missingChecks.length === 0) return null;
+                return (
+                  <div className="bg-rose-50 border border-rose-200 rounded-xl px-4 py-3 mb-2">
+                    <div className="flex items-center gap-2 mb-2">
+                      <ShieldAlert size={14} className="text-rose-500" />
+                      <span className="text-[11px] font-black text-rose-600 uppercase tracking-wider">Missing Compliance Checks</span>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {missingChecks.map((f: any, i: number) => (
+                        <span key={i} className="bg-rose-100 text-rose-700 text-[10px] font-bold px-2.5 py-1 rounded-full border border-rose-300 flex items-center gap-1">
+                          <XCircle size={10} />
+                          {CPA_CHECK_LABELS[f.check] || f.check}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
               {/* Transcript Content */}
               {parsedTranscript.map((msg, idx) => {
-                // Apply Sync Offset to the current time check
-                // If audio is "ahead" (need to delay), syncOffset should be positive?
-                // Actually: isActive if currentTime is within [start - offset, end - offset]
-                // Let's think: if user sets +1s offset, it means "Audio is 1s late", so we want the text to highlight 1s LATER.
-                // So if Audio Time is 10s, and offset is +1s, we effectively want to treat it as 9s?
-                // Or: User sets +1s because "Audio is 1s ahead of text". 
-                // Let's standard: 
-                // Offset acts as adjustment to CurrentTime. 
-                // adjustedTime = currentTime + syncOffset.
                 const adjustedTime = Math.max(0, currentTime + syncOffset);
                 const isActive = adjustedTime >= msg.startSeconds && adjustedTime < msg.endSeconds;
+
+                // Check if LA transfer divider should appear BEFORE this segment
+                const transferSec = call?.transferInitiatedAtSeconds ?? call?.laStartedAtSeconds;
+                const showTransferDivider = !!(
+                  (call?.transferDetected || call?.laDetected) &&
+                  transferSec != null &&
+                  transferSec > 0 &&
+                  idx > 0 &&
+                  parsedTranscript[idx - 1].startSeconds < transferSec &&
+                  msg.startSeconds >= transferSec
+                );
+
+                // Find auto-fail violations matching this segment's time range
+                const segmentAFs = effectiveAutoFailReasons && Array.isArray(effectiveAutoFailReasons)
+                  ? effectiveAutoFailReasons.filter((af: any) => {
+                      if (typeof af === 'string') return false;
+                      const afTs = af.timestamp;
+                      if (!afTs || afTs === '-1' || afTs === '') return false;
+                      const afSec = parseTimeToSeconds(afTs);
+                      return afSec >= msg.startSeconds && afSec < msg.endSeconds;
+                    })
+                  : [];
+
+                // CPA compliance check dividers — each metric gets a full-width marker at its timestamp
+                const CPA_DIVIDER_CHECKS = [
+                  { key: 'double_confirm_ab', label: 'Medicare A & B Confirmation', passLabel: 'Medicare A & B Confirmed', failLabel: 'Missing: Medicare A & B Confirmation' },
+                  { key: 'double_confirm_rwb', label: 'Red/White/Blue Card', passLabel: 'Red/White/Blue Card Confirmed', failLabel: 'Missing: Red/White/Blue Card' },
+                  { key: 'disclosure_recorded_line', label: 'Recorded Line', passLabel: 'Recorded Line Disclosed', failLabel: 'Missing: Recorded Line Disclosure' },
+                  { key: 'disclosure_dba_name', label: 'DBA Name', passLabel: 'DBA Company Name Disclosed', failLabel: 'Missing: DBA Company Name' },
+                  { key: 'verbal_consent', label: 'Consent', passLabel: 'Verbal Consent to Transfer', failLabel: 'Missing: Verbal Consent to Transfer' },
+                ];
+                const cpaDividers = call?.cpaFindings && Array.isArray(call.cpaFindings)
+                  ? CPA_DIVIDER_CHECKS.map(chk => {
+                      const f = call.cpaFindings!.find((ff: any) => ff.check === chk.key);
+                      if (!f || f.time_seconds == null || f.time_seconds <= 0) return null;
+                      const sec = f.time_seconds;
+                      const show = idx > 0
+                        && parsedTranscript[idx - 1].startSeconds < sec
+                        && msg.startSeconds >= sec;
+                      if (!show) return null;
+                      return { ...chk, sec, passed: f.found === true };
+                    }).filter(Boolean) as { key: string; label: string; passLabel: string; failLabel: string; sec: number; passed: boolean }[]
+                  : [];
+
                 return (
-                  <div
-                    key={idx}
-                    ref={isActive ? activeTranscriptRef : null}
-                    className={`flex w-full ${msg.isAgent ? 'justify-end' : 'justify-start'} transition-opacity duration-500 ${!isActive && isPlaying ? 'opacity-50' : 'opacity-100'}`}
-                  >
-                    <div className={`flex gap-3 max-w-[85%] ${msg.isAgent ? 'flex-row-reverse' : 'flex-row'}`}>
-                      <div className={`h-8 w-8 rounded-full flex items-center justify-center border shrink-0 ${msg.isAgent ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-white border-slate-200 text-slate-400'}`}>
-                        {msg.isAgent ? <Headphones size={14} /> : <User size={14} />}
-                      </div>
-                      <div className={`flex flex-col ${msg.isAgent ? 'items-end' : 'items-start'} flex-1`}>
-                        <div className="flex items-baseline gap-2 mb-1 px-1">
-                          <span className="text-[11px] font-bold text-slate-400 uppercase">{msg.speaker}</span>
-                          {msg.time && (
-                            <button onClick={() => handleSeek(msg.time || 0)} className="text-[10px] text-slate-300 hover:text-purple-600 flex items-center gap-1">
-                              <Play size={8} fill="currentColor" /> {msg.time}
-                            </button>
-                          )}
-                          {/* Indicator Dot in Header REMOVED per user request */}
+                  <React.Fragment key={idx}>
+                    {/* Blue transfer divider */}
+                    {showTransferDivider && (
+                      <div className="relative my-4">
+                        <div className="absolute inset-0 flex items-center">
+                          <div className="w-full border-t-2 border-blue-400" />
                         </div>
-                        <div className={`px-5 py-3.5 text-[15px] leading-relaxed shadow-sm relative transition-all duration-300 border-2 
-                                ${msg.isAgent
-                            ? `rounded-2xl rounded-tr-none ${isActive ? 'bg-indigo-600 text-white border-purple-400 shadow-[0_0_15px_rgba(168,85,247,0.4)]' : 'bg-indigo-600 text-white border-transparent'}`
-                            : `rounded-2xl rounded-tl-none ${isActive ? 'bg-white text-slate-900 border-purple-400 shadow-[0_0_15px_rgba(168,85,247,0.2)]' : 'bg-slate-50 text-slate-700 border-slate-200'}`
-                          }`}>
-                          {msg.content}
+                        <div className="relative flex justify-center">
+                          <div className="bg-blue-500 text-white px-4 py-1.5 rounded-full text-[11px] font-bold uppercase tracking-wider flex items-center gap-2 shadow-md">
+                            <ArrowRight size={12} />
+                            <span>Call Transferred{call?.laDetected ? ' — Licensed Agent Joined' : ''}</span>
+                            {transferSec && (
+                              <button
+                                onClick={() => handleSeek(transferSec)}
+                                className="ml-1 bg-blue-600 hover:bg-blue-700 px-2 py-0.5 rounded text-[10px] flex items-center gap-1"
+                              >
+                                <Play size={7} fill="currentColor" />
+                                {Math.floor(transferSec / 60)}:{String(Math.floor(transferSec % 60)).padStart(2, '0')}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )}
 
+                    {/* CPA compliance check dividers — full-width markers at exact timestamps */}
+                    {cpaDividers.map((d) => (
+                      <div key={`cpa-div-${d.key}`} className="relative my-3">
+                        <div className="absolute inset-0 flex items-center">
+                          <div className={`w-full border-t-2 ${d.passed ? 'border-emerald-300' : 'border-rose-300'}`} />
+                        </div>
+                        <div className="relative flex justify-center">
+                          <div className={`${d.passed ? 'bg-emerald-500' : 'bg-rose-500'} text-white px-3.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider flex items-center gap-1.5 shadow-sm`}>
+                            {d.passed ? <CheckCircle size={11} /> : <XCircle size={11} />}
+                            <span>{d.passed ? d.passLabel : d.failLabel}</span>
+                            <button
+                              onClick={() => handleSeek(d.sec)}
+                              className={`ml-1 ${d.passed ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-rose-600 hover:bg-rose-700'} px-1.5 py-0.5 rounded text-[9px] flex items-center gap-0.5`}
+                            >
+                              <Play size={7} fill="currentColor" />
+                              {Math.floor(d.sec / 60)}:{String(Math.floor(d.sec % 60)).padStart(2, '0')}
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
 
+                    {/* Transcript segment */}
+                    <div
+                      ref={isActive ? activeTranscriptRef : null}
+                      className={`flex w-full ${msg.isAgent ? 'justify-end' : 'justify-start'} transition-opacity duration-500 ${!isActive && isPlaying ? 'opacity-50' : 'opacity-100'}`}
+                    >
+                      <div className={`flex gap-3 max-w-[85%] ${msg.isAgent ? 'flex-row-reverse' : 'flex-row'}`}>
+                        <div className={`h-8 w-8 rounded-full flex items-center justify-center border shrink-0 ${msg.isAgent ? 'bg-indigo-600 border-indigo-500 text-white' : 'bg-white border-slate-200 text-slate-400'}`}>
+                          {msg.isAgent ? <Headphones size={14} /> : <User size={14} />}
+                        </div>
+                        <div className={`flex flex-col ${msg.isAgent ? 'items-end' : 'items-start'} flex-1`}>
+                          <div className="flex items-baseline gap-2 mb-1 px-1 flex-wrap">
+                            <span className="text-[11px] font-bold text-slate-400 uppercase">{msg.speaker}</span>
+                            {msg.time && (
+                              <button onClick={() => handleSeek(msg.time || 0)} className="text-[10px] text-slate-300 hover:text-purple-600 flex items-center gap-1">
+                                <Play size={8} fill="currentColor" /> {msg.time}
+                              </button>
+                            )}
+                            {/* Inline auto-fail badges */}
+                            {segmentAFs.map((af: any, afIdx: number) => (
+                              <span key={`af-${afIdx}`} className="bg-rose-100 text-rose-700 text-[9px] font-bold px-1.5 py-0.5 rounded-full border border-rose-200 flex items-center gap-0.5">
+                                <AlertTriangle size={8} />
+                                {af.code || 'AF'}
+                              </span>
+                            ))}
+                          </div>
+                          <div className={`px-5 py-3.5 text-[15px] leading-relaxed shadow-sm relative transition-all duration-300 border-2
+                                  ${segmentAFs.length > 0
+                              ? `rounded-2xl ${msg.isAgent ? 'rounded-tr-none' : 'rounded-tl-none'} border-rose-400 bg-rose-50 text-slate-900 shadow-[0_0_10px_rgba(244,63,94,0.15)]`
+                              : msg.isAgent
+                              ? `rounded-2xl rounded-tr-none ${isActive ? 'bg-indigo-600 text-white border-purple-400 shadow-[0_0_15px_rgba(168,85,247,0.4)]' : 'bg-indigo-600 text-white border-transparent'}`
+                              : `rounded-2xl rounded-tl-none ${isActive ? 'bg-white text-slate-900 border-purple-400 shadow-[0_0_15px_rgba(168,85,247,0.2)]' : 'bg-slate-50 text-slate-700 border-slate-200'}`
+                            }`}>
+                            {msg.content}
+                          </div>
                         </div>
                       </div>
                     </div>
-                  </div>
+                  </React.Fragment>
                 );
               })}
             </div>
