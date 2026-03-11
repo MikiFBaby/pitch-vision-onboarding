@@ -1445,9 +1445,8 @@ const systemPrompt = SYSTEM_PROMPT_PLACEHOLDER;
 
 const userPrompt = `AGENT TRANSCRIPT (pre-transfer only):\n${agentText}\n\nCUSTOMER TRANSCRIPT (pre-transfer only):\n${customerText}\n\nFULL MERGED TRANSCRIPT:\n${transcript}\n\nREGEX PRE-SCREEN RESULTS:\n${JSON.stringify(regexFindings, null, 2)}\n\nAnalyze whether each compliance check was GENUINELY met.`;
 
-// Get API key
-let apiKey;
-try { apiKey = $env.OPENROUTER_API_KEY; } catch(e) { apiKey = null; }
+// Get API key (injected at deploy time)
+const apiKey = OPENROUTER_KEY_PLACEHOLDER;
 
 if (!apiKey) {
   console.log('CPA AI VERIFY: No OPENROUTER_API_KEY — keeping regex results');
@@ -1459,15 +1458,16 @@ if (!apiKey) {
 }
 
 try {
-  const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+  const result = await this.helpers.httpRequest({
     method: 'POST',
+    url: 'https://openrouter.ai/api/v1/chat/completions',
     headers: {
       'Authorization': 'Bearer ' + apiKey,
       'Content-Type': 'application/json',
       'HTTP-Referer': 'https://pitchvision.io',
       'X-Title': 'PitchVision CPA AI Verify'
     },
-    body: JSON.stringify({
+    body: {
       model: 'deepseek/deepseek-v3.2',
       messages: [
         { role: 'system', content: systemPrompt },
@@ -1475,20 +1475,10 @@ try {
       ],
       temperature: 0.1,
       max_tokens: 800
-    })
+    },
+    json: true,
   });
 
-  if (!response.ok) {
-    const errText = await response.text();
-    console.log('CPA AI VERIFY: API error (' + response.status + '): ' + errText.substring(0, 200));
-    return { json: {
-      ...input,
-      cpa_regex_status: regexStatus,
-      ai_verification: { error: 'API HTTP ' + response.status, used_regex_only: true },
-    }};
-  }
-
-  const result = await response.json();
   const content = (result.choices && result.choices[0] && result.choices[0].message)
     ? result.choices[0].message.content
     : '';
@@ -1556,11 +1546,11 @@ try {
   }};
 
 } catch (err) {
-  console.log('CPA AI VERIFY: Fetch error: ' + (err.message || String(err)));
+  console.log('CPA AI VERIFY: HTTP error: ' + (err.message || String(err)));
   return { json: {
     ...input,
     cpa_regex_status: regexStatus,
-    ai_verification: { error: 'Fetch error: ' + (err.message || String(err)), used_regex_only: true },
+    ai_verification: { error: 'HTTP error: ' + (err.message || String(err)), used_regex_only: true },
   }};
 }
 """.strip()
@@ -1569,6 +1559,13 @@ try {
 CPA_AI_VERIFY_CODE = CPA_AI_VERIFY_CODE.replace(
     "SYSTEM_PROMPT_PLACEHOLDER",
     json.dumps(CPA_AI_SYSTEM_PROMPT.strip())
+)
+
+# Inject OpenRouter API key at deploy time
+_openrouter_key = _load_env_key("OPENROUTER_API_KEY")
+CPA_AI_VERIFY_CODE = CPA_AI_VERIFY_CODE.replace(
+    "OPENROUTER_KEY_PLACEHOLDER",
+    json.dumps(_openrouter_key) if _openrouter_key else "null"
 )
 
 
