@@ -24,7 +24,7 @@ Callback Flow (Workflow B — triggered by RunPod completion webhook):
       -> Check RunPod Status
       -> Format Transcript (normalization)
       -> Compute Call Metrics
-      -> CPA Pre-Screen v5.0 (3 core requirements)
+      -> CPA Pre-Screen v6.0 (enhanced compliance checks)
       -> Route: PASS -> forward to full AI pipeline | FAIL -> store to DB
 """
 
@@ -76,23 +76,42 @@ HEADERS = {"X-N8N-API-KEY": API_KEY, "Content-Type": "application/json"}
 
 CPA_PRESCREEN_CODE = r"""
 /**
- * CPA Pre-Screen v5.0 — 3 Core Compliance Requirements
+ * CPA Pre-Screen v6.0 — Enhanced Compliance Requirements
  *
- * CPA checks ONLY 3 things (the rest is the full AI pipeline's job):
- *   1. DOUBLE CONFIRM: Agent asks about Medicare Parts A & B, AND confirms Red/White/Blue card
- *   2. DISCLOSURE: Agent discloses recorded line AND states DBA company name
- *   3. VERBAL CONSENT: Customer gives verbal consent to transfer to Licensed Agent
+ * Checks 3 core compliance areas (5 individual checks):
+ *   1. DOUBLE CONFIRM: A&B (agent ask + customer confirm) + RWB (mention + ack)
+ *   2. DISCLOSURE: Recorded line + DBA company name (expanded + prohibited names)
+ *   3. VERBAL CONSENT: Customer consent AFTER transfer mention (proximity + no objection)
  *
- * ALL 3 must pass for CPA pass. Any missing = CPA fail (stored directly).
+ * v6.0 enhancements from v5.0:
+ *   - A&B/RWB: Require customer confirmation within 30s of agent mention
+ *   - Verbal consent: Proximity check (within 45s) + objection-after-consent detection
+ *   - DBA: Expanded approved list + prohibited name-as-company-identity detection
+ *   - Short call: Word count guard (< 15 words AND < 60s)
+ *   - WhisperX gap tolerance for missed brief responses
+ *
+ * ALL checks must pass for CPA pass. Any missing = CPA fail.
  * CPA pass → forwarded to full AI pipeline for deeper AF-code analysis.
  */
 const transcript = $json.merged_transcript || '';
-const agentText = $json.agent_text || '';
-const customerText = $json.customer_text || '';
-const agentSegments = $json.agent_segments || [];
-const customerSegments = $json.customer_segments || [];
-const allSegments = [...agentSegments, ...customerSegments].sort((a, b) => a.start - b.start);
 const audioDuration = $json.audio_duration_s || 0;
+
+// ── Scope to FRONTER portion only (pre-LA / pre-transfer) ──
+// CPA Pre-Screen analyzes the front-end agent's call BEFORE the LA joins.
+// If LA was detected, cut off at LA timestamp. Otherwise use transfer timestamp.
+const rawAgentSegs = $json.agent_segments || [];
+const rawCustomerSegs = $json.customer_segments || [];
+const laTs = $json.la_timestamp || null;
+const transferTs = $json.transfer_timestamp || null;
+const cutoffSec = laTs || transferTs || null;
+
+const agentSegments = cutoffSec ? rawAgentSegs.filter(s => s.start < cutoffSec) : rawAgentSegs;
+const customerSegments = cutoffSec ? rawCustomerSegs.filter(s => s.start < cutoffSec) : rawCustomerSegs;
+const allSegments = [...agentSegments, ...customerSegments].sort((a, b) => a.start - b.start);
+
+// Rebuild scoped text from filtered segments
+const agentText = agentSegments.map(s => s.text).join(' ');
+const customerText = customerSegments.map(s => s.text).join(' ');
 
 function fmt(seconds) {
   if (seconds == null) return null;
@@ -105,40 +124,101 @@ function findSeg(segments, regex) {
   return segments.find(s => regex.test(s.text));
 }
 
+// Find a segment matching regex AFTER afterSec, within windowSec seconds
+function findSegAfter(segments, regex, afterSec, windowSec) {
+  return segments.find(s => s.start >= afterSec && s.start <= afterSec + (windowSec || 9999) && regex.test(s.text));
+}
+
+// Common affirmative regex used across multiple checks
+const affirmRe = /\b(yes|yeah|sure|okay|ok|uh-huh|mm-hmm|yep|alright|mhmm|right|correct|I do|that's right|I have|got it|go ahead|sounds good|that works|absolutely|of course)\b/i;
+
 const findings = [];
 
 // ═══════════════════════════════════════════════════════════════
 // CHECK 1: DOUBLE CONFIRM — Medicare A&B + Red/White/Blue Card
-// Both must be present. Agent must ASK and customer must CONFIRM.
+// Agent must ASK and customer must CONFIRM within 30s.
+// WhisperX tolerance: if agent continues within 3s (no gap), assume brief response was missed.
 // ═══════════════════════════════════════════════════════════════
 
-// 1a. Medicare Parts A & B mentioned (agent or customer)
+// 1a. Medicare Parts A & B — agent must ASK, customer must CONFIRM within 30s
 const abRe = /(?:(?:medicare|parts?)\s+)?a\s*(and|&|\+)\s*(?:parts?\s*)?b/i;
-const abHit = abRe.test(agentText + ' ' + customerText);
-const abS = findSeg(allSegments, abRe);
+const abAgentSeg = findSeg(agentSegments, abRe);
+let abCustomerConfirm = false;
+let abTimeSeg = abAgentSeg;
+
+if (abAgentSeg) {
+  // Look for customer affirmative within 30s after agent mentions A&B
+  const custResp = findSegAfter(customerSegments, affirmRe, abAgentSeg.start, 30);
+  if (custResp) {
+    abCustomerConfirm = true;
+  } else {
+    // WhisperX tolerance: if agent continues within 3s (no gap for customer response),
+    // customer likely responded but WhisperX dropped it
+    const nextAgent = agentSegments.find(s => s.start > abAgentSeg.end);
+    if (nextAgent && (nextAgent.start - abAgentSeg.end) < 3 && (nextAgent.start - abAgentSeg.end) > 0.3) {
+      abCustomerConfirm = true; // WhisperX gap tolerance
+    }
+  }
+}
+// Fallback: customer mentions A&B themselves (they volunteered the info)
+if (!abAgentSeg) {
+  const abCustSeg = findSeg(customerSegments, abRe);
+  if (abCustSeg) { abCustomerConfirm = true; abTimeSeg = abCustSeg; }
+}
+
+const abPass = !!abTimeSeg && abCustomerConfirm;
 findings.push({
   check: 'double_confirm_ab',
-  found: abHit,
+  found: abPass,
   required: true,
-  description: abHit ? 'Medicare A & B confirmation found' : 'MISSING: No Medicare A & B confirmation',
-  time_seconds: abS ? abS.start : null,
-  time: abS ? fmt(abS.start) : null,
+  description: abPass
+    ? 'Medicare A & B: agent asked, customer confirmed'
+    : !abAgentSeg
+      ? 'MISSING: Agent did not mention Medicare A & B'
+      : 'MISSING: No customer confirmation of Medicare A & B within 30s',
+  time_seconds: abTimeSeg ? abTimeSeg.start : null,
+  time: abTimeSeg ? fmt(abTimeSeg.start) : null,
 });
 
-// 1b. Red/White/Blue card mentioned
+// 1b. Red/White/Blue card — agent must mention, customer must acknowledge within 30s
 const rwbRe = /red\s*,?\s*white\s*,?\s*(and|&)\s*blue/i;
-const rwbHit = rwbRe.test(transcript);
-const rwbS = findSeg(allSegments, rwbRe);
+const rwbAgentSeg = findSeg(agentSegments, rwbRe);
+let rwbCustomerConfirm = false;
+let rwbTimeSeg = rwbAgentSeg;
+
+if (rwbAgentSeg) {
+  const custResp = findSegAfter(customerSegments, affirmRe, rwbAgentSeg.start, 30);
+  if (custResp) {
+    rwbCustomerConfirm = true;
+  } else {
+    // WhisperX tolerance
+    const nextAgent = agentSegments.find(s => s.start > rwbAgentSeg.end);
+    if (nextAgent && (nextAgent.start - rwbAgentSeg.end) < 3 && (nextAgent.start - rwbAgentSeg.end) > 0.3) {
+      rwbCustomerConfirm = true;
+    }
+  }
+}
+// Fallback: customer mentions RWB card themselves
+if (!rwbAgentSeg) {
+  const rwbCustSeg = findSeg(customerSegments, rwbRe);
+  if (rwbCustSeg) { rwbCustomerConfirm = true; rwbTimeSeg = rwbCustSeg; }
+}
+
+const rwbPass = !!rwbTimeSeg && rwbCustomerConfirm;
 findings.push({
   check: 'double_confirm_rwb',
-  found: rwbHit,
+  found: rwbPass,
   required: true,
-  description: rwbHit ? 'Red/White/Blue card confirmation found' : 'MISSING: No Red/White/Blue card mention',
-  time_seconds: rwbS ? rwbS.start : null,
-  time: rwbS ? fmt(rwbS.start) : null,
+  description: rwbPass
+    ? 'Red/White/Blue card: agent mentioned, customer confirmed'
+    : !rwbAgentSeg
+      ? 'MISSING: Agent did not mention Red/White/Blue card'
+      : 'MISSING: No customer acknowledgment of Red/White/Blue card within 30s',
+  time_seconds: rwbTimeSeg ? rwbTimeSeg.start : null,
+  time: rwbTimeSeg ? fmt(rwbTimeSeg.start) : null,
 });
 
-const doubleConfirmPass = abHit && rwbHit;
+const doubleConfirmPass = abPass && rwbPass;
 
 // ═══════════════════════════════════════════════════════════════
 // CHECK 2: DISCLOSURE — Recorded Line + DBA Company Name
@@ -158,39 +238,78 @@ findings.push({
   time: recS ? fmt(recS.start) : null,
 });
 
-// 2b. DBA company name (America's Health, Benefit Link, Health Benefit Guide)
-const dbaRe = /\b(america(?:'s|s)?\s*health|benefit\s*link|health\s*benefit\s*guide)\b/i;
-const dbaHit = dbaRe.test(agentText);
-const dbaS = findSeg(agentSegments, dbaRe);
-const dbaMatch = agentText.match(dbaRe);
+// 2b. DBA company name — expanded approved list + prohibited name detection
+const approvedDbaRe = /\b(america(?:'s|s)?\s*health|benefit\s*link|health\s*benefit\s*guide|select\s*quote|smart\s*match|recorded\s*line\s*(?:aca|insurance|health))\b/i;
+const dbaHit = approvedDbaRe.test(agentText);
+const dbaS = findSeg(agentSegments, approvedDbaRe);
+const dbaMatch = agentText.match(approvedDbaRe);
+
+// Prohibited names used AS company identity (not just mentioned in conversation)
+// "I'm calling from Medicare" is a violation; "Do you have Medicare?" is fine
+const prohibitedIdentityRe = /(?:(?:calling|call)\s+(?:from|with|on\s+behalf\s+of)|(?:this\s+is|we\s+are|I'?m?\s+(?:with|from))|representing)\s+(?:the\s+)?(?:medicare|medicaid|government|federal\s+government|social\s+security|cms|pitch\s+perfect)/i;
+const prohibitedSeg = findSeg(agentSegments, prohibitedIdentityRe);
+const usedProhibitedName = !!prohibitedSeg;
+
 findings.push({
   check: 'disclosure_dba_name',
-  found: dbaHit,
+  found: dbaHit && !usedProhibitedName,
   required: true,
-  description: dbaHit ? 'DBA company name disclosed: "' + (dbaMatch ? dbaMatch[0] : '') + '"' : 'MISSING: No DBA company name disclosed',
-  phrase: dbaMatch ? dbaMatch[0] : null,
-  time_seconds: dbaS ? dbaS.start : null,
-  time: dbaS ? fmt(dbaS.start) : null,
+  description: usedProhibitedName
+    ? 'VIOLATION: Agent used prohibited name as company identity'
+    : dbaHit
+      ? 'DBA company name disclosed: "' + (dbaMatch ? dbaMatch[0] : '') + '"'
+      : 'MISSING: No approved DBA company name disclosed',
+  phrase: dbaMatch ? dbaMatch[0] : (usedProhibitedName ? 'prohibited name' : null),
+  time_seconds: (dbaS || prohibitedSeg) ? (dbaS || prohibitedSeg).start : null,
+  time: (dbaS || prohibitedSeg) ? fmt((dbaS || prohibitedSeg).start) : null,
 });
 
 const disclosurePass = recHit && dbaHit;
 
 // ═══════════════════════════════════════════════════════════════
 // CHECK 3: VERBAL CONSENT — Customer agrees to transfer to LA
-// Must detect affirmative customer response in context of transfer.
+// Consent must be AFTER and NEAR the transfer mention (within 45s).
+// Also checks for objection AFTER consent (DNC/withdraw/refuse).
 // ═══════════════════════════════════════════════════════════════
 
-// 3a. Did agent mention transfer/specialist/licensed agent?
-const transferMentionRe = /\b(transfer|connect|specialist|licensed (?:agent|representative)|someone (?:who can|to) help|get you (?:over|connected)|grab (?:my|a|one of)|come on the line|ringing|joining)\b/i;
-const transferMentioned = transferMentionRe.test(agentText);
+// 3a. Find the actual transfer mention SEGMENT (not just text search)
+const transferMentionRe = /\b(transfer|connect|specialist|licensed (?:agent|representative)|someone (?:who can|to) help|get you (?:over|connected)|grab (?:my|a|one of)|come on the line|ringing|joining|hand\s*(?:you|this)\s*over)\b/i;
+const transferMentionSeg = findSeg(agentSegments, transferMentionRe);
+const transferMentioned = !!transferMentionSeg;
 
-// 3b. Customer affirmative response
-const consentRe = /\b(yes|yeah|sure|okay|ok|go ahead|that's fine|uh-huh|mm-hmm|yep|alright|sounds good|that works|please|absolutely|of course|no problem|mhmm|right)\b/i;
-const consentHit = consentRe.test(customerText);
-const consentS = findSeg(customerSegments, consentRe);
+// 3b. Customer consent MUST be within 45s AFTER transfer mention
+let consentSeg = null;
+let verbalConsentPass = false;
 
-// Consent is meaningful only if transfer was mentioned
-const verbalConsentPass = transferMentioned && consentHit;
+if (transferMentionSeg) {
+  // Look for explicit consent within 45s AFTER agent's transfer mention
+  consentSeg = findSegAfter(customerSegments, affirmRe, transferMentionSeg.start, 45);
+
+  if (consentSeg) {
+    // 3c. Check for objection AFTER the consent (customer changed mind)
+    const objectionRe = /\b(don't want|do not want|no thank|not interested|hang up|don't call|never mind|cancel|I changed my mind|take me off|remove me|stop calling|I don't want)\b/i;
+    const objectionAfter = findSegAfter(customerSegments, objectionRe, consentSeg.start + 1, 120);
+    verbalConsentPass = !objectionAfter;
+  } else {
+    // WhisperX tolerance: agent announces transfer and continues (no gap for response)
+    const nextAgentAfterTransfer = agentSegments.find(s => s.start > transferMentionSeg.end);
+    if (nextAgentAfterTransfer && (nextAgentAfterTransfer.start - transferMentionSeg.end) < 3 && (nextAgentAfterTransfer.start - transferMentionSeg.end) > 0.3) {
+      verbalConsentPass = true;
+      consentSeg = transferMentionSeg; // Use transfer timestamp as proxy
+    }
+
+    // Implicit consent: agent announces transfer, customer speaks but doesn't object
+    if (!verbalConsentPass) {
+      const objectionRe = /\b(don't want|do not want|no thank|not interested|hang up|don't call|never mind|cancel|I changed my mind|take me off|remove me|stop calling|I don't want|no no|wait wait)\b/i;
+      const anyObjection = findSegAfter(customerSegments, objectionRe, transferMentionSeg.start, 60);
+      const anyCustomerResponse = findSegAfter(customerSegments, /\w+/, transferMentionSeg.start, 60);
+      if (!anyObjection && anyCustomerResponse) {
+        verbalConsentPass = true;
+        consentSeg = anyCustomerResponse;
+      }
+    }
+  }
+}
 
 findings.push({
   check: 'verbal_consent',
@@ -200,9 +319,9 @@ findings.push({
     ? 'Verbal consent to transfer detected'
     : !transferMentioned
       ? 'MISSING: No transfer language detected from agent'
-      : 'MISSING: No customer consent to transfer detected',
-  time_seconds: consentS ? consentS.start : null,
-  time: consentS ? fmt(consentS.start) : null,
+      : 'MISSING: No customer consent near transfer mention (within 45s)',
+  time_seconds: consentSeg ? consentSeg.start : (transferMentionSeg ? transferMentionSeg.start : null),
+  time: consentSeg ? fmt(consentSeg.start) : (transferMentionSeg ? fmt(transferMentionSeg.start) : null),
 });
 
 // ═══════════════════════════════════════════════════════════════
@@ -216,16 +335,18 @@ const failedChecks = requiredChecks.filter(f => !f.found);
 // All 3 core requirements must pass
 const allPass = doubleConfirmPass && disclosurePass && verbalConsentPass;
 
-// Also fail very short calls (< 20s) — hangups/wrong numbers
-const tooShort = audioDuration > 0 && audioDuration < 20;
+// Short call check — duration AND word count guard
+const totalWords = (agentText + ' ' + customerText).split(/\s+/).filter(w => w).length;
+const tooShort = (audioDuration > 0 && audioDuration < 20) || (totalWords < 15 && audioDuration < 60);
 
 if (tooShort) {
   findings.push({
     check: 'short_call',
     found: false,
     required: true,
-    description: 'Call too short (' + Math.round(audioDuration) + 's) — likely hangup',
+    description: 'Call too short (' + Math.round(audioDuration) + 's, ' + totalWords + ' words) — likely hangup/wrong number',
     duration_s: Math.round(audioDuration),
+    customer_words: totalWords,
   });
 }
 
@@ -238,7 +359,12 @@ return {
   cpa_findings: findings,
   cpa_confidence: confidence,
   cpa_fail_reasons: failedChecks.map(f => f.check + ': ' + f.description),
-  cpa_version: '5.0',
+  cpa_version: '6.0',
+  // Scoped (pre-transfer/pre-LA) text for AI Verify to use
+  cpa_scoped_agent_text: agentText,
+  cpa_scoped_customer_text: customerText,
+  cpa_scoped_transcript: allSegments.map(s => s.text).join(' '),
+  cpa_cutoff_sec: cutoffSec,
 };
 """.strip()
 
@@ -357,10 +483,48 @@ function normalizeSegmentList(segs, speakerLabel) {
 }
 
 if (isStereo && rawAgentSegments && rawCustomerSegments) {
-  // ─── PATH A: STEREO — definitive channel assignment ───────
-  agentSegments = normalizeSegmentList(rawAgentSegments, 'Agent');
-  customerSegments = normalizeSegmentList(rawCustomerSegments, 'Customer');
-  console.log('STEREO MODE: ' + agentSegments.length + ' agent segs, ' + customerSegments.length + ' customer segs (Ch0=Agent, Ch1=Customer)');
+  // ─── PATH A: STEREO — with auto-swap detection ────────────
+  // Ch0 is USUALLY Agent, Ch1 USUALLY Customer, but some recordings
+  // have channels swapped. Detect by scoring agent-intro patterns.
+  let ch0Segs = normalizeSegmentList(rawAgentSegments, 'Agent');
+  let ch1Segs = normalizeSegmentList(rawCustomerSegments, 'Customer');
+
+  // Score both channels for agent-likelihood (first 60s)
+  const swapPatterns = [
+    /\b(?:america'?s?\s+health|benefit\s+link|health\s+benefit\s+guide)\b/i,
+    /\b(?:calling|call(?:ing)?\s+(?:from|on\s+behalf|about|regarding))\b/i,
+    /\b(?:recorded\s+line|on\s+a\s+recorded)\b/i,
+    /\b(?:my\s+name\s+is|this\s+is)\s+\w+/i,
+    /\b(?:pitch\s+perfect|medicare|aca|marketplace)\b/i,
+    /\b(?:how\s+are\s+you\s+(?:doing|today))\b/i,
+  ];
+  const nameLower = agentNameFromMeta.toLowerCase();
+  const nameParts = nameLower.split(/\s+/).filter(p => p.length >= 3);
+
+  function scoreCh(segs) {
+    const first60 = segs.filter(s => s.start < 60).map(s => s.text).join(' ');
+    let sc = 0;
+    for (const pat of swapPatterns) { if (pat.test(first60)) sc += 2; }
+    const lower = first60.toLowerCase();
+    for (const part of nameParts) { if (lower.includes(part)) sc += 3; }
+    return sc;
+  }
+
+  const ch0Score = scoreCh(ch0Segs);
+  const ch1Score = scoreCh(ch1Segs);
+  swapScores = { ch0: ch0Score, ch1: ch1Score };
+
+  if (ch1Score > ch0Score && ch1Score >= 2) {
+    // Channels are swapped — Ch1 is actually the agent
+    agentSegments = ch1Segs.map(s => ({ ...s, speaker: 'Agent' }));
+    customerSegments = ch0Segs.map(s => ({ ...s, speaker: 'Customer' }));
+    swapped = true;
+    console.log('STEREO SWAP DETECTED: Ch1 has agent patterns (score ' + ch1Score + ' vs Ch0 ' + ch0Score + '). Swapping.');
+  } else {
+    agentSegments = ch0Segs;
+    customerSegments = ch1Segs;
+    console.log('STEREO MODE: channels correct (Ch0=' + ch0Score + ' vs Ch1=' + ch1Score + ')');
+  }
 
 } else {
   // ─── PATH B: MONO — diarization with auto-swap detection ──
@@ -565,6 +729,16 @@ if (laDetected && laTimestamp != null) {
 } else {
   console.log('LA DETECTION: no transfer detected');
 }
+
+// ═══════════════════════════════════════════════════════════════
+// CPA 5-MINUTE TRIM — Only analyze the first 5 minutes
+// CPA pre-screen only needs the intro/consent portion of the call.
+// Longer recordings just add noise and cost without compliance value.
+// ═══════════════════════════════════════════════════════════════
+const CPA_MAX_SECONDS = 600; // 10 minutes — captures late consent/transfers (was 5min)
+agentSegments = agentSegments.filter(s => s.end <= CPA_MAX_SECONDS);
+customerSegments = customerSegments.filter(s => s.end <= CPA_MAX_SECONDS);
+const trimmed = (audioDuration > CPA_MAX_SECONDS);
 
 // ═══════════════════════════════════════════════════════════════
 // BUILD MERGED TRANSCRIPT
@@ -820,7 +994,7 @@ let productTypeSource = 'filename';
 if (productType === 'UNKNOWN') {
   productType = detectFromTranscript(agentText);
   productTypeSource = productType !== 'UNKNOWN' ? 'transcript' : 'fallback';
-  if (productType === 'UNKNOWN') productType = 'ACA';
+  // Keep UNKNOWN — do NOT default to ACA. Campaign must come from filename metadata.
 }
 
 const fnParts = (fileName || '').replace(/\.[^/.]+$/, '').split('_');
@@ -897,6 +1071,10 @@ return {
   // Normalization metadata
   transcript_corrections: totalCorrections.length > 0 ? totalCorrections : null,
   transcript_normalized: totalCorrections.length > 0,
+
+  // CPA trim metadata
+  trimmed: trimmed,
+  trim_limit_seconds: CPA_MAX_SECONDS,
 };
 """.strip()
 
@@ -911,7 +1089,7 @@ CHECK_DUPLICATES_CODE = r"""
 const input = $json.body || $json;
 
 const fileName = input.file_name || '';
-const agentName = input.agent_name || '';
+let agentName = input.agent_name || '';
 
 // Parse metadata from filename if not provided
 let phoneNumber = input.phone_number || '';
@@ -919,7 +1097,17 @@ let callDate = input.call_date || '';
 let callTime = input.call_time || '';
 
 // Chase pattern: CampaignID_CampaignName_AgentName_Phone_M_D_YYYY-HH_MM_SS.wav
-if (!phoneNumber || !callDate) {
+// e.g. 225262_Elite FYM Medicare_Abda Salah_2709995127_3_9_2026-11_52_30.wav
+const chaseFullMatch = fileName.match(/^\d+_([^_]+(?:\s+[^_]+)*)_([A-Za-z][A-Za-z\s'-]+?)_(\d{10,11})_(\d{1,2})_(\d{1,2})_(\d{4})-(\d{2})_(\d{2})_(\d{2})/);
+if (chaseFullMatch) {
+  agentName = agentName || chaseFullMatch[2].trim();
+  phoneNumber = phoneNumber || chaseFullMatch[3];
+  const month = chaseFullMatch[4].padStart(2, '0');
+  const day = chaseFullMatch[5].padStart(2, '0');
+  callDate = callDate || `${chaseFullMatch[6]}-${month}-${day}`;
+  callTime = callTime || `${chaseFullMatch[7]}:${chaseFullMatch[8]}:${chaseFullMatch[9]}`;
+} else if (!phoneNumber || !callDate) {
+  // Fallback: just extract phone/date/time
   const chaseMatch = fileName.match(/(\d{10,11})_(\d{1,2})_(\d{1,2})_(\d{4})-(\d{2})_(\d{2})_(\d{2})/);
   if (chaseMatch) {
     phoneNumber = phoneNumber || chaseMatch[1];
@@ -931,8 +1119,11 @@ if (!phoneNumber || !callDate) {
 }
 
 // Build normalized output with all fields at top level
+// Normalize audio_url → file_url (RunPod submit body references $json.file_url)
 const output = {
   ...input,
+  file_url: input.file_url || input.audio_url || '',
+  agent_name: agentName,
   phone_number: phoneNumber,
   call_date: callDate,
   call_time: callTime,
@@ -987,6 +1178,7 @@ RUNPOD_SUBMIT_BODY = (
     '  language: "en", '
     '  split_channels: true, '
     '  diarize: true, '
+    '  max_duration: 600, '
     '  vad_onset: 0.3, '
     '  vad_offset: 0.3, '
     '  metadata: { '
@@ -1032,13 +1224,12 @@ const metadata = (input.metadata && Object.keys(input.metadata).length > 0)
   ? input.metadata
   : (output.metadata || {});
 
-// If RunPod returned an error
+// If RunPod returned an error — throw to route to error workflow (DLQ capture)
 if (status === 'FAILED' || output.error) {
-  return {
-    error: output.error || `RunPod job ${status}`,
-    job_id: jobId,
-    status: status,
-  };
+  const errorMsg = output.error || `RunPod job ${status}`;
+  const s3Key = (metadata.s3_key || metadata.file_name || 'unknown');
+  // Throw so n8n routes to error workflow → DLQ
+  throw new Error(`RunPod FAILED [${s3Key}]: ${errorMsg} (job: ${jobId})`);
 }
 
 // Detect output format: stereo (channels object) vs mono (segments array)
@@ -1092,7 +1283,8 @@ CALLBACK_FORWARD_CODE = r"""
 /**
  * Forward CPA-PASS calls to full AI pipeline for deeper AF-code analysis.
  * Prepares the payload for the main QA webhook (/webhook/qa-upload).
- * v2.0: Includes AI verification context for downstream pipeline.
+ * v3.0: Includes transcript segments so main pipeline skips re-transcription.
+ *       Includes full metadata (phone, date, time) for dedup.
  */
 const data = $json;
 const aiVerify = data.ai_verification || {};
@@ -1103,14 +1295,31 @@ return {
     file_name: data.file_name || '',
     batch_id: data.batch_id || '',
     agent_name: data.agent_name || '',
+    phone_number: data.phone_number || '',
+    call_date: data.call_date || '',
+    call_time: data.call_time || '',
     upload_source: 'cpa_pass',
     s3_key: data.s3_key || (data.file_name ? 'chase-recordings/' + data.file_name : ''),
+
+    // Transcript data — main pipeline can skip re-transcription if present
+    agent_segments: data.agent_segments || null,
+    customer_segments: data.customer_segments || null,
+    transcription_segments: data.transcription_segments || null,
+    merged_transcript: data.merged_transcript || '',
+    agent_text: data.agent_text || '',
+    customer_text: data.customer_text || '',
+    channel_count: data.channel_count || 2,
+    split_mode: data.split_mode || 'stereo',
+    audio_duration_s: data.audio_duration_s || 0,
+
+    // CPA pre-screen results
     cpa_status: 'pass',
     cpa_regex_status: data.cpa_regex_status || 'pass',
     cpa_findings: data.cpa_findings || [],
     cpa_confidence: data.cpa_confidence || 0,
     cpa_ai_confidence: aiVerify.ai_cpa_confidence || null,
     cpa_ai_checks: aiVerify.checks || null,
+    cpa_analyzed_at: new Date().toISOString(),
   },
 };
 """.strip()
@@ -1241,8 +1450,10 @@ return {
     ai_verification: data.ai_verification || null,
     cpa_regex_status: data.cpa_regex_status || data.cpa_status || 'fail',
 
-    // Recording
-    s3_recording_key: data.s3_key || '',
+    // Recording — s3_key is the UPSERT conflict column, must never be empty
+    s3_recording_key: data.s3_key
+      || (data.file_name ? 'chase-recordings/' + data.file_name : '')
+      || ('manual/' + (data.agent_name || 'unknown') + '_' + (data.phone_number || '0') + '_' + (data.call_date || 'nodate') + '_' + (data.call_time || 'notime').replace(/:/g, '')),
     recording_url: data.recording_url || data.file_url || '',
 
     // Call metadata — use Format Transcript's campaign detection
@@ -1354,76 +1565,83 @@ return {
 
 # ─── CPA AI Verify System Prompt ──────────────────────────────────────
 
-CPA_AI_SYSTEM_PROMPT = r"""You are a CPA (Compliance Pre-Audit) verification assistant for a call center QA pipeline.
-You review call transcripts for 3 SPECIFIC compliance requirements ONLY.
-You do NOT perform a full compliance audit — that happens downstream if the call passes.
+CPA_AI_SYSTEM_PROMPT = r"""You are a CPA (Compliance Pre-Audit) gate for a call center QA pipeline.
+Your job: determine if a call PASSES or FAILS 4 compliance checks. Binary verdicts only.
 
-YOUR TASK: Verify whether these requirements were GENUINELY met:
+CRITICAL SCOPING RULE: You are analyzing ONLY the FRONTER (front-end agent) portion of the call —
+BEFORE the Licensed Agent (LA) joined. The transcript has already been trimmed to this scope.
+Do NOT look for evidence that might appear after the transfer/LA joined — it does not count.
 
-## 1. DOUBLE CONFIRMATION
-Agent must EXPLICITLY ASK the customer about Medicare Parts A & B, AND the customer must CONFIRM.
-The Red/White/Blue card must also be MENTIONED and ACKNOWLEDGED.
-- Agent simply saying "Part A and B" is NOT sufficient — they must ASK the customer.
-- Customer must give an affirmative response (yes, yeah, uh-huh, mm-hmm, sure, okay all count).
-- If agent asks and then proceeds without a visible response, mark as "inconclusive" (WhisperX may have missed it).
+EVIDENCE RULE: For each check, you MUST quote the exact transcript line that proves it passed.
+If you cannot find a specific quote proving the check was met, it FAILS. No exceptions.
 
-## 2. DISCLOSURE
-Agent must clearly state: (a) they are on a recorded line, AND (b) their DBA company name.
-Approved DBA names: America's Health, Benefit Link, Health Benefit Guide.
-- "recorded line" / "recorded call" / "on a recorded line" all count.
-- Partial disclosure (recorded line but no DBA, or DBA but no recorded line) = fail.
+## CHECK 1: MEDICARE A&B CONFIRMATION
+PASS requires BOTH:
+  (a) Agent ASKS customer about Medicare Parts A & B (not just mentions it)
+  (b) Customer gives an affirmative response
+Quote the agent's question AND the customer's response.
+FAIL if: agent only mentions A&B without asking, OR no customer response visible.
 
-## 3. VERBAL CONSENT TO TRANSFER
-Customer must give GENUINE verbal consent to be transferred to a Licensed Agent.
-- The consent must be IN RESPONSE TO the transfer request — not a "yes" or "okay" to an unrelated question.
-- Context is critical: "okay" after "how are you doing?" is NOT consent. "okay" after "let me connect you with a specialist" IS consent.
-- "yeah", "sure", "go ahead", "uh-huh", "mm-hmm", "that's fine", "sounds good" all count as affirmative.
-- If agent announces transfer and proceeds without visible objection, mark as "inconclusive" (WhisperX may have missed brief consent).
+## CHECK 2: RED/WHITE/BLUE CARD
+PASS requires: Agent mentions the Red, White, and Blue Medicare card AND customer acknowledges.
+Quote both the mention and acknowledgment.
+FAIL if: never mentioned, or mentioned but no customer acknowledgment.
 
-## TRANSCRIPTION NOTES
-- WhisperX transcription is imperfect — brief responses ("yeah", "uh-huh") are sometimes missed.
-- "recorded mind" = "recorded line" (accent variation captured by WhisperX).
-- If evidence is borderline, lean toward "inconclusive" rather than "fail".
+## CHECK 3: DISCLOSURE
+PASS requires BOTH:
+  (a) Agent says "recorded line" / "recorded call" / "on a recorded line"
+  (b) Agent states an approved DBA name: America's Health, Benefit Link, Health Benefit Guide
+Quote both statements.
+FAIL if: either part is missing.
+
+## CHECK 4: VERBAL CONSENT TO TRANSFER
+PASS requires: Customer says yes/okay/sure/go ahead IN DIRECT RESPONSE to the agent's transfer request.
+Quote the agent's transfer request AND the customer's consent.
+FAIL if: "okay" was to an unrelated question, or no consent visible.
+PASS ALSO IF: Agent announces transfer and customer does not object (implicit consent) — but you must quote the transfer announcement and note no objection was found.
+
+## WHISPERX NOTES
+- Brief responses ("yeah", "uh-huh") are sometimes missed by WhisperX.
+- If agent asks a question and then immediately continues (no gap for response), the customer likely responded but WhisperX dropped it. This is a PASS, not a fail. Note this in your reasoning.
+- "recorded mind" = "recorded line" (accent artifact, already normalized).
 
 ## LANGUAGE ASSESSMENT
-Also assess the agent's communication quality (pre-transfer portion only):
-- clarity (1-10): How clear, articulate, and understandable was the agent?
-- empathy (1-10): Did the agent show genuine care and understanding?
-- tone_keywords: 3-5 descriptive adjectives specific to THIS call (never use generic defaults)
-- language_summary: 1-2 bespoke sentences about THIS specific call's communication quality
+Assess the agent's communication quality (pre-transfer portion only):
+- clarity (1-10): How clear and understandable?
+- empathy (1-10): Did the agent show genuine care?
+- tone_keywords: 3-5 adjectives specific to THIS call
+- language_summary: 1-2 bespoke sentences about THIS call
 
-## OUTPUT FORMAT
-Return ONLY valid JSON matching this schema:
+## OUTPUT — Return ONLY this JSON:
 {
   "checks": {
-    "medicare_ab": {"status": "pass|fail|inconclusive", "confidence": 0-100, "reasoning": "1 sentence"},
-    "rwb_card": {"status": "pass|fail|inconclusive", "confidence": 0-100, "reasoning": "1 sentence"},
-    "disclosure": {"status": "pass|fail|inconclusive", "confidence": 0-100, "reasoning": "1 sentence"},
-    "verbal_consent": {"status": "pass|fail|inconclusive", "confidence": 0-100, "reasoning": "1 sentence"}
+    "medicare_ab": {"status": "pass|fail", "evidence": "exact quote from transcript", "reasoning": "1 sentence"},
+    "rwb_card": {"status": "pass|fail", "evidence": "exact quote or null if not found", "reasoning": "1 sentence"},
+    "disclosure": {"status": "pass|fail", "evidence": "exact quote or null if not found", "reasoning": "1 sentence"},
+    "verbal_consent": {"status": "pass|fail", "evidence": "exact quote or null if not found", "reasoning": "1 sentence"}
   },
   "ai_cpa_status": "pass|fail",
-  "ai_cpa_confidence": 0-100,
   "language_assessment": {
     "clarity": 1-10,
     "empathy": 1-10,
     "tone_keywords": ["word1", "word2", "word3"],
-    "language_summary": "Bespoke 1-2 sentence assessment of this call"
+    "language_summary": "Bespoke 1-2 sentence assessment"
   },
-  "summary": "Bespoke 1-2 sentence overall assessment"
+  "summary": "1-2 sentence overall verdict with key reason"
 }
 
 RULES:
-- ai_cpa_status = "pass" ONLY if ALL 4 checks are "pass" or "inconclusive" with confidence >= 60.
+- ai_cpa_status = "pass" ONLY if ALL 4 checks are "pass".
 - ai_cpa_status = "fail" if ANY check is "fail".
-- If a check is "inconclusive" with confidence < 60, treat as fail for routing purposes.
-- Return ONLY the JSON object. No markdown, no explanation, no preamble."""
+- No "inconclusive". Commit to pass or fail. If you can't find evidence, it's fail.
+- Return ONLY the JSON object. No markdown, no explanation."""
 
 
 # ─── CPA AI Verify Code ──────────────────────────────────────────────
 
 CPA_AI_VERIFY_CODE = r"""
 /**
- * CPA AI Verify v1.0 — Lightweight AI verification of CPA pre-screen results
+ * CPA AI Verify v1.1 — Lightweight AI verification with retry logic
  *
  * Runs on ALL calls (pass and fail) to:
  * 1. Verify whether regex-detected compliance checks were genuinely met
@@ -1436,14 +1654,18 @@ CPA_AI_VERIFY_CODE = r"""
 const input = $json;
 const regexStatus = input.cpa_status || 'fail';
 const regexFindings = input.cpa_findings || [];
-const transcript = (input.merged_transcript || '').substring(0, 4000);
-const agentText = (input.agent_text || '').substring(0, 2000);
-const customerText = (input.customer_text || '').substring(0, 2000);
+
+// Use SCOPED (pre-transfer/pre-LA) text from Pre-Screen — fronter only
+const transcript = (input.cpa_scoped_transcript || input.merged_transcript || '').substring(0, 4000);
+const agentText = (input.cpa_scoped_agent_text || input.agent_text || '').substring(0, 2000);
+const customerText = (input.cpa_scoped_customer_text || input.customer_text || '').substring(0, 2000);
+const cutoffSec = input.cpa_cutoff_sec || null;
 
 // System prompt injected by deploy script
 const systemPrompt = SYSTEM_PROMPT_PLACEHOLDER;
 
-const userPrompt = `AGENT TRANSCRIPT (pre-transfer only):\n${agentText}\n\nCUSTOMER TRANSCRIPT (pre-transfer only):\n${customerText}\n\nFULL MERGED TRANSCRIPT:\n${transcript}\n\nREGEX PRE-SCREEN RESULTS:\n${JSON.stringify(regexFindings, null, 2)}\n\nAnalyze whether each compliance check was GENUINELY met.`;
+const scopeNote = cutoffSec ? `\n\nIMPORTANT: This transcript has been SCOPED to the FRONTER portion only (first ${Math.round(cutoffSec)}s). Everything below is BEFORE the Licensed Agent joined. Only analyze what the front-end agent and customer said.` : '';
+const userPrompt = `AGENT TRANSCRIPT (fronter only — pre-transfer/pre-LA):${scopeNote}\n${agentText}\n\nCUSTOMER TRANSCRIPT (fronter only — pre-transfer/pre-LA):\n${customerText}\n\nMERGED TRANSCRIPT (fronter only — pre-transfer/pre-LA):\n${transcript}\n\nREGEX PRE-SCREEN RESULTS:\n${JSON.stringify(regexFindings, null, 2)}\n\nAnalyze whether each compliance check was GENUINELY met by the FRONTER (front-end agent) before the LA joined.`;
 
 // Get API key (injected at deploy time)
 const apiKey = OPENROUTER_KEY_PLACEHOLDER;
@@ -1457,102 +1679,190 @@ if (!apiKey) {
   }};
 }
 
-try {
-  const result = await this.helpers.httpRequest({
-    method: 'POST',
-    url: 'https://openrouter.ai/api/v1/chat/completions',
-    headers: {
-      'Authorization': 'Bearer ' + apiKey,
-      'Content-Type': 'application/json',
-      'HTTP-Referer': 'https://pitchvision.io',
-      'X-Title': 'PitchVision CPA AI Verify'
-    },
-    body: {
-      model: 'deepseek/deepseek-v3.2',
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt }
-      ],
-      temperature: 0.1,
-      max_tokens: 800
-    },
-    json: true,
-  });
+// Retry with exponential backoff (3 attempts: 0s, 2s, 4s delays)
+let lastError = null;
+let apiResult = null;
 
-  const content = (result.choices && result.choices[0] && result.choices[0].message)
-    ? result.choices[0].message.content
-    : '';
-
-  if (!content) {
-    console.log('CPA AI VERIFY: Empty response from API');
-    return { json: {
-      ...input,
-      cpa_regex_status: regexStatus,
-      ai_verification: { error: 'Empty API response', used_regex_only: true },
-    }};
-  }
-
-  // Parse JSON — try direct, then extract from markdown fences
-  let parsed = null;
+for (let attempt = 0; attempt < 3; attempt++) {
   try {
-    parsed = JSON.parse(content);
-  } catch(e1) {
-    // Try extracting JSON from markdown code fences
-    const fenceMatch = content.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
-    if (fenceMatch) {
-      try { parsed = JSON.parse(fenceMatch[1]); } catch(e2) {}
-    }
-    // Try brace extraction
-    if (!parsed) {
-      const firstBrace = content.indexOf('{');
-      const lastBrace = content.lastIndexOf('}');
-      if (firstBrace !== -1 && lastBrace > firstBrace) {
-        try { parsed = JSON.parse(content.substring(firstBrace, lastBrace + 1)); } catch(e3) {}
-      }
+    apiResult = await this.helpers.httpRequest({
+      method: 'POST',
+      url: 'https://openrouter.ai/api/v1/chat/completions',
+      headers: {
+        'Authorization': 'Bearer ' + apiKey,
+        'Content-Type': 'application/json',
+        'HTTP-Referer': 'https://pitchvision.io',
+        'X-Title': 'PitchVision CPA AI Verify'
+      },
+      body: {
+        model: 'deepseek/deepseek-v3.2',
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ],
+        temperature: 0.1,
+        max_tokens: 800
+      },
+      json: true,
+    });
+    break; // success
+  } catch (err) {
+    lastError = err;
+    console.log('CPA AI VERIFY: Attempt ' + (attempt + 1) + '/3 failed: ' + (err.message || String(err)));
+    if (attempt < 2) {
+      await new Promise(r => setTimeout(r, (attempt + 1) * 2000));
     }
   }
+}
 
-  if (!parsed || !parsed.checks) {
-    console.log('CPA AI VERIFY: Could not parse AI response');
-    return { json: {
-      ...input,
-      cpa_regex_status: regexStatus,
-      ai_verification: { error: 'Parse failure', raw_response: content.substring(0, 500), used_regex_only: true },
-    }};
-  }
-
-  // AI determination
-  const aiStatus = parsed.ai_cpa_status || 'fail';
-  const aiConfidence = parsed.ai_cpa_confidence || 0;
-
-  // Preserve original regex status, use AI determination for routing
-  const finalStatus = aiStatus;
-
-  console.log(`CPA AI VERIFY: regex=${regexStatus}, ai=${aiStatus} (conf=${aiConfidence}), final=${finalStatus}`);
-
-  return { json: {
-    ...input,
-    cpa_status: finalStatus,
-    cpa_regex_status: regexStatus,
-    cpa_confidence: aiConfidence,
-    ai_verification: {
-      checks: parsed.checks,
-      ai_cpa_status: aiStatus,
-      ai_cpa_confidence: aiConfidence,
-      language_assessment: parsed.language_assessment || null,
-      summary: parsed.summary || null,
-      used_regex_only: false,
-    },
-  }};
-
-} catch (err) {
-  console.log('CPA AI VERIFY: HTTP error: ' + (err.message || String(err)));
+if (!apiResult) {
+  console.log('CPA AI VERIFY: All 3 attempts failed — keeping regex results');
   return { json: {
     ...input,
     cpa_regex_status: regexStatus,
-    ai_verification: { error: 'HTTP error: ' + (err.message || String(err)), used_regex_only: true },
+    ai_verification: { error: 'All retries failed: ' + (lastError ? lastError.message : 'unknown'), used_regex_only: true, attempts: 3 },
   }};
 }
+
+const content = (apiResult.choices && apiResult.choices[0] && apiResult.choices[0].message)
+  ? apiResult.choices[0].message.content
+  : '';
+
+if (!content) {
+  console.log('CPA AI VERIFY: Empty response from API');
+  return { json: {
+    ...input,
+    cpa_regex_status: regexStatus,
+    ai_verification: { error: 'Empty API response', used_regex_only: true },
+  }};
+}
+
+// Parse JSON — try direct, then extract from markdown fences, then brace extraction
+let parsed = null;
+try {
+  parsed = JSON.parse(content);
+} catch(e1) {
+  const fenceMatch = content.match(/```(?:json)?\s*\n?([\s\S]*?)\n?```/);
+  if (fenceMatch) {
+    try { parsed = JSON.parse(fenceMatch[1]); } catch(e2) {}
+  }
+  if (!parsed) {
+    const firstBrace = content.indexOf('{');
+    const lastBrace = content.lastIndexOf('}');
+    if (firstBrace !== -1 && lastBrace > firstBrace) {
+      try { parsed = JSON.parse(content.substring(firstBrace, lastBrace + 1)); } catch(e3) {}
+    }
+  }
+}
+
+if (!parsed || !parsed.checks) {
+  console.log('CPA AI VERIFY: Could not parse AI response');
+  return { json: {
+    ...input,
+    cpa_regex_status: regexStatus,
+    ai_verification: { error: 'Parse failure', raw_response: content.substring(0, 500), used_regex_only: true },
+  }};
+}
+
+// Validate AI response has expected check keys
+const expectedKeys = ['medicare_ab', 'rwb_card', 'disclosure', 'verbal_consent'];
+const missingKeys = expectedKeys.filter(k => !parsed.checks[k]);
+if (missingKeys.length > 0) {
+  console.log('CPA AI VERIFY: Missing check keys: ' + missingKeys.join(', '));
+  // Don't fail — use whatever checks were returned, log the gaps
+}
+
+// Validate language assessment numeric fields
+const aiLang = parsed.language_assessment || {};
+if (aiLang.clarity && (typeof aiLang.clarity !== 'number' || aiLang.clarity < 1 || aiLang.clarity > 10)) {
+  aiLang.clarity = null; // invalid, discard
+}
+if (aiLang.empathy && (typeof aiLang.empathy !== 'number' || aiLang.empathy < 1 || aiLang.empathy > 10)) {
+  aiLang.empathy = null;
+}
+parsed.language_assessment = aiLang;
+
+// AI determination — binary, no confidence scores
+const aiStatus = parsed.ai_cpa_status || 'fail';
+
+// AI verdict is authoritative — it has transcript context that regex doesn't
+const finalStatus = aiStatus;
+
+console.log('CPA AI VERIFY: regex=' + regexStatus + ', ai=' + aiStatus + ', final=' + finalStatus);
+
+// ── Merge AI results INTO cpa_findings ──────────────────────────────
+// The AI's pass/fail overrides regex findings while keeping regex timestamps
+// for marker positioning. This ensures the UI displays coherent output
+// (summary, violations, and markers all driven by AI).
+const aiCheckMap = {
+  'medicare_ab': 'double_confirm_ab',
+  'rwb_card': 'double_confirm_rwb',
+  'disclosure': 'disclosure_recorded_line', // AI disclosure covers both recorded_line + DBA
+  'verbal_consent': 'verbal_consent',
+};
+
+const mergedFindings = JSON.parse(JSON.stringify(regexFindings)); // deep copy
+
+for (const [aiKey, regexKey] of Object.entries(aiCheckMap)) {
+  const aiCheck = parsed.checks[aiKey];
+  if (!aiCheck) continue;
+  const aiPassed = aiCheck.status === 'pass';
+
+  // Find the matching regex finding(s) and override pass/fail + description
+  for (const finding of mergedFindings) {
+    if (finding.check === regexKey) {
+      const regexWas = finding.found;
+      finding.found = aiPassed;
+      finding.description = aiPassed
+        ? (aiCheck.evidence || finding.description)
+        : (aiCheck.reasoning || finding.description);
+      finding.ai_override = regexWas !== aiPassed;
+      finding.ai_reasoning = aiCheck.reasoning || null;
+    }
+    // AI 'disclosure' also covers DBA — sync both findings
+    if (aiKey === 'disclosure' && finding.check === 'disclosure_dba_name') {
+      // DBA is part of the disclosure check — if AI says disclosure passed, DBA passed too
+      // (AI checks recorded_line + DBA as one combined check)
+      const regexWas = finding.found;
+      finding.found = aiPassed;
+      finding.description = aiPassed
+        ? (aiCheck.evidence || finding.description)
+        : (aiCheck.reasoning || finding.description);
+      finding.ai_override = regexWas !== aiPassed;
+      finding.ai_reasoning = aiCheck.reasoning || null;
+    }
+  }
+}
+
+// Recompute cpa_fail_reasons from merged findings
+const updatedFailReasons = mergedFindings
+  .filter(f => f.required && !f.found)
+  .map(f => f.check + ': ' + f.description);
+const updatedPassedCount = mergedFindings.filter(f => f.required && f.found).length;
+const updatedRequiredCount = mergedFindings.filter(f => f.required).length;
+const updatedConfidence = Math.round((updatedPassedCount / Math.max(updatedRequiredCount, 1)) * 100);
+
+const overrideCount = mergedFindings.filter(f => f.ai_override).length;
+if (overrideCount > 0) {
+  console.log('CPA AI VERIFY: AI overrode ' + overrideCount + ' regex finding(s)');
+}
+
+return { json: {
+  ...input,
+  cpa_status: finalStatus,
+  cpa_regex_status: regexStatus,
+  cpa_findings: mergedFindings,
+  cpa_fail_reasons: updatedFailReasons,
+  cpa_confidence: updatedConfidence,
+  ai_verification: {
+    checks: parsed.checks,
+    ai_cpa_status: aiStatus,
+    language_assessment: parsed.language_assessment || null,
+    summary: parsed.summary || null,
+    used_regex_only: false,
+    overrides: overrideCount,
+  },
+}};
 """.strip()
 
 # Inject the system prompt into the verify code (avoid nested raw strings)
@@ -1762,7 +2072,7 @@ def update_callback_workflow(dry_run=False):
 
         elif name == "CPA Pre-Screen":
             node["parameters"]["jsCode"] = CPA_PRESCREEN_CODE
-            updated.append(f"{name} -> v5.0")
+            updated.append(f"{name} -> v6.0 (proximity checks, expanded DBA, word count guard)")
 
         elif name == "Route Decision":
             # Change from checking 'fail' to checking 'pass'
