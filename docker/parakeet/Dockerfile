@@ -23,6 +23,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+# Upgrade pip first — Ubuntu 22.04's pip has a dependency resolution bug
+# (AssertionError in get_topological_weights) that breaks NeMo's huge dep tree
+RUN pip3 install --upgrade pip setuptools wheel
+
 # Install PyTorch first (NeMo needs specific CUDA-compatible torch)
 RUN pip3 install --no-cache-dir \
     torch==2.2.0 \
