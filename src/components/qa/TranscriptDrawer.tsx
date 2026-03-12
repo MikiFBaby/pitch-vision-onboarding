@@ -338,22 +338,26 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
 
   const handleTimeUpdate = () => {
     if (audioRef.current) {
-      // Always use the audio element's actual duration as the source of truth
       const actualDuration = audioRef.current.duration;
       const currentAudioTime = audioRef.current.currentTime;
 
+      // For CPA calls, enforce trim limit — stop at the trimmed duration
+      const isCpa = !!(call?.cpaStatus && call.cpaStatus !== 'n/a');
+      const cpaTrimLimit = isCpa && call?.duration ? parseTimeToSeconds(call.duration) : 0;
+      const effectiveEnd = (cpaTrimLimit > 0 && cpaTrimLimit < actualDuration) ? cpaTrimLimit : actualDuration;
+
       // If we've reached the end, stop playing
-      if (currentAudioTime >= actualDuration && !isNaN(actualDuration)) {
+      if (currentAudioTime >= effectiveEnd && !isNaN(effectiveEnd)) {
         audioRef.current.pause();
         setIsPlaying(false);
-        setCurrentTime(actualDuration); // Show exactly at end
+        setCurrentTime(effectiveEnd);
       } else {
         setCurrentTime(currentAudioTime);
       }
 
       // Update duration state if it hasn't been set yet
       if (!duration && actualDuration && !isNaN(actualDuration)) {
-        setDuration(actualDuration);
+        setDuration(cpaTrimLimit > 0 ? Math.min(cpaTrimLimit, actualDuration) : actualDuration);
       }
     }
   };
@@ -362,6 +366,17 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
     if (audioRef.current) {
       const actualDuration = audioRef.current.duration;
       console.log('Audio loaded - actual duration:', actualDuration, 'metadata duration:', call?.duration);
+      // For CPA calls, cap duration at the trimmed call_duration (e.g. 5:00 = 300s)
+      // The actual audio file is untrimmed but the analysis only covers the trimmed portion
+      const isCpa = !!(call?.cpaStatus && call.cpaStatus !== 'n/a');
+      if (isCpa && call?.duration) {
+        const trimmedDuration = parseTimeToSeconds(call.duration);
+        if (trimmedDuration > 0 && trimmedDuration < actualDuration) {
+          setDuration(trimmedDuration);
+          audioRef.current.volume = volume;
+          return;
+        }
+      }
       setDuration(actualDuration);
       audioRef.current.volume = volume;
     }
@@ -856,8 +871,6 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
           const isCpaFinding = mt.is_cpa_finding;
           const isEnd = (m.type || '').toLowerCase() === 'end';
           if (!isCpaFinding && !isTransferOrLA && !isEnd) return;
-          // For CPA findings: only show verified (passed) checks
-          if (isCpaFinding && (m.status || '').toLowerCase() !== 'pass') return;
         }
 
         let timeVal = m.time;
