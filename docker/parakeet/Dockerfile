@@ -13,20 +13,25 @@
 # Image size: ~8-10 GB (NeMo + Parakeet model + pyannote)
 # GPU memory: ~2 GB VRAM at inference (can run on T4/L4)
 
-FROM nvidia/cuda:12.1.0-runtime-ubuntu22.04
+FROM nvidia/cuda:12.1.0-devel-ubuntu22.04
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV PYTHONUNBUFFERED=1
 
-# System deps
+# System deps (includes build tools for compiling NeMo C extensions)
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3 python3-pip python3-dev \
+    python3.11 python3.11-dev python3.11-venv python3-pip \
     ffmpeg \
     git \
     libsndfile1 \
+    build-essential \
+    && update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1 \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
+
+# Install numpy first — NeMo's sox dependency requires it at build time
+RUN pip3 install --no-cache-dir numpy>=1.24.0 Cython
 
 # Python deps — install NeMo ASR + pyannote + RunPod
 COPY requirements.txt .
