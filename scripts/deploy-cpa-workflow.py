@@ -181,7 +181,7 @@ findings.push({
 });
 
 // 1b. Red/White/Blue card — agent must mention, customer must acknowledge within 30s
-const rwbRe = /red\s*,?\s*white\s*,?\s*(and|&)\s*blue/i;
+const rwbRe = /red\s*,?\s*white\s*,?\s*(and|&)\s*(the\s+)?blue/i;
 const rwbAgentSeg = findSeg(agentSegments, rwbRe);
 let rwbCustomerConfirm = false;
 let rwbTimeSeg = rwbAgentSeg;
@@ -191,11 +191,26 @@ if (rwbAgentSeg) {
   if (custResp) {
     rwbCustomerConfirm = true;
   } else {
-    // WhisperX tolerance
+    // WhisperX tolerance: brief gap before next agent segment suggests dropped customer response
     const nextAgent = agentSegments.find(s => s.start > rwbAgentSeg.end);
     if (nextAgent && (nextAgent.start - rwbAgentSeg.end) < 3 && (nextAgent.start - rwbAgentSeg.end) > 0.3) {
       rwbCustomerConfirm = true;
     }
+  }
+  // Diarization tolerance: customer response misattributed to agent channel
+  // Check if agent channel has an affirmative shortly after (within 10s) that's likely from customer
+  if (!rwbCustomerConfirm) {
+    const agentAffirmAfter = agentSegments.find(s =>
+      s.start > rwbAgentSeg.end && s.start <= rwbAgentSeg.end + 10
+      && affirmRe.test(s.text) && s.text.trim().split(/\s+/).length <= 3
+    );
+    if (agentAffirmAfter) rwbCustomerConfirm = true;
+  }
+  // A&B linkage: if agent mentions RWB in same sentence as A&B and A&B already confirmed,
+  // treat as confirmed (e.g. "you have Medicare A and B, that's the red white and blue one")
+  if (!rwbCustomerConfirm && abPass) {
+    const abRwbCombo = /(?:a\s+and\s+b|part\s+a\s+and\s+(?:part\s+)?b).*red\s*,?\s*white/i;
+    if (abRwbCombo.test(rwbAgentSeg.text)) rwbCustomerConfirm = true;
   }
 }
 // Fallback: customer mentions RWB card themselves
@@ -412,10 +427,16 @@ const whisperXCorrections = [
   { pattern: /\bon\s+recorded\s+line\b/gi, replacement: 'on a recorded line', tag: 'accent' },
   { pattern: /\bhonorary\s+court\s+alliance\b/gi, replacement: 'on a recorded line, ACA', tag: 'accent' },
   { pattern: /\bon\s+a\s+recording\s+line\b/gi, replacement: 'on a recorded line', tag: 'accent' },
+  { pattern: /\bthe\s+recording\s+line\b/gi, replacement: 'the recorded line', tag: 'accent' },
+  { pattern: /\bthe\s+record\s+line\b/gi, replacement: 'the recorded line', tag: 'accent' },
+  { pattern: /\brecording\s+law\b/gi, replacement: 'recorded line', tag: 'accent' },
   { pattern: /\bMedicaid\s+(Parts?\s+[AB])/gi, replacement: 'Medicare $1', tag: 'impossible_phrase' },
   { pattern: /\bAmerican\s+Health\b/g, replacement: "America's Health", tag: 'dba_variant' },
   { pattern: /\bAmericas\s+Health\b/g, replacement: "America's Health", tag: 'dba_variant' },
   { pattern: /\bAmerica\s+Health\b/g, replacement: "America's Health", tag: 'dba_variant' },
+  { pattern: /\bAmerican's\s+Health\b/g, replacement: "America's Health", tag: 'dba_variant' },
+  { pattern: /\bAmerican\s+Hills?\b/gi, replacement: "America's Health", tag: 'dba_variant' },
+  { pattern: /\bAmerican'?s?\s+house\b/gi, replacement: "America's Health", tag: 'dba_variant' },
   { pattern: /\bbenefit\s+ling\b/gi, replacement: 'Benefit Link', tag: 'dba_variant' },
   { pattern: /\bwith\s+Courtline\b/gi, replacement: 'on a recorded line', tag: 'accent' },
   { pattern: /\bcourt\s+alliance\b/gi, replacement: 'on a recorded line', tag: 'accent' },
@@ -1363,8 +1384,13 @@ const labelMap = {
 };
 
 // ─── Timeline Markers ───────────────────────────────────────────────
-// Merge conversation-flow markers (from Format Transcript) with CPA finding markers
-const conversationMarkers = data.timeline_markers || [];
+// For CPA calls, only keep structural markers (transfer, LA, end) — filter out
+// agent/customer conversation-flow markers which are noise for pre-audit results
+const allMarkers = data.timeline_markers || [];
+const conversationMarkers = allMarkers.filter(m =>
+  m.type === 'transfer' || m.type === 'la' || m.type === 'end'
+  || m.is_transfer_marker || m.is_la_marker
+);
 
 const findingMarkers = (data.cpa_findings || [])
   .filter(f => f.time_seconds != null)
@@ -1585,7 +1611,9 @@ FAIL if: agent only mentions A&B without asking, OR no customer response visible
 ## CHECK 2: RED/WHITE/BLUE CARD
 PASS requires: Agent mentions the Red, White, and Blue Medicare card AND customer acknowledges.
 Quote both the mention and acknowledgment.
-FAIL if: never mentioned, or mentioned but no customer acknowledgment.
+IMPORTANT: If the agent mentions A&B and RWB in the SAME statement (e.g. "you have Medicare A and B, that's the red white and blue one") and the customer already confirmed A&B earlier, this is a PASS — the customer's prior A&B confirmation covers the RWB reference too.
+IMPORTANT: WhisperX may misattribute a brief customer response ("okay", "yes") to the agent channel. If the agent mentions RWB and then a short affirmative appears on the agent channel within 5 seconds, this is likely the customer — score as PASS.
+FAIL if: never mentioned, or mentioned but no customer acknowledgment and no A&B linkage.
 
 ## CHECK 3: DISCLOSURE
 PASS requires BOTH:
@@ -1695,7 +1723,7 @@ for (let attempt = 0; attempt < 3; attempt++) {
         'X-Title': 'PitchVision CPA AI Verify'
       },
       body: {
-        model: 'deepseek/deepseek-v3.2',
+        model: 'qwen/qwen3.5-plus-02-15',
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt }

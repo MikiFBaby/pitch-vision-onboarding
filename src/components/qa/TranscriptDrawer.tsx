@@ -2131,13 +2131,15 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
 
                 // Check if LA transfer divider should appear BEFORE this segment
                 const transferSec = call?.transferInitiatedAtSeconds ?? call?.laStartedAtSeconds;
+                // Floor transfer time to match integer-truncated transcript timestamps
+                const transferSecFloor = transferSec != null ? Math.floor(transferSec) : null;
                 const showTransferDivider = !!(
                   (call?.transferDetected || call?.laDetected) &&
-                  transferSec != null &&
-                  transferSec > 0 &&
+                  transferSecFloor != null &&
+                  transferSecFloor > 0 &&
                   idx > 0 &&
-                  parsedTranscript[idx - 1].startSeconds < transferSec &&
-                  msg.startSeconds >= transferSec
+                  parsedTranscript[idx - 1].startSeconds < transferSecFloor &&
+                  msg.startSeconds >= transferSecFloor
                 );
 
                 // Find auto-fail violations matching this segment's time range
@@ -2166,9 +2168,10 @@ export const TranscriptDrawer: React.FC<TranscriptDrawerProps> = ({ call, onClos
                       if (!f || f.time_seconds == null || f.time_seconds <= 0) return null;
                       // Only show verified (passed) checks — failed checks are in the Missing banner
                       if (f.found !== true) return null;
-                      const sec = f.time_seconds;
+                      const sec = Math.floor(f.time_seconds);
                       // Don't show markers after transfer point — transfer is the endpoint
-                      if (transferSec != null && transferSec > 0 && sec >= transferSec) return null;
+                      const transferFloor = transferSec != null ? Math.floor(transferSec) : null;
+                      if (transferFloor != null && transferFloor > 0 && sec >= transferFloor) return null;
                       const show = idx > 0
                         && parsedTranscript[idx - 1].startSeconds < sec
                         && msg.startSeconds >= sec;

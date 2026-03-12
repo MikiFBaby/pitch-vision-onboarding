@@ -214,10 +214,10 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
     if (s.includes('cpa') || cpa === 'pass' || cpa === 'fail') {
       if (s.includes('fail') || (cpa === 'fail' && !s.includes('pass'))) {
         return {
-          bg: 'bg-orange-50',
-          border: 'border-orange-300',
-          text: 'text-orange-700',
-          iconColor: 'text-orange-600',
+          bg: 'bg-red-50',
+          border: 'border-red-300',
+          text: 'text-red-700',
+          iconColor: 'text-red-600',
           Icon: ShieldAlert,
           label: 'CPA FAIL'
         };
@@ -798,9 +798,9 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
                               <span className="text-[10px] font-bold uppercase tracking-wider text-cyan-700">Dialer</span>
                             </div>
                           ) : call.uploadType === 'hourly_dialer' ? (
-                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-50 border border-amber-200 text-slate-600" title="Hourly Dialer (CPA)">
-                              <Bot size={12} className="text-amber-500" />
-                              <span className="text-[10px] font-bold uppercase tracking-wider text-amber-700">Hourly Dialer</span>
+                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-violet-50 border border-violet-200 text-slate-600" title="Hourly Dialer (CPA)">
+                              <Bot size={12} className="text-violet-500" />
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-violet-700">Hourly Dialer</span>
                             </div>
                           ) : (
                             <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-fuchsia-50 border border-fuchsia-100 text-slate-600" title="Manual Upload">
@@ -817,9 +817,9 @@ export const RecentCallsTable: React.FC<RecentCallsTableProps> = ({
                               <span className="text-[10px] font-bold uppercase tracking-wider text-emerald-700">Pass</span>
                             </div>
                           ) : call.cpaStatus === 'fail' ? (
-                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-50 border border-amber-200" title={`CPA Flagged: ${(call.cpaFindings || []).map((f: string) => f === 'medicare_ab' ? 'A&B' : f === 'rwb_card' ? 'RWB' : f === 'transfer_consent' ? 'Consent' : f).join(', ')}`}>
-                              <AlertTriangle size={12} className="text-amber-500" />
-                              <span className="text-[10px] font-bold uppercase tracking-wider text-amber-700">Flag</span>
+                            <div className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-red-50 border border-red-200" title={`CPA Fail: ${(call.cpaFindings || []).filter((f: any) => f.found === false).map((f: any) => { const k = f.check || f; return k === 'double_confirm_ab' || k === 'medicare_ab' ? 'A&B' : k === 'double_confirm_rwb' || k === 'rwb_card' ? 'RWB' : k === 'verbal_consent' || k === 'transfer_consent' ? 'Consent' : k === 'disclosure_recorded_line' || k === 'recorded_line' ? 'Recorded Line' : k === 'disclosure_dba_name' ? 'DBA' : k; }).join(', ')}`}>
+                              <ShieldAlert size={12} className="text-red-500" />
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-red-700">Fail</span>
                             </div>
                           ) : (
                             <span className="text-slate-300 text-xs">&mdash;</span>

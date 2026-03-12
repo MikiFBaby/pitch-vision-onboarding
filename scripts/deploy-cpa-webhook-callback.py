@@ -449,7 +449,7 @@ const findings = [];
 const abCheck = /part\s*a\s*(and|&|\+)\s*(part\s*)?b/i.test(agentText + ' ' + customerText);
 findings.push({ check: 'medicare_ab', found: abCheck });
 
-const rwbCheck = /red\s*,?\s*white\s*,?\s*(and|&)\s*blue/i.test(transcript);
+const rwbCheck = /red\s*,?\s*white\s*,?\s*(and|&)\s*(the\s+)?blue/i.test(transcript);
 findings.push({ check: 'rwb_card', found: rwbCheck });
 
 const consentPatterns = /\b(yes|yeah|sure|okay|go ahead|that's fine|uh-huh|mm-hmm|yep|alright)\b/i;
