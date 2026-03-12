@@ -187,14 +187,30 @@ def transcribe_single(audio_path, model):
     duration = get_audio_duration(audio_path)
     segments = []
 
+    # Debug: log what NeMo returned
+    print(f"[parakeet] transcribe output type: {type(output).__name__}")
+    if isinstance(output, (list, tuple)) and len(output) > 0:
+        print(f"[parakeet] output[0] type: {type(output[0]).__name__}")
+        if isinstance(output, tuple):
+            print(f"[parakeet] tuple length: {len(output)}")
+            for i, item in enumerate(output):
+                print(f"[parakeet] tuple[{i}] type={type(item).__name__}, repr={repr(item)[:200]}")
+        elif isinstance(output, list):
+            for i, item in enumerate(output):
+                print(f"[parakeet] list[{i}] type={type(item).__name__}, repr={repr(item)[:200]}")
+
     if not output or len(output) == 0:
+        print("[parakeet] empty output!")
         return segments, duration
 
-    # NeMo can return various formats depending on version:
-    # - List of strings: ['text1', 'text2']
-    # - List of Hypothesis: [Hypothesis(text='...', timestep={...})]
-    # - Tuple of (hypotheses, something_else)
-    result = output[0] if not isinstance(output, tuple) else output[0]
+    # NeMo RNNT/TDT with return_hypotheses=True returns a tuple:
+    # (best_hypotheses_list, all_hypotheses_list)
+    # best_hypotheses_list[0] is the Hypothesis for the first audio file
+    if isinstance(output, tuple):
+        best_hyps = output[0]  # List of best hypotheses
+        result = best_hyps[0] if isinstance(best_hyps, list) and len(best_hyps) > 0 else best_hyps
+    else:
+        result = output[0]
     hyps = result if isinstance(result, list) else [result]
 
     for hyp in hyps:
@@ -278,8 +294,19 @@ def transcribe_single(audio_path, model):
                     "text": text,
                 })
 
+    # Debug info — returned in output when segments are empty
+    debug_info = {
+        "output_type": type(output).__name__,
+        "num_hyps": len(hyps),
+        "hyp_types": [type(h).__name__ for h in hyps],
+        "hyp_attrs": [list(vars(h).keys()) if hasattr(h, '__dict__') else dir(h)[:10] for h in hyps[:2]],
+        "hyp_text": [getattr(h, 'text', str(h))[:200] for h in hyps[:2]],
+        "hyp_timestep_type": [type(getattr(h, 'timestep', None)).__name__ for h in hyps[:2]],
+        "hyp_timestep_keys": [list(getattr(h, 'timestep', {}).keys()) if isinstance(getattr(h, 'timestep', None), dict) else str(getattr(h, 'timestep', None))[:200] for h in hyps[:2]],
+    }
     print(f"[parakeet] transcribe_single: {len(segments)} segments from {audio_path}")
-    return segments, duration
+    print(f"[parakeet] debug: {debug_info}")
+    return segments, duration, debug_info
 
 
 def assign_speakers_to_segments(segments, diarization_result):
@@ -373,12 +400,12 @@ def handler(event):
                 agent_path, customer_path = split_stereo(tmp_path, tmp_dir)
 
                 print("[parakeet] Transcribing agent channel (Ch0/Left)...")
-                agent_segments, agent_duration = transcribe_single(agent_path, model)
+                agent_segments, agent_duration, agent_debug = transcribe_single(agent_path, model)
                 for seg in agent_segments:
                     seg["speaker"] = "Agent"
 
                 print("[parakeet] Transcribing customer channel (Ch1/Right)...")
-                customer_segments, customer_duration = transcribe_single(customer_path, model)
+                customer_segments, customer_duration, cust_debug = transcribe_single(customer_path, model)
                 for seg in customer_segments:
                     seg["speaker"] = "Customer"
 
@@ -411,6 +438,13 @@ def handler(event):
                 if job_metadata:
                     output["metadata"] = job_metadata
 
+                # Include debug info when segments are empty
+                if len(agent_segments) == 0 or len(customer_segments) == 0:
+                    output["_debug"] = {
+                        "agent": agent_debug,
+                        "customer": cust_debug,
+                    }
+
                 print(f"[parakeet] Stereo complete: {len(agent_segments)} agent + {len(customer_segments)} customer segs ({processing_time:.1f}s)")
                 return output
 
@@ -426,7 +460,7 @@ def handler(event):
         resampled_path = resample_audio(tmp_path, tmp_dir)
 
         # 1. Transcribe with Parakeet (native CTC timestamps)
-        segments, _ = transcribe_single(resampled_path, model)
+        segments, _, _ = transcribe_single(resampled_path, model)
 
         # 2. Diarize with pyannote (if requested)
         if diarize:
