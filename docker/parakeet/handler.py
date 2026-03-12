@@ -176,64 +176,84 @@ def transcribe_single(audio_path, model):
     Parakeet TDT natively produces word-level timestamps via CTC/TDT.
     No forced alignment step needed (unlike WhisperX which needs wav2vec2).
     """
-    output = model.transcribe([audio_path], timestamps=True)
+    # NeMo 2.0+ TDT models need return_hypotheses=True to get Hypothesis objects
+    # with timestamps. Without it, transcribe() returns plain strings.
+    try:
+        output = model.transcribe([audio_path], return_hypotheses=True, timestamps=True)
+    except TypeError:
+        # Fallback: some model versions don't accept both kwargs
+        try:
+            output = model.transcribe([audio_path], return_hypotheses=True)
+        except TypeError:
+            output = model.transcribe([audio_path], timestamps=True)
 
     duration = get_audio_duration(audio_path)
-
     segments = []
 
-    if output and len(output) > 0:
-        hyps = output[0] if isinstance(output[0], list) else [output[0]]
+    if not output or len(output) == 0:
+        return segments, duration
 
-        for hyp in hyps:
-            if hasattr(hyp, 'timestep') and hyp.timestep:
-                words_with_ts = hyp.timestep.get('word', []) if isinstance(hyp.timestep, dict) else []
+    # NeMo can return various formats depending on version:
+    # - List of strings: ['text1', 'text2']
+    # - List of Hypothesis: [Hypothesis(text='...', timestep={...})]
+    # - Tuple of (hypotheses, something_else)
+    result = output[0] if not isinstance(output, tuple) else output[0]
+    hyps = result if isinstance(result, list) else [result]
 
-                if words_with_ts:
-                    # Group words into segments (split on pauses > 0.5s)
-                    current_segment_words = []
-                    segment_start = None
+    for hyp in hyps:
+        # Case 1: Plain string (no timestamp info)
+        if isinstance(hyp, str):
+            text = hyp.strip()
+            if text:
+                segments.append({
+                    "start": 0,
+                    "end": round(duration, 3),
+                    "text": text,
+                })
+            continue
 
-                    for i, word_info in enumerate(words_with_ts):
-                        word_text = word_info.get('word', '') if isinstance(word_info, dict) else str(word_info)
-                        word_start = word_info.get('start_offset', 0) if isinstance(word_info, dict) else 0
-                        word_end = word_info.get('end_offset', 0) if isinstance(word_info, dict) else 0
+        # Case 2: Hypothesis object with timestep dict
+        timestep = getattr(hyp, 'timestep', None)
+        if timestep and isinstance(timestep, dict):
+            words_with_ts = timestep.get('word', [])
 
-                        if segment_start is None:
-                            segment_start = word_start
+            if words_with_ts:
+                # Group words into segments (split on pauses > 0.5s)
+                current_segment_words = []
+                segment_start = None
 
-                        current_segment_words.append({
-                            "word": word_text,
-                            "start": round(word_start, 3),
-                            "end": round(word_end, 3),
-                            "score": 0.95,
-                        })
+                for i, word_info in enumerate(words_with_ts):
+                    word_text = word_info.get('word', '') if isinstance(word_info, dict) else str(word_info)
+                    word_start = word_info.get('start_offset', 0) if isinstance(word_info, dict) else 0
+                    word_end = word_info.get('end_offset', 0) if isinstance(word_info, dict) else 0
 
-                        is_last = (i == len(words_with_ts) - 1)
-                        next_start = words_with_ts[i + 1].get('start_offset', 0) if not is_last and isinstance(words_with_ts[i + 1], dict) else word_end
+                    if segment_start is None:
+                        segment_start = word_start
 
-                        if is_last or (next_start - word_end) > 0.5:
-                            seg_text = " ".join(w["word"] for w in current_segment_words).strip()
-                            if seg_text:
-                                segments.append({
-                                    "start": round(segment_start, 3),
-                                    "end": round(word_end, 3),
-                                    "text": seg_text,
-                                    "words": current_segment_words,
-                                })
-                            current_segment_words = []
-                            segment_start = None
-                else:
-                    text = hyp.text if hasattr(hyp, 'text') else str(hyp)
-                    if text.strip():
-                        segments.append({
-                            "start": 0,
-                            "end": round(duration, 3),
-                            "text": text.strip(),
-                        })
+                    current_segment_words.append({
+                        "word": word_text,
+                        "start": round(word_start, 3),
+                        "end": round(word_end, 3),
+                        "score": 0.95,
+                    })
 
-            elif hasattr(hyp, 'text'):
-                text = hyp.text.strip()
+                    is_last = (i == len(words_with_ts) - 1)
+                    next_start = words_with_ts[i + 1].get('start_offset', 0) if not is_last and isinstance(words_with_ts[i + 1], dict) else word_end
+
+                    if is_last or (next_start - word_end) > 0.5:
+                        seg_text = " ".join(w["word"] for w in current_segment_words).strip()
+                        if seg_text:
+                            segments.append({
+                                "start": round(segment_start, 3),
+                                "end": round(word_end, 3),
+                                "text": seg_text,
+                                "words": current_segment_words,
+                            })
+                        current_segment_words = []
+                        segment_start = None
+            else:
+                # timestep exists but no word-level info — use full text
+                text = getattr(hyp, 'text', str(hyp)).strip()
                 if text:
                     segments.append({
                         "start": 0,
@@ -241,6 +261,27 @@ def transcribe_single(audio_path, model):
                         "text": text,
                     })
 
+        # Case 3: Hypothesis object with .text but no timestep
+        elif hasattr(hyp, 'text'):
+            text = hyp.text.strip()
+            if text:
+                segments.append({
+                    "start": 0,
+                    "end": round(duration, 3),
+                    "text": text,
+                })
+
+        # Case 4: Unknown object — convert to string
+        else:
+            text = str(hyp).strip()
+            if text:
+                segments.append({
+                    "start": 0,
+                    "end": round(duration, 3),
+                    "text": text,
+                })
+
+    print(f"[parakeet] transcribe_single: {len(segments)} segments from {audio_path}")
     return segments, duration
 
 
