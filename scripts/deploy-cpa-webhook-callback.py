@@ -22,6 +22,20 @@ from pathlib import Path
 
 import requests
 
+SCRIPTS_DIR = Path(__file__).parent
+
+
+def _load_env_key(key_name):
+    val = os.environ.get(key_name)
+    if val:
+        return val
+    env_path = SCRIPTS_DIR.parent / ".env.local"
+    if env_path.exists():
+        for line in env_path.read_text().splitlines():
+            if line.startswith(f"{key_name}="):
+                return line.split("=", 1)[1].strip().strip('"').strip("'")
+    return None
+
 # ─── Configuration ──────────────────────────────────────────────────
 
 SCRIPTS_DIR = Path(__file__).parent
@@ -366,18 +380,42 @@ const language = $json.transcription_language || 'en';
 
 const NORMALIZATIONS = {
   'recorded mind': 'recorded line',
+  'recording mind': 'recorded line',
   'unrecorded line': 'on a recorded line',
+  'on recorded line': 'on a recorded line',
+  'honorary court alliance': 'on a recorded line, ACA',
+  'on a recording line': 'on a recorded line',
+  'the recording line': 'the recorded line',
+  'the record line': 'the recorded line',
+  'recording law': 'recorded line',
   'Medicaid Part A': 'Medicare Part A',
+  'Medicaid Part B': 'Medicare Part B',
   'Courtline': 'on a recorded line',
   'court alliance': 'on a recorded line',
+  'cord line': 'on a recorded line',
+  'the Coraline': 'on a recorded line',
   'Record Align': 'on a recorded line',
   'Accord line': 'on a recorded line',
-  'Part C and B': 'Part A and B',
-  "America's Alta": "America's Health",
-  'Recorder Alliance': 'recorded line',
   'Accorded Line': 'on a recorded line',
+  'a done recorded line': 'on a recorded line',
+  'on a record line': 'on a recorded line',
+  'Recorder Line': 'recorded line',
+  'Recorder Alliance': 'recorded line',
   'report line': 'recorded line',
   'a reporter': 'on a recorded line',
+  'Part C and B': 'Part A and B',
+  'Part A and D': 'Part A and B',
+  "America's Alta": "America's Health",
+  "Americas Alta": "America's Health",
+  'American Health': "America's Health",
+  'Americas Health': "America's Health",
+  'America Health': "America's Health",
+  "American's Health": "America's Health",
+  'American Hills': "America's Health",
+  'American Hill': "America's Health",
+  "American's house": "America's Health",
+  'Americans house': "America's Health",
+  'benefit ling': 'Benefit Link',
   'Pitch Perfection': 'Pitch Perfect',
   'pitch perfection': 'Pitch Perfect',
   'Page Perfect': 'Pitch Perfect',
@@ -499,22 +537,27 @@ const payload = {
   transcript: data.merged_transcript || '',
   cpa_status: data.cpa_status || 'pass',
   cpa_findings: data.cpa_findings || [],
-  cpa_confidence: data.cpa_confidence || 0,
-  upload_source: 'cpa',
-  upload_type: 'automated',
+  cpa_confidence: data.cpa_confidence || 100,
+  upload_source: 'cpa_pass',
+  upload_type: data.upload_type || 'hourly_dialer',
   batch_id: data.batch_id || null,
-  compliance_score: data.cpa_confidence || 0,
+  compliance_score: 100,
   analyzed_at: new Date().toISOString(),
+  s3_recording_key: data.s3_key || data.s3_recording_key || null,
+  call_status: 'CPA Pass',
+  tag: 'cpa_pass',
 };
 
 try {
-  const resp = await fetch(`${supabaseUrl}/rest/v1/QA Results`, {
+  const s3Key = data.s3_key || data.s3_recording_key || '';
+  const upsertHeader = s3Key ? 'resolution=merge-duplicates,on_conflict=s3_recording_key' : 'return=representation';
+  const resp = await fetch(`${supabaseUrl}/rest/v1/QA%20Results`, {
     method: 'POST',
     headers: {
       'apikey': supabaseKey,
       'Authorization': `Bearer ${supabaseKey}`,
       'Content-Type': 'application/json',
-      'Prefer': 'return=representation',
+      'Prefer': upsertHeader,
     },
     body: JSON.stringify(payload),
   });
@@ -640,16 +683,73 @@ def build_workflow_b():
         },
     })
 
-    # 7. Store Results (Pass)
+    # 7a. Prepare Pass Payload — Code node builds the Supabase insert body
+    prepare_pass_code = r"""
+const data = $json;
+return {
+  json: {
+    supabase_body: {
+      agent_name: data.agent_name || 'Unknown',
+      phone_number: data.phone_number || '',
+      call_date: data.call_date || null,
+      call_time: data.call_time || null,
+      transcript: data.merged_transcript || '',
+      cpa_status: data.cpa_status || 'pass',
+      cpa_findings: data.cpa_findings || [],
+      cpa_confidence: data.cpa_confidence || 100,
+      upload_source: 'cpa_pass',
+      upload_type: data.upload_type || 'hourly_dialer',
+      batch_id: data.batch_id || null,
+      compliance_score: 100,
+      analyzed_at: new Date().toISOString(),
+      s3_recording_key: data.s3_key || data.s3_recording_key || null,
+      call_status: 'CPA Pass',
+      tag: 'cpa_pass',
+    },
+    file_name: data.file_name,
+    cpa_status: data.cpa_status || 'pass',
+  }
+};
+""".strip()
+
     nodes.append({
         "id": str(uuid.uuid4()),
-        "name": "Store Results (Pass)",
+        "name": "Prepare Pass Payload",
         "type": "n8n-nodes-base.code",
         "typeVersion": 2,
         "position": [x + step * 5, y + 150],
         "parameters": {
-            "jsCode": STORE_RESULTS_CODE,
+            "jsCode": prepare_pass_code,
             "mode": "runOnceForEachItem",
+        },
+    })
+
+    # 7b. Store Results (Pass) — httpRequest with Supabase key baked in at deploy time
+    supabase_url = "https://eyrxkirpubylgkkvcrlh.supabase.co"
+    supabase_key = _load_env_key("SUPABASE_SERVICE_ROLE_KEY") or ""
+
+    nodes.append({
+        "id": str(uuid.uuid4()),
+        "name": "Store Results (Pass)",
+        "type": "n8n-nodes-base.httpRequest",
+        "typeVersion": 4.2,
+        "position": [x + step * 6, y + 150],
+        "parameters": {
+            "method": "POST",
+            "url": f"{supabase_url}/rest/v1/QA%20Results",
+            "sendBody": True,
+            "specifyBody": "json",
+            "jsonBody": "={{ JSON.stringify($json.supabase_body) }}",
+            "sendHeaders": True,
+            "headerParameters": {
+                "parameters": [
+                    {"name": "apikey", "value": supabase_key},
+                    {"name": "Authorization", "value": f"Bearer {supabase_key}"},
+                    {"name": "Content-Type", "value": "application/json"},
+                    {"name": "Prefer", "value": "return=representation"},
+                ],
+            },
+            "options": {"timeout": 15000},
         },
     })
 
@@ -659,7 +759,7 @@ def build_workflow_b():
         "name": "Respond OK",
         "type": "n8n-nodes-base.respondToWebhook",
         "typeVersion": 1.1,
-        "position": [x + step * 6, y],
+        "position": [x + step * 7, y],
         "parameters": {
             "respondWith": "json",
             "responseBody": '={\n  "status": "processed",\n  "cpa_status": "{{ $json.cpa_status }}",\n  "file_name": "{{ $json.file_name }}"\n}',
@@ -673,9 +773,10 @@ def build_workflow_b():
         "CPA Pre-Screen": {"main": [[{"node": "Route Decision", "type": "main", "index": 0}]]},
         "Route Decision": {"main": [
             [{"node": "Trigger Full Analysis", "type": "main", "index": 0}],
-            [{"node": "Store Results (Pass)", "type": "main", "index": 0}],
+            [{"node": "Prepare Pass Payload", "type": "main", "index": 0}],
         ]},
         "Trigger Full Analysis": {"main": [[{"node": "Respond OK", "type": "main", "index": 0}]]},
+        "Prepare Pass Payload": {"main": [[{"node": "Store Results (Pass)", "type": "main", "index": 0}]]},
         "Store Results (Pass)": {"main": [[{"node": "Respond OK", "type": "main", "index": 0}]]},
     }
 

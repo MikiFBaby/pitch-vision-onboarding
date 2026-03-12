@@ -1459,6 +1459,7 @@ return {
     call_time: data.call_time || null,
     transcript: data.merged_transcript || '',
     upload_type: 'hourly_dialer',
+    upload_source: 'cpa_fail',
     batch_id: uniqueBatchId,
     analyzed_at: new Date().toISOString(),
 
