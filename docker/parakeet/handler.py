@@ -176,16 +176,13 @@ def transcribe_single(audio_path, model):
     Parakeet TDT natively produces word-level timestamps via CTC/TDT.
     No forced alignment step needed (unlike WhisperX which needs wav2vec2).
     """
-    # NeMo 2.0+ TDT models need return_hypotheses=True to get Hypothesis objects
-    # with timestamps. Without it, transcribe() returns plain strings.
+    # TDT models: use return_hypotheses=True ONLY (timestamps are native to TDT).
+    # Combining timestamps=True causes internal NeMo unpacking errors for RNNT/TDT.
     try:
-        output = model.transcribe([audio_path], return_hypotheses=True, timestamps=True)
-    except TypeError:
-        # Fallback: some model versions don't accept both kwargs
-        try:
-            output = model.transcribe([audio_path], return_hypotheses=True)
-        except TypeError:
-            output = model.transcribe([audio_path], timestamps=True)
+        output = model.transcribe([audio_path], return_hypotheses=True)
+    except Exception as e:
+        print(f"[parakeet] return_hypotheses failed ({e}), falling back to plain transcribe")
+        output = model.transcribe([audio_path])
 
     duration = get_audio_duration(audio_path)
     segments = []
