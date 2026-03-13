@@ -23,6 +23,7 @@ Input/Output contract: Identical to WhisperX handler v2.0
 """
 
 import os
+import re
 import time
 import tempfile
 import traceback
@@ -43,6 +44,44 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 MAX_AUDIO_DURATION = 300  # 5 minutes default (trimmed, not rejected)
 ABSOLUTE_MAX_DURATION = 3600  # 1 hour hard reject
 SAMPLE_RATE = 16000
+
+# ─── Domain Normalization ────────────────────────────────────────────
+# Post-transcription corrections for insurance call center domain.
+# Fixes known ASR errors without retraining. Applied to every segment.
+# Mirrors the n8n Format Merged Transcript v5.16 normalization dictionary.
+
+NORMALIZATION_RULES = [
+    # ── Parakeet-specific errors (from A/B testing) ──
+    (re.compile(r'\bMedicare\s+AMB\b', re.IGNORECASE), 'Medicare A and B'),
+    (re.compile(r'\bMedicare\s+Amb\b'), 'Medicare A and B'),
+
+    # ── "recorded line" variants ──
+    (re.compile(r'\brecorded?\s+mind\b', re.IGNORECASE), 'recorded line'),
+    (re.compile(r'\bunrecorded\s+line\b', re.IGNORECASE), 'on a recorded line'),
+    (re.compile(r'\bCourtline\b', re.IGNORECASE), 'on a recorded line'),
+    (re.compile(r'\bcourt\s+alliance\b', re.IGNORECASE), 'on a recorded line'),
+    (re.compile(r'\bRecord\s+Align\b', re.IGNORECASE), 'on a recorded line'),
+    (re.compile(r'\bAccord(?:ed)?\s+[Ll]ine\b'), 'on a recorded line'),
+    (re.compile(r'\bRecorder\s+Alliance\b', re.IGNORECASE), 'recorded line'),
+    (re.compile(r'\breport\s+line\b', re.IGNORECASE), 'recorded line'),
+    (re.compile(r'\ba\s+reporter\b', re.IGNORECASE), 'on a recorded line'),
+
+    # ── Medicare / insurance terms ──
+    (re.compile(r'\bMedicaid\s+Part\s+A\b', re.IGNORECASE), 'Medicare Part A'),
+    (re.compile(r'\bPart\s+C\s+and\s+B\b', re.IGNORECASE), 'Part A and B'),
+
+    # ── Company / DBA names ──
+    (re.compile(r"\bAmerica'?s?\s+Alta\b", re.IGNORECASE), "America's Health"),
+    (re.compile(r"\bAmerican\s+Hemp\b", re.IGNORECASE), "America's Health"),
+    (re.compile(r"\bAmerica'?s?\s+Halt\b", re.IGNORECASE), "America's Health"),
+]
+
+
+def normalize_transcript(text):
+    """Apply domain-specific corrections to transcribed text."""
+    for pattern, replacement in NORMALIZATION_RULES:
+        text = pattern.sub(replacement, text)
+    return text
 
 # ─── Model cache ─────────────────────────────────────────────────────
 
@@ -333,7 +372,7 @@ def transcribe_single(audio_path, model):
 
         # Plain string result
         if isinstance(result, str):
-            text = result.strip()
+            text = normalize_transcript(result.strip())
             if text:
                 print(f"[parakeet] {mode_name}: got text ({len(text)} chars)")
                 return [{"start": 0, "end": round(duration, 3), "text": text}], duration
@@ -346,14 +385,17 @@ def transcribe_single(audio_path, model):
             words = timestamp.get('word', [])
             if words:
                 segments = _words_to_segments(words)
+                for seg in segments:
+                    seg["text"] = normalize_transcript(seg["text"])
                 print(f"[parakeet] {mode_name}: {len(segments)} segments ({len(words)} words)")
                 return segments, duration
 
         # Hypothesis with .text
         text = getattr(result, 'text', '')
         if text and text.strip():
-            print(f"[parakeet] {mode_name}: got text ({len(text.strip())} chars, no timestamps)")
-            return [{"start": 0, "end": round(duration, 3), "text": text.strip()}], duration
+            text = normalize_transcript(text.strip())
+            print(f"[parakeet] {mode_name}: got text ({len(text)} chars, no timestamps)")
+            return [{"start": 0, "end": round(duration, 3), "text": text}], duration
 
         print(f"[parakeet] {mode_name}: empty hypothesis (score={getattr(result, 'score', '?')})")
         # Continue to next mode
