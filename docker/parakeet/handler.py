@@ -167,6 +167,55 @@ def resample_audio(audio_path, tmp_dir):
     return out_path
 
 
+def diagnose_audio(audio_path):
+    """Get audio properties for debugging empty transcriptions."""
+    diag = {}
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", audio_path],
+            capture_output=True, text=True, timeout=10,
+        )
+        info = json.loads(result.stdout)
+        fmt = info.get("format", {})
+        stream = info.get("streams", [{}])[0]
+        diag["format"] = fmt.get("format_name")
+        diag["duration"] = fmt.get("duration")
+        diag["size_bytes"] = fmt.get("size")
+        diag["codec"] = stream.get("codec_name")
+        diag["sample_rate"] = stream.get("sample_rate")
+        diag["channels"] = stream.get("channels")
+        diag["bits_per_sample"] = stream.get("bits_per_sample")
+    except Exception as e:
+        diag["ffprobe_error"] = str(e)
+
+    # Check if audio has actual content (not silence)
+    try:
+        import soundfile as sf
+        data, sr = sf.read(audio_path, dtype='float32')
+        diag["sf_shape"] = list(data.shape)
+        diag["sf_sample_rate"] = sr
+        diag["sf_max_amplitude"] = float(abs(data).max())
+        diag["sf_mean_amplitude"] = float(abs(data).mean())
+        diag["sf_is_silence"] = float(abs(data).max()) < 0.001
+    except Exception as e:
+        diag["sf_error"] = str(e)
+
+    return diag
+
+
+def diagnose_model(model):
+    """Get model state for debugging."""
+    diag = {}
+    try:
+        diag["model_class"] = type(model).__name__
+        diag["device"] = str(next(model.parameters()).device)
+        diag["num_params"] = sum(p.numel() for p in model.parameters())
+        diag["is_training"] = model.training
+    except Exception as e:
+        diag["error"] = str(e)
+    return diag
+
+
 # ─── Transcription ───────────────────────────────────────────────────
 
 
@@ -415,6 +464,15 @@ def handler(event):
                     output["original_duration_s"] = round(original_duration, 2)
                 if job_metadata:
                     output["metadata"] = job_metadata
+
+                # Include diagnostics when empty — helps debug without container logs
+                if len(agent_segments) == 0 or len(customer_segments) == 0:
+                    output["_diagnostics"] = {
+                        "agent_audio": diagnose_audio(agent_path),
+                        "customer_audio": diagnose_audio(customer_path),
+                        "original_audio": diagnose_audio(tmp_path),
+                        "model": diagnose_model(model),
+                    }
 
                 print(f"[parakeet] Stereo complete: {len(agent_segments)} agent + {len(customer_segments)} customer segs ({processing_time:.1f}s)")
                 return output
