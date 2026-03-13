@@ -57,6 +57,32 @@ def get_asr_model():
         _asr_model = nemo_asr.models.ASRModel.from_pretrained(MODEL_NAME)
         _asr_model = _asr_model.to(DEVICE)
         _asr_model.eval()
+
+        # TDT models require explicit decoding strategy configuration.
+        # Without this, the RNNT decoder produces blank-only output
+        # because the duration head isn't used correctly (NeMo #5946, #13797).
+        try:
+            from omegaconf import OmegaConf
+            cur = _asr_model.cfg.decoding
+            print(f"[parakeet] Default decoding: strategy={cur.get('strategy','?')}, "
+                  f"greedy.max_symbols={cur.get('greedy',{}).get('max_symbols','?')}")
+
+            decoding_cfg = OmegaConf.create({
+                "strategy": "greedy_batch",
+                "greedy": {
+                    "max_symbols": 10,
+                    "loop_labels": True,
+                    "use_cuda_graph_decoder": False,
+                },
+                "fused_batch_size": -1,
+            })
+            _asr_model.change_decoding_strategy(decoding_cfg)
+            print("[parakeet] TDT decoding strategy set: greedy_batch, max_symbols=10")
+        except Exception as e:
+            print(f"[parakeet] WARNING: decoding strategy config failed: {e}")
+            import traceback as tb
+            tb.print_exc()
+
         print("[parakeet] Model loaded")
     return _asr_model
 

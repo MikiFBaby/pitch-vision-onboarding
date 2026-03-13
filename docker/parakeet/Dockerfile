@@ -38,7 +38,7 @@ RUN pip3 install --no-cache-dir \
 RUN pip3 install --no-cache-dir Cython numpy
 
 RUN pip3 install --no-cache-dir \
-    "nemo_toolkit[asr]>=2.0.0"
+    "nemo_toolkit[asr]>=2.1.0,<3.0.0"
 
 # Install RunPod SDK + pyannote + other deps
 RUN pip3 install --no-cache-dir \
