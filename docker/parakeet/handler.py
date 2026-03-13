@@ -114,6 +114,7 @@ def split_stereo(audio_path, tmp_dir):
             "ffmpeg", "-y", "-i", audio_path,
             "-af", "pan=mono|c0=c0",
             "-ar", str(SAMPLE_RATE),
+            "-acodec", "pcm_s16le",
             agent_path,
         ],
         capture_output=True, check=True, timeout=60,
@@ -124,6 +125,7 @@ def split_stereo(audio_path, tmp_dir):
             "ffmpeg", "-y", "-i", audio_path,
             "-af", "pan=mono|c0=c1",
             "-ar", str(SAMPLE_RATE),
+            "-acodec", "pcm_s16le",
             customer_path,
         ],
         capture_output=True, check=True, timeout=60,
@@ -168,6 +170,59 @@ def resample_audio(audio_path, tmp_dir):
 # ─── Transcription ───────────────────────────────────────────────────
 
 
+def _extract_hypothesis(output):
+    """Extract the best Hypothesis from NeMo transcribe() output."""
+    if not output:
+        return None
+    # TDT with timestamps/return_hypotheses returns tuple: (best_hyps, all_hyps)
+    if isinstance(output, tuple) and len(output) >= 1:
+        first = output[0]
+        return first[0] if isinstance(first, list) and len(first) > 0 else first
+    elif isinstance(output, list) and len(output) > 0:
+        return output[0]
+    return None
+
+
+def _words_to_segments(words):
+    """Group word-level timestamps into segments (split on pauses > 0.5s)."""
+    segments = []
+    current_words = []
+    seg_start = None
+
+    for i, w in enumerate(words):
+        word_text = w.get('word', '') if isinstance(w, dict) else str(w)
+        # Use 'start'/'end' (seconds), NOT 'start_offset'/'end_offset' (frame indices)
+        word_start = w.get('start', 0) if isinstance(w, dict) else 0
+        word_end = w.get('end', 0) if isinstance(w, dict) else 0
+
+        if seg_start is None:
+            seg_start = word_start
+
+        current_words.append({
+            "word": word_text,
+            "start": round(word_start, 3),
+            "end": round(word_end, 3),
+            "score": 0.95,
+        })
+
+        is_last = (i == len(words) - 1)
+        next_start = words[i + 1].get('start', 0) if not is_last and isinstance(words[i + 1], dict) else word_end
+
+        if is_last or (next_start - word_end) > 0.5:
+            seg_text = " ".join(cw["word"] for cw in current_words).strip()
+            if seg_text:
+                segments.append({
+                    "start": round(seg_start, 3),
+                    "end": round(word_end, 3),
+                    "text": seg_text,
+                    "words": current_words,
+                })
+            current_words = []
+            seg_start = None
+
+    return segments
+
+
 def transcribe_single(audio_path, model):
     """
     Transcribe a single audio file with Parakeet TDT.
@@ -177,107 +232,59 @@ def transcribe_single(audio_path, model):
     No forced alignment step needed (unlike WhisperX which needs wav2vec2).
     """
     duration = get_audio_duration(audio_path)
-    segments = []
 
-    # timestamps=True internally forces return_hypotheses=True AND triggers
-    # NeMo's timestamp computation. Using both flags together causes an
-    # internal unpacking error in RNNT/TDT models — so only pass timestamps.
-    try:
-        output = model.transcribe([audio_path], timestamps=True)
-    except Exception as e:
-        print(f"[parakeet] timestamps=True failed ({e}), trying return_hypotheses=True")
+    # Strategy: try multiple transcribe modes in order of richness.
+    # timestamps=True > return_hypotheses=True > plain (strings only)
+    # If a mode produces empty text, try the next one.
+
+    modes = [
+        ("timestamps=True", {"timestamps": True}),
+        ("return_hypotheses=True", {"return_hypotheses": True}),
+        ("plain", {}),
+    ]
+
+    for mode_name, kwargs in modes:
         try:
-            output = model.transcribe([audio_path], return_hypotheses=True)
-        except Exception as e2:
-            print(f"[parakeet] return_hypotheses failed ({e2}), plain transcribe")
-            output = model.transcribe([audio_path])
+            print(f"[parakeet] trying {mode_name} on {os.path.basename(audio_path)}")
+            output = model.transcribe([audio_path], **kwargs)
+        except Exception as e:
+            print(f"[parakeet] {mode_name} raised: {e}")
+            continue
 
-    if not output:
-        print("[parakeet] empty output")
-        return segments, duration
+        result = _extract_hypothesis(output)
+        if result is None:
+            print(f"[parakeet] {mode_name}: no result extracted")
+            continue
 
-    # NeMo TDT with timestamps=True returns a tuple:
-    #   (best_hypotheses_list, all_hypotheses_list)
-    # best_hypotheses_list[0] is the Hypothesis for the first audio file
-    result = None
-    if isinstance(output, tuple) and len(output) >= 1:
-        first = output[0]
-        result = first[0] if isinstance(first, list) and len(first) > 0 else first
-    elif isinstance(output, list) and len(output) > 0:
-        result = output[0]
+        # Plain string result
+        if isinstance(result, str):
+            text = result.strip()
+            if text:
+                print(f"[parakeet] {mode_name}: got text ({len(text)} chars)")
+                return [{"start": 0, "end": round(duration, 3), "text": text}], duration
+            print(f"[parakeet] {mode_name}: empty string")
+            continue
 
-    if result is None:
-        print("[parakeet] could not extract result from output")
-        return segments, duration
+        # Hypothesis object — try word timestamps first
+        timestamp = getattr(result, 'timestamp', None)
+        if timestamp and isinstance(timestamp, dict):
+            words = timestamp.get('word', [])
+            if words:
+                segments = _words_to_segments(words)
+                print(f"[parakeet] {mode_name}: {len(segments)} segments ({len(words)} words)")
+                return segments, duration
 
-    # Case 1: Plain string (no timestamp info)
-    if isinstance(result, str):
-        text = result.strip()
-        if text:
-            segments.append({"start": 0, "end": round(duration, 3), "text": text})
-        print(f"[parakeet] {len(segments)} segments (plain string)")
-        return segments, duration
+        # Hypothesis with .text
+        text = getattr(result, 'text', '')
+        if text and text.strip():
+            print(f"[parakeet] {mode_name}: got text ({len(text.strip())} chars, no timestamps)")
+            return [{"start": 0, "end": round(duration, 3), "text": text.strip()}], duration
 
-    # Case 2: Hypothesis object — check .timestamp (NOT .timestep!)
-    # NeMo Hypothesis.timestamp is a dict with keys: 'word', 'char', 'segment'
-    # Each word entry: {'word': str, 'start': float_seconds, 'end': float_seconds,
-    #                    'start_offset': int_frame, 'end_offset': int_frame}
-    timestamp = getattr(result, 'timestamp', None)
-    if timestamp and isinstance(timestamp, dict):
-        words = timestamp.get('word', [])
-        if words:
-            # Group words into segments (split on pauses > 0.5s)
-            current_words = []
-            seg_start = None
+        print(f"[parakeet] {mode_name}: empty hypothesis (score={getattr(result, 'score', '?')})")
+        # Continue to next mode
 
-            for i, w in enumerate(words):
-                word_text = w.get('word', '') if isinstance(w, dict) else str(w)
-                # Use 'start'/'end' (seconds), NOT 'start_offset'/'end_offset' (frame indices)
-                word_start = w.get('start', 0) if isinstance(w, dict) else 0
-                word_end = w.get('end', 0) if isinstance(w, dict) else 0
-
-                if seg_start is None:
-                    seg_start = word_start
-
-                current_words.append({
-                    "word": word_text,
-                    "start": round(word_start, 3),
-                    "end": round(word_end, 3),
-                    "score": 0.95,
-                })
-
-                is_last = (i == len(words) - 1)
-                next_start = words[i + 1].get('start', 0) if not is_last and isinstance(words[i + 1], dict) else word_end
-
-                if is_last or (next_start - word_end) > 0.5:
-                    seg_text = " ".join(cw["word"] for cw in current_words).strip()
-                    if seg_text:
-                        segments.append({
-                            "start": round(seg_start, 3),
-                            "end": round(word_end, 3),
-                            "text": seg_text,
-                            "words": current_words,
-                        })
-                    current_words = []
-                    seg_start = None
-
-            print(f"[parakeet] {len(segments)} segments ({len(words)} words with timestamps)")
-            return segments, duration
-
-    # Case 3: Hypothesis with .text but no usable timestamps
-    text = getattr(result, 'text', None)
-    if text and text.strip():
-        segments.append({"start": 0, "end": round(duration, 3), "text": text.strip()})
-        print(f"[parakeet] 1 segment (text only, no timestamps)")
-        return segments, duration
-
-    # Case 4: Convert to string
-    text = str(result).strip()
-    if text:
-        segments.append({"start": 0, "end": round(duration, 3), "text": text})
-
-    print(f"[parakeet] {len(segments)} segments (fallback)")
-    return segments, duration
+    print(f"[parakeet] all modes failed for {os.path.basename(audio_path)}")
+    return [], duration
 
 
 def assign_speakers_to_segments(segments, diarization_result):
