@@ -51,20 +51,27 @@ SAMPLE_RATE = 16000
 # Mirrors the n8n Format Merged Transcript v5.16 normalization dictionary.
 
 NORMALIZATION_RULES = [
-    # ── Parakeet-specific errors (from A/B testing) ──
+    # ── Parakeet-specific errors (from A/B testing + 180-call benchmark) ──
     (re.compile(r'\bMedicare\s+AMB\b', re.IGNORECASE), 'Medicare A and B'),
     (re.compile(r'\bMedicare\s+Amb\b'), 'Medicare A and B'),
+    (re.compile(r'\bMedicare\s+for\s+A\s+and\s+B\b', re.IGNORECASE), 'Medicare A and B'),
 
     # ── "recorded line" variants ──
     (re.compile(r'\brecorded?\s+mind\b', re.IGNORECASE), 'recorded line'),
     (re.compile(r'\bunrecorded\s+line\b', re.IGNORECASE), 'on a recorded line'),
     (re.compile(r'\bCourtline\b', re.IGNORECASE), 'on a recorded line'),
     (re.compile(r'\bcourt\s+alliance\b', re.IGNORECASE), 'on a recorded line'),
-    (re.compile(r'\bRecord\s+Align\b', re.IGNORECASE), 'on a recorded line'),
+    (re.compile(r'\bRecord(?:ed)?\s+Align\b', re.IGNORECASE), 'on a recorded line'),
     (re.compile(r'\bAccord(?:ed)?\s+[Ll]ine\b'), 'on a recorded line'),
     (re.compile(r'\bRecorder\s+Alliance\b', re.IGNORECASE), 'recorded line'),
-    (re.compile(r'\breport\s+line\b', re.IGNORECASE), 'recorded line'),
+    (re.compile(r'\bRecorder\s+Line\b', re.IGNORECASE), 'recorded line'),
+    (re.compile(r'\breport(?:ed)?\s+line\b', re.IGNORECASE), 'recorded line'),
     (re.compile(r'\ba\s+reporter\b', re.IGNORECASE), 'on a recorded line'),
+    (re.compile(r'\bArticle\s+9\b', re.IGNORECASE), 'on a recorded line'),
+
+    # ── "red, white, and blue" variants ──
+    (re.compile(r'\bred\s*,?\s*wire\s*,?\s*and\s+blue\b', re.IGNORECASE), 'red, white, and blue'),
+    (re.compile(r'\bred\s*,?\s*red\s*,?\s*and\s+blue\b', re.IGNORECASE), 'red, white, and blue'),
 
     # ── Medicare / insurance terms ──
     (re.compile(r'\bMedicaid\s+Part\s+A\b', re.IGNORECASE), 'Medicare Part A'),
