@@ -171,142 +171,113 @@ def resample_audio(audio_path, tmp_dir):
 def transcribe_single(audio_path, model):
     """
     Transcribe a single audio file with Parakeet TDT.
-    Returns segments in WhisperX-compatible format.
+    Returns (segments, duration) in WhisperX-compatible format.
 
     Parakeet TDT natively produces word-level timestamps via CTC/TDT.
     No forced alignment step needed (unlike WhisperX which needs wav2vec2).
     """
-    # TDT models: use return_hypotheses=True ONLY (timestamps are native to TDT).
-    # Combining timestamps=True causes internal NeMo unpacking errors for RNNT/TDT.
-    try:
-        output = model.transcribe([audio_path], return_hypotheses=True)
-    except Exception as e:
-        print(f"[parakeet] return_hypotheses failed ({e}), falling back to plain transcribe")
-        output = model.transcribe([audio_path])
-
     duration = get_audio_duration(audio_path)
     segments = []
 
-    # Debug: log what NeMo returned
-    print(f"[parakeet] transcribe output type: {type(output).__name__}")
-    if isinstance(output, (list, tuple)) and len(output) > 0:
-        print(f"[parakeet] output[0] type: {type(output[0]).__name__}")
-        if isinstance(output, tuple):
-            print(f"[parakeet] tuple length: {len(output)}")
-            for i, item in enumerate(output):
-                print(f"[parakeet] tuple[{i}] type={type(item).__name__}, repr={repr(item)[:200]}")
-        elif isinstance(output, list):
-            for i, item in enumerate(output):
-                print(f"[parakeet] list[{i}] type={type(item).__name__}, repr={repr(item)[:200]}")
+    # timestamps=True internally forces return_hypotheses=True AND triggers
+    # NeMo's timestamp computation. Using both flags together causes an
+    # internal unpacking error in RNNT/TDT models — so only pass timestamps.
+    try:
+        output = model.transcribe([audio_path], timestamps=True)
+    except Exception as e:
+        print(f"[parakeet] timestamps=True failed ({e}), trying return_hypotheses=True")
+        try:
+            output = model.transcribe([audio_path], return_hypotheses=True)
+        except Exception as e2:
+            print(f"[parakeet] return_hypotheses failed ({e2}), plain transcribe")
+            output = model.transcribe([audio_path])
 
-    if not output or len(output) == 0:
-        print("[parakeet] empty output!")
+    if not output:
+        print("[parakeet] empty output")
         return segments, duration
 
-    # NeMo RNNT/TDT with return_hypotheses=True returns a tuple:
-    # (best_hypotheses_list, all_hypotheses_list)
+    # NeMo TDT with timestamps=True returns a tuple:
+    #   (best_hypotheses_list, all_hypotheses_list)
     # best_hypotheses_list[0] is the Hypothesis for the first audio file
-    if isinstance(output, tuple):
-        best_hyps = output[0]  # List of best hypotheses
-        result = best_hyps[0] if isinstance(best_hyps, list) and len(best_hyps) > 0 else best_hyps
-    else:
+    result = None
+    if isinstance(output, tuple) and len(output) >= 1:
+        first = output[0]
+        result = first[0] if isinstance(first, list) and len(first) > 0 else first
+    elif isinstance(output, list) and len(output) > 0:
         result = output[0]
-    hyps = result if isinstance(result, list) else [result]
 
-    for hyp in hyps:
-        # Case 1: Plain string (no timestamp info)
-        if isinstance(hyp, str):
-            text = hyp.strip()
-            if text:
-                segments.append({
-                    "start": 0,
-                    "end": round(duration, 3),
-                    "text": text,
-                })
-            continue
+    if result is None:
+        print("[parakeet] could not extract result from output")
+        return segments, duration
 
-        # Case 2: Hypothesis object with timestep dict
-        timestep = getattr(hyp, 'timestep', None)
-        if timestep and isinstance(timestep, dict):
-            words_with_ts = timestep.get('word', [])
+    # Case 1: Plain string (no timestamp info)
+    if isinstance(result, str):
+        text = result.strip()
+        if text:
+            segments.append({"start": 0, "end": round(duration, 3), "text": text})
+        print(f"[parakeet] {len(segments)} segments (plain string)")
+        return segments, duration
 
-            if words_with_ts:
-                # Group words into segments (split on pauses > 0.5s)
-                current_segment_words = []
-                segment_start = None
+    # Case 2: Hypothesis object — check .timestamp (NOT .timestep!)
+    # NeMo Hypothesis.timestamp is a dict with keys: 'word', 'char', 'segment'
+    # Each word entry: {'word': str, 'start': float_seconds, 'end': float_seconds,
+    #                    'start_offset': int_frame, 'end_offset': int_frame}
+    timestamp = getattr(result, 'timestamp', None)
+    if timestamp and isinstance(timestamp, dict):
+        words = timestamp.get('word', [])
+        if words:
+            # Group words into segments (split on pauses > 0.5s)
+            current_words = []
+            seg_start = None
 
-                for i, word_info in enumerate(words_with_ts):
-                    word_text = word_info.get('word', '') if isinstance(word_info, dict) else str(word_info)
-                    word_start = word_info.get('start_offset', 0) if isinstance(word_info, dict) else 0
-                    word_end = word_info.get('end_offset', 0) if isinstance(word_info, dict) else 0
+            for i, w in enumerate(words):
+                word_text = w.get('word', '') if isinstance(w, dict) else str(w)
+                # Use 'start'/'end' (seconds), NOT 'start_offset'/'end_offset' (frame indices)
+                word_start = w.get('start', 0) if isinstance(w, dict) else 0
+                word_end = w.get('end', 0) if isinstance(w, dict) else 0
 
-                    if segment_start is None:
-                        segment_start = word_start
+                if seg_start is None:
+                    seg_start = word_start
 
-                    current_segment_words.append({
-                        "word": word_text,
-                        "start": round(word_start, 3),
-                        "end": round(word_end, 3),
-                        "score": 0.95,
-                    })
-
-                    is_last = (i == len(words_with_ts) - 1)
-                    next_start = words_with_ts[i + 1].get('start_offset', 0) if not is_last and isinstance(words_with_ts[i + 1], dict) else word_end
-
-                    if is_last or (next_start - word_end) > 0.5:
-                        seg_text = " ".join(w["word"] for w in current_segment_words).strip()
-                        if seg_text:
-                            segments.append({
-                                "start": round(segment_start, 3),
-                                "end": round(word_end, 3),
-                                "text": seg_text,
-                                "words": current_segment_words,
-                            })
-                        current_segment_words = []
-                        segment_start = None
-            else:
-                # timestep exists but no word-level info — use full text
-                text = getattr(hyp, 'text', str(hyp)).strip()
-                if text:
-                    segments.append({
-                        "start": 0,
-                        "end": round(duration, 3),
-                        "text": text,
-                    })
-
-        # Case 3: Hypothesis object with .text but no timestep
-        elif hasattr(hyp, 'text'):
-            text = hyp.text.strip()
-            if text:
-                segments.append({
-                    "start": 0,
-                    "end": round(duration, 3),
-                    "text": text,
+                current_words.append({
+                    "word": word_text,
+                    "start": round(word_start, 3),
+                    "end": round(word_end, 3),
+                    "score": 0.95,
                 })
 
-        # Case 4: Unknown object — convert to string
-        else:
-            text = str(hyp).strip()
-            if text:
-                segments.append({
-                    "start": 0,
-                    "end": round(duration, 3),
-                    "text": text,
-                })
+                is_last = (i == len(words) - 1)
+                next_start = words[i + 1].get('start', 0) if not is_last and isinstance(words[i + 1], dict) else word_end
 
-    # Debug info — returned in output when segments are empty
-    debug_info = {
-        "output_type": type(output).__name__,
-        "num_hyps": len(hyps),
-        "hyp_types": [type(h).__name__ for h in hyps],
-        "hyp_attrs": [list(vars(h).keys()) if hasattr(h, '__dict__') else dir(h)[:10] for h in hyps[:2]],
-        "hyp_text": [getattr(h, 'text', str(h))[:200] for h in hyps[:2]],
-        "hyp_timestep_type": [type(getattr(h, 'timestep', None)).__name__ for h in hyps[:2]],
-        "hyp_timestep_keys": [list(getattr(h, 'timestep', {}).keys()) if isinstance(getattr(h, 'timestep', None), dict) else str(getattr(h, 'timestep', None))[:200] for h in hyps[:2]],
-    }
-    print(f"[parakeet] transcribe_single: {len(segments)} segments from {audio_path}")
-    print(f"[parakeet] debug: {debug_info}")
-    return segments, duration, debug_info
+                if is_last or (next_start - word_end) > 0.5:
+                    seg_text = " ".join(cw["word"] for cw in current_words).strip()
+                    if seg_text:
+                        segments.append({
+                            "start": round(seg_start, 3),
+                            "end": round(word_end, 3),
+                            "text": seg_text,
+                            "words": current_words,
+                        })
+                    current_words = []
+                    seg_start = None
+
+            print(f"[parakeet] {len(segments)} segments ({len(words)} words with timestamps)")
+            return segments, duration
+
+    # Case 3: Hypothesis with .text but no usable timestamps
+    text = getattr(result, 'text', None)
+    if text and text.strip():
+        segments.append({"start": 0, "end": round(duration, 3), "text": text.strip()})
+        print(f"[parakeet] 1 segment (text only, no timestamps)")
+        return segments, duration
+
+    # Case 4: Convert to string
+    text = str(result).strip()
+    if text:
+        segments.append({"start": 0, "end": round(duration, 3), "text": text})
+
+    print(f"[parakeet] {len(segments)} segments (fallback)")
+    return segments, duration
 
 
 def assign_speakers_to_segments(segments, diarization_result):
@@ -400,12 +371,12 @@ def handler(event):
                 agent_path, customer_path = split_stereo(tmp_path, tmp_dir)
 
                 print("[parakeet] Transcribing agent channel (Ch0/Left)...")
-                agent_segments, agent_duration, agent_debug = transcribe_single(agent_path, model)
+                agent_segments, agent_duration = transcribe_single(agent_path, model)
                 for seg in agent_segments:
                     seg["speaker"] = "Agent"
 
                 print("[parakeet] Transcribing customer channel (Ch1/Right)...")
-                customer_segments, customer_duration, cust_debug = transcribe_single(customer_path, model)
+                customer_segments, customer_duration = transcribe_single(customer_path, model)
                 for seg in customer_segments:
                     seg["speaker"] = "Customer"
 
@@ -438,13 +409,6 @@ def handler(event):
                 if job_metadata:
                     output["metadata"] = job_metadata
 
-                # Include debug info when segments are empty
-                if len(agent_segments) == 0 or len(customer_segments) == 0:
-                    output["_debug"] = {
-                        "agent": agent_debug,
-                        "customer": cust_debug,
-                    }
-
                 print(f"[parakeet] Stereo complete: {len(agent_segments)} agent + {len(customer_segments)} customer segs ({processing_time:.1f}s)")
                 return output
 
@@ -460,7 +424,7 @@ def handler(event):
         resampled_path = resample_audio(tmp_path, tmp_dir)
 
         # 1. Transcribe with Parakeet (native CTC timestamps)
-        segments, _, _ = transcribe_single(resampled_path, model)
+        segments, _ = transcribe_single(resampled_path, model)
 
         # 2. Diarize with pyannote (if requested)
         if diarize:
