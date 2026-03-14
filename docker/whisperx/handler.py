@@ -16,6 +16,9 @@ RunPod invokes handler(event) for each request. The event contains:
   - input.max_speakers: int (optional)
   - input.metadata: dict (optional, passed through to output for webhook callbacks)
 
+Note: Domain vocabulary prompting (initial_prompt) is set at model load time via
+DEFAULT_INITIAL_PROMPT, not per-request. WhisperX requires asr_options at load.
+
 Returns:
   - If split_channels and stereo: { channels: { agent: { segments }, customer: { segments } }, channel_count: 2, ... }
   - Otherwise: { segments: [...], ... }  (same as v1.0)
@@ -35,7 +38,12 @@ import runpod
 
 # ─── Config ──────────────────────────────────────────────────────────
 
-MODEL_SIZE = os.environ.get("WHISPERX_MODEL", "large-v2")
+# Use fine-tuned model if available at /models/finetuned, otherwise fall back to base model
+FINETUNED_MODEL_DIR = "/models/finetuned"
+MODEL_SIZE = os.environ.get(
+    "WHISPERX_MODEL",
+    FINETUNED_MODEL_DIR if os.path.isdir(FINETUNED_MODEL_DIR) else "large-v2",
+)
 MODEL_DIR = os.environ.get("MODEL_DIR", "/models")
 HF_TOKEN = os.environ.get("HF_TOKEN", "")
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -44,6 +52,20 @@ MAX_AUDIO_DURATION = 300  # 5 minutes default (trimmed, not rejected)
 ABSOLUTE_MAX_DURATION = 3600  # 1 hour hard reject
 DEFAULT_VAD_ONSET = 0.3
 DEFAULT_VAD_OFFSET = 0.3
+
+# Domain vocabulary prompt — primes Whisper's decoder for call center terminology
+# Covers Medicare, ACA, and common call center phrases that WhisperX frequently garbles
+DEFAULT_INITIAL_PROMPT = (
+    "This is a recorded call between a Pitch Perfect Solutions agent "
+    "from America's Health and a Medicare beneficiary discussing their "
+    "Part A and Part B coverage, Medicare Advantage plans, prescription "
+    "drug coverage under Part D, and whether they have a Red White and "
+    "Blue card. The agent confirms enrollment on a recorded line and "
+    "transfers to a licensed agent. ACA marketplace health insurance "
+    "subsidy copay deductible premium. The agent discusses the flex card, "
+    "grocery card, utility card, and food and utility benefits. "
+    "Senior Advisors. Do not call list."
+)
 
 # ─── Model cache ─────────────────────────────────────────────────────
 
@@ -55,14 +77,16 @@ def get_model(vad_onset=DEFAULT_VAD_ONSET, vad_offset=DEFAULT_VAD_OFFSET):
     global _model
     if _model is None:
         print(f"[whisperx] Loading {MODEL_SIZE} on {DEVICE} ({COMPUTE_TYPE})...")
+        print(f"[whisperx] initial_prompt: {DEFAULT_INITIAL_PROMPT[:80]}...")
         _model = whisperx.load_model(
             MODEL_SIZE,
             device=DEVICE,
             compute_type=COMPUTE_TYPE,
             download_root=MODEL_DIR,
             vad_options={"vad_onset": vad_onset, "vad_offset": vad_offset},
+            asr_options={"initial_prompt": DEFAULT_INITIAL_PROMPT},
         )
-        print("[whisperx] Model loaded")
+        print("[whisperx] Model loaded with domain prompt")
     return _model
 
 
@@ -307,7 +331,7 @@ def handler(event):
         # STANDARD PATH (mono diarization or no split)
         # ──────────────────────────────────────────────────────────────
 
-        # 1. Transcribe
+        # 1. Transcribe (initial_prompt is set at model load via asr_options)
         result = model.transcribe(
             audio_array,
             language=language,
