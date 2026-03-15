@@ -35,6 +35,8 @@ RUN pip3 install --no-cache-dir -r requirements.txt
 
 # Download fine-tuned CT2 model from S3 (LoRA-merged, ~1.5GB)
 # This is whisper-large-v3-turbo with call center domain LoRA merged in
+# CACHE_BUST: change this value to force re-download from S3
+ARG CACHE_BUST=2
 ARG AWS_ACCESS_KEY_ID
 ARG AWS_SECRET_ACCESS_KEY
 ARG AWS_DEFAULT_REGION=us-east-1
@@ -42,6 +44,7 @@ RUN pip3 install --no-cache-dir awscli && \
     mkdir -p /models/finetuned && \
     aws s3 sync s3://reatrever-data/whisper-finetuned/ct2-merged/ /models/finetuned/ && \
     pip3 uninstall -y awscli && \
+    python3 -c "import json; p='/models/finetuned/config.json'; c=json.load(open(p)); c.setdefault('n_mels',c.get('num_mel_bins',128)); json.dump(c,open(p,'w'),indent=2)" && \
     echo "Fine-tuned model downloaded: $(ls /models/finetuned/)"
 
 # Also pre-download vanilla large-v2 as fallback (in case WHISPERX_MODEL env overrides)
